@@ -290,10 +290,9 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
                 for (const child of children) {
                     await moveItem(child.id, child.type, existingFolder.id, userId, options);
                 }
-                // [FIX] After moving children, check if the source folder is empty before deleting it.
                 const remainingChildren = await getChildrenOfFolder(itemId, userId);
                 if (remainingChildren.length === 0) {
-                    await deleteSingleFolder(itemId, userId); // 删除空的来源资料夹
+                    await deleteSingleFolder(itemId, userId);
                 }
             }
         } else {
@@ -309,7 +308,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         if (conflict && overwriteList.includes(fileToMove.fileName)) {
             const storage = require('./storage').getStorage();
             const filesToDelete = await getFilesByIds([conflict.message_id], userId);
-            await storage.remove(filesToDelete, userId); 
+            await storage.remove(filesToDelete, [], userId); 
             await moveItems([itemId], [], targetFolderId, userId);
         } else if (!conflict) {
             await moveItems([itemId], [], targetFolderId, userId);
@@ -364,26 +363,74 @@ function deleteSingleFolder(folderId, userId) {
     });
 }
 
-async function deleteFolderRecursive(folderId, userId) {
+async function getFolderDeletionData(folderId, userId) {
     let filesToDelete = [];
-    let foldersToDelete = [folderId];
-    async function findContents(currentFolderId) {
-        const sqlFiles = `SELECT message_id, file_id, storage_type FROM files WHERE folder_id = ? AND user_id = ?`;
+    let foldersToDeleteIds = [folderId];
+
+    async function findContentsRecursive(currentFolderId) {
+        const sqlFiles = `SELECT * FROM files WHERE folder_id = ? AND user_id = ?`;
         const files = await new Promise((res, rej) => db.all(sqlFiles, [currentFolderId, userId], (err, rows) => err ? rej(err) : res(rows)));
         filesToDelete.push(...files);
+        
         const sqlFolders = `SELECT id FROM folders WHERE parent_id = ? AND user_id = ?`;
         const subFolders = await new Promise((res, rej) => db.all(sqlFolders, [currentFolderId, userId], (err, rows) => err ? rej(err) : res(rows)));
+        
         for (const subFolder of subFolders) {
-            foldersToDelete.push(subFolder.id);
-            await findContents(subFolder.id);
+            foldersToDeleteIds.push(subFolder.id);
+            await findContentsRecursive(subFolder.id);
         }
     }
-    await findContents(folderId);
-    const folderPlaceholders = foldersToDelete.map(() => '?').join(',');
-    const deleteFoldersSql = `DELETE FROM folders WHERE id IN (${folderPlaceholders}) AND user_id = ?`;
-    await new Promise((res, rej) => db.run(deleteFoldersSql, [...foldersToDelete, userId], (err) => err ? rej(err) : res()));
-    return filesToDelete;
+
+    await findContentsRecursive(folderId);
+
+    const allUserFolders = await getAllFolders(userId);
+    const folderMap = new Map(allUserFolders.map(f => [f.id, f]));
+    
+    function buildPath(fId) {
+        let pathParts = [];
+        let current = folderMap.get(fId);
+        while(current && current.parent_id) {
+            pathParts.unshift(current.name);
+            current = folderMap.get(current.parent_id);
+        }
+        return '/' + pathParts.join('/');
+    }
+
+    const foldersToDeleteWithPaths = foldersToDeleteIds.map(id => ({
+        id: id,
+        path: buildPath(id)
+    }));
+
+    return { files: filesToDelete, folders: foldersToDeleteWithPaths };
 }
+
+
+function executeDeletion(fileIds, folderIds, userId) {
+    return new Promise((resolve, reject) => {
+        if (fileIds.length === 0 && folderIds.length === 0) return resolve({ success: true });
+        
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION;");
+            const promises = [];
+            
+            if (fileIds.length > 0) {
+                const filePlaceholders = fileIds.map(() => '?').join(',');
+                const sql = `DELETE FROM files WHERE message_id IN (${filePlaceholders}) AND user_id = ?`;
+                promises.push(new Promise((res, rej) => db.run(sql, [...fileIds, userId], (err) => err ? rej(err) : res())));
+            }
+            if (folderIds.length > 0) {
+                const folderPlaceholders = folderIds.map(() => '?').join(',');
+                const sql = `DELETE FROM folders WHERE id IN (${folderPlaceholders}) AND user_id = ?`;
+                promises.push(new Promise((res, rej) => db.run(sql, [...folderIds, userId], (err) => err ? rej(err) : res())));
+            }
+
+            Promise.all(promises)
+                .then(() => db.run("COMMIT;", (err) => err ? reject(err) : resolve({ success: true })))
+                .catch((err) => db.run("ROLLBACK;", () => reject(err)));
+        });
+    });
+}
+
 
 function addFile(fileData, folderId = 1, userId, storageType) {
     const { message_id, fileName, mimetype, file_id, thumb_file_id, date, size } = fileData;
@@ -398,6 +445,9 @@ function addFile(fileData, folderId = 1, userId, storageType) {
 }
 
 function getFilesByIds(messageIds, userId) {
+    if (!messageIds || messageIds.length === 0) {
+        return Promise.resolve([]);
+    }
     const placeholders = messageIds.map(() => '?').join(',');
     const sql = `SELECT * FROM files WHERE message_id IN (${placeholders}) AND user_id = ?`;
     return new Promise((resolve, reject) => {
@@ -706,7 +756,8 @@ module.exports = {
     findFolderByName,
     getAllFolders,
     getAllDescendantFolderIds,
-    deleteFolderRecursive,
+    executeDeletion,
+    getFolderDeletionData,
     deleteSingleFolder,
     addFile,
     getFilesByIds,
