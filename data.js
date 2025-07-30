@@ -620,6 +620,38 @@ function findFileInFolder(fileName, folderId, userId) {
     });
 }
 
+// --- 新生：扫描专用函数 ---
+function findFileByFileId(fileId, userId) {
+    return new Promise((resolve, reject) => {
+        const sql = `SELECT message_id FROM files WHERE file_id = ? AND user_id = ?`;
+        db.get(sql, [fileId, userId], (err, row) => {
+            if (err) return reject(err);
+            resolve(row);
+        });
+    });
+}
+
+async function findOrCreateFolderByPath(fullPath, userId) {
+    const pathParts = fullPath.split('/').filter(p => p);
+    let parentId = await new Promise((resolve, reject) => {
+        db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [userId], (err, row) => {
+            if (err || !row) return reject(new Error('找不到根目录'));
+            resolve(row.id);
+        });
+    });
+
+    for (const part of pathParts) {
+        let folder = await findFolderByName(part, parentId, userId);
+        if (folder) {
+            parentId = folder.id;
+        } else {
+            const result = await createFolder(part, parentId, userId);
+            parentId = result.id;
+        }
+    }
+    return parentId;
+}
+
 async function resolvePathToFolderId(startFolderId, pathParts, userId) {
     let currentParentId = startFolderId;
     for (const part of pathParts) {
@@ -684,5 +716,8 @@ module.exports = {
     checkFullConflict,
     resolvePathToFolderId,
     findFolderByPath,
-    getDescendantFiles
+    getDescendantFiles,
+    // --- 新生导出 ---
+    findFileByFileId,
+    findOrCreateFolderByPath
 };
