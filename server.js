@@ -1,3 +1,4 @@
+// nexavor/networkfilemanger/NetworkFileManger-ece0c16c1ce8238333a40fd0f76eda3f8fdfe55f/server.js
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
@@ -16,10 +17,8 @@ const storageManager = require('./storage');
 
 const app = express();
 
-// --- 临时文件目录设定与清理 ---
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
-// 封装一个健壮的清理函数
 async function cleanupTempDir() {
     try {
         if (!fs.existsSync(TMP_DIR)) {
@@ -31,7 +30,6 @@ async function cleanupTempDir() {
             try {
                 await fsp.unlink(path.join(TMP_DIR, file));
             } catch (err) {
-                // 忽略已经不存在的文件等小错误
                 console.warn(`清理临时文件时发生非致命错误: ${file}`, err.message);
             }
         }
@@ -40,7 +38,6 @@ async function cleanupTempDir() {
     }
 }
 
-// 启动时清理一次
 cleanupTempDir();
 
 const storage = multer.diskStorage({
@@ -64,7 +61,6 @@ app.use(express.static('public'));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// --- 中介软体 ---
 const fixFileNameEncoding = (req, res, next) => {
     if (req.files) {
         req.files.forEach(file => {
@@ -86,7 +82,6 @@ function requireAdmin(req, res, next) {
     res.status(403).send('权限不足');
 }
 
-// --- 路由 ---
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views/login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views/register.html')));
 app.get('/editor', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/editor.html')));
@@ -145,7 +140,6 @@ app.get('/folder/:id', requireLogin, (req, res) => res.sendFile(path.join(__dirn
 app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/shares.html')));
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 
-// --- 新生：扫描页面路由 ---
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
 app.get('/local-files/:userId/:fileId', requireLogin, (req, res) => {
@@ -160,8 +154,6 @@ app.get('/local-files/:userId/:fileId', requireLogin, (req, res) => {
     }
 });
 
-
-// --- API 接口 ---
 app.post('/api/user/change-password', requireLogin, async (req, res) => {
     const { oldPassword, newPassword } = req.body;
     
@@ -278,17 +270,17 @@ app.post('/api/admin/webdav', requireAdmin, (req, res) => {
     const config = storageManager.readConfig();
     const webdavConfigs = config.webdav || [];
 
-    if (id) { // 更新
+    if (id) {
         const index = webdavConfigs.findIndex(c => c.id == id);
         if (index > -1) {
             webdavConfigs[index] = { ...webdavConfigs[index], url, username };
-            if (password) { // 只有在提供新密码时才更新
+            if (password) {
                 webdavConfigs[index].password = password;
             }
         } else {
              return res.status(404).json({ success: false, message: '找不到要更新的设定' });
         }
-    } else { // 新增
+    } else {
         const newId = webdavConfigs.length > 0 ? Math.max(...webdavConfigs.map(c => c.id)) + 1 : 1;
         webdavConfigs.push({ id: newId, url, username, password });
     }
@@ -318,6 +310,7 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
         res.status(500).json({ success: false, message: '删除设定失败' });
     }
 });
+
 
 const uploadMiddleware = (req, res, next) => {
     const uploader = upload.array('files');
@@ -393,7 +386,6 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                      }
                 }
                 
-                // *** 关键修改：不再传递 webdavConfigId ***
                 const result = await storage.upload(tempFilePath, fileName, file.mimetype, userId, targetFolderId, req.body.caption || '');
                 results.push(result);
 
@@ -516,28 +508,62 @@ app.post('/api/check-move-conflict', requireLogin, async (req, res) => {
         if (!itemIds || !Array.isArray(itemIds) || !targetFolderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
+        
+        const storageMode = storageManager.readConfig().storageMode;
+        if (storageMode === 'webdav') {
+            const itemsToMove = await data.getItemsByIds(itemIds, userId);
+            
+            const sourceConfigIds = new Set();
+            for (const item of itemsToMove) {
+                if (item.type === 'file' && item.file_id.includes(':')) {
+                    const configId = item.file_id.split(':')[0];
+                    sourceConfigIds.add(configId);
+                } else if (item.type === 'folder') {
+                    const filesInFolder = await data.getFilesRecursive(item.id, userId);
+                    for (const file of filesInFolder) {
+                        if (file.file_id.includes(':')) {
+                           sourceConfigIds.add(file.file_id.split(':')[0]);
+                        }
+                    }
+                }
+            }
 
+            let targetConfigId = null;
+            const firstFileInTarget = await data.getFirstFileInFolder(targetFolderId, userId);
+            if (firstFileInTarget && firstFileInTarget.file_id.includes(':')) {
+                targetConfigId = firstFileInTarget.file_id.split(':')[0];
+            }
+            
+            const allInvolvedConfigIds = new Set(sourceConfigIds);
+            if (targetConfigId) {
+                allInvolvedConfigIds.add(targetConfigId);
+            }
+
+            if (allInvolvedConfigIds.size > 1) {
+                return res.json({
+                    success: true,
+                    fileConflicts: [],
+                    folderConflicts: [],
+                    isCrossWebdavMove: true
+                });
+            }
+        }
+        
         const fileConflictNames = new Set();
         const folderConflictNames = new Set();
 
         async function findConflictsRecursive(itemsToMove, destinationFolderId) {
-            if (!itemsToMove || itemsToMove.length === 0) {
-                return;
-            }
-
+            if (!itemsToMove || itemsToMove.length === 0) return;
             const itemNames = itemsToMove.map(item => item.name);
             const conflictsInDest = await data.getConflictingItems(itemNames, destinationFolderId, userId);
 
             for (const item of itemsToMove) {
                 const conflict = conflictsInDest.find(c => c.name === item.name);
-
                 if (conflict) {
                     if (item.type === 'folder' && conflict.type === 'folder') {
                         folderConflictNames.add(item.name);
-                        
                         const sourceChildren = await data.getChildrenOfFolder(item.id, userId);
                         const destFolderForMerge = await data.findFolderByName(item.name, destinationFolderId, userId);
-                        
                         if (destFolderForMerge) {
                             await findConflictsRecursive(sourceChildren, destFolderForMerge.id);
                         }
@@ -554,7 +580,8 @@ app.post('/api/check-move-conflict', requireLogin, async (req, res) => {
         res.json({
             success: true,
             fileConflicts: Array.from(fileConflictNames),
-            folderConflicts: Array.from(folderConflictNames)
+            folderConflicts: Array.from(folderConflictNames),
+            isCrossWebdavMove: false
         });
 
     } catch (error) {
