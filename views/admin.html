@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>管理后台</title>
+    <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="/manager.css">
+</head>
+<body>
+    <div class="container">
+        <header class="main-header">
+            <h1>管理后台</h1>
+            <a href="/" class="upload-link-btn"><i class="fas fa-arrow-left"></i> 返回文件管理器</a>
+        </header>
+
+        <div class="setting-card">
+            <h2>储存设定</h2>
+            <p>目前储存模式: <b id="current-mode">加载中...</b></p>
+            <p>警告：切换储存模式不会迁移现有档案。切换后，旧模式下的档案将无法在管理器中存取。</p>
+            <hr>
+            <label for="storage-select">选择新的储存模式：</label>
+            <select id="storage-select">
+                <option value="telegram">Telegram</option>
+                <option value="local">本地服务器</option>
+                <option value="webdav">WebDAV</option>
+            </select>
+            <button id="save-btn">储存设定</button>
+            <p id="save-status" style="color: green;"></p>
+        </div>
+
+        <div class="setting-card" id="webdav-settings-card" style="display: none;">
+            <h2>系统共用 WebDAV 设定</h2>
+            <p>此设定将应用于所有使用者。只有在储存模式设定为 "WebDAV" 时才会生效。</p>
+            <form id="webdav-form">
+                <input type="url" id="webdav-url" placeholder="WebDAV URL (例如: https://example.com/remote.php/dav/files/username)" required>
+                <input type="text" id="webdav-username" placeholder="使用者名称" required>
+                <input type="password" id="webdav-password" placeholder="密码">
+                <button type="submit">储存 WebDAV 设定</button>
+            </form>
+        </div>
+
+        <div class="setting-card">
+            <h2>使用者管理</h2>
+            <form id="add-user-form">
+                <input type="text" id="new-username" placeholder="新用户名" required>
+                <input type="password" id="new-password" placeholder="新密码 (至少4位)" required>
+                <button type="submit">新增使用者</button>
+            </form>
+            <table class="user-table">
+                <thead>
+                    <tr>
+                        <th>使用者名称</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="user-table-body">
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <script src="/vendor/axios/axios.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const currentModeEl = document.getElementById('current-mode');
+            const storageSelect = document.getElementById('storage-select');
+            const saveBtn = document.getElementById('save-btn');
+            const saveStatus = document.getElementById('save-status');
+            const addUserForm = document.getElementById('add-user-form');
+            const newUsernameInput = document.getElementById('new-username');
+            const newPasswordInput = document.getElementById('new-password');
+            const userTableBody = document.getElementById('user-table-body');
+            const webdavSettingsCard = document.getElementById('webdav-settings-card');
+            const webdavForm = document.getElementById('webdav-form');
+            const webdavUrlInput = document.getElementById('webdav-url');
+            const webdavUsernameInput = document.getElementById('webdav-username');
+            const webdavPasswordInput = document.getElementById('webdav-password');
+            
+            async function loadCurrentMode() {
+                try {
+                    const res = await axios.get('/api/admin/storage-mode');
+                    let modeText = '未知';
+                    switch (res.data.mode) {
+                        case 'local': modeText = '本地服务器'; break;
+                        case 'telegram': modeText = 'Telegram'; break;
+                        case 'webdav': modeText = 'WebDAV'; break;
+                    }
+                    currentModeEl.textContent = modeText;
+                    storageSelect.value = res.data.mode;
+                    webdavSettingsCard.style.display = res.data.mode === 'webdav' ? 'block' : 'none';
+                } catch (error) {
+                    currentModeEl.textContent = '读取失败';
+                }
+            }
+
+            saveBtn.addEventListener('click', async () => {
+                const newMode = storageSelect.value;
+                if (!confirm(`确定要将储存模式切换为 "${storageSelect.options[storageSelect.selectedIndex].text}" 吗？`)) {
+                    return;
+                }
+                try {
+                    const res = await axios.post('/api/admin/storage-mode', { mode: newMode });
+                    if (res.data.success) {
+                        saveStatus.textContent = res.data.message;
+                        loadCurrentMode();
+                    }
+                } catch (error) {
+                    saveStatus.textContent = '储存失败！';
+                }
+            });
+            
+            async function loadWebdavSettings() {
+                try {
+                    const res = await axios.get('/api/admin/webdav');
+                    const config = res.data;
+                    if (config && config.url) {
+                        webdavUrlInput.value = config.url;
+                        webdavUsernameInput.value = config.username;
+                        webdavPasswordInput.value = config.password || '';
+                    }
+                } catch (error) {
+                    console.error("加载 WebDAV 设定失败", error);
+                }
+            }
+
+            webdavForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                try {
+                    await axios.post('/api/admin/webdav', {
+                        url: webdavUrlInput.value,
+                        username: webdavUsernameInput.value,
+                        password: webdavPasswordInput.value,
+                    });
+                    alert('WebDAV 设定已储存!');
+                } catch (error) {
+                    alert('储存失败: ' + (error.response?.data?.message || '服务器错误'));
+                }
+            });
+            
+            storageSelect.addEventListener('change', () => {
+                webdavSettingsCard.style.display = storageSelect.value === 'webdav' ? 'block' : 'none';
+            });
+            
+            async function loadUsers() {
+                try {
+                    const res = await axios.get('/api/admin/users');
+                    userTableBody.innerHTML = '';
+                    res.data.forEach(user => {
+                        const row = `
+                            <tr>
+                                <td>${user.username}</td>
+                                <td class="actions">
+                                    <button class="change-pass-btn" data-userid="${user.id}" data-username="${user.username}">改密码</button>
+                                    <button class="delete-user-btn" data-userid="${user.id}" data-username="${user.username}">删除</button>
+                                </td>
+                            </tr>
+                        `;
+                        userTableBody.innerHTML += row;
+                    });
+                } catch (error) {
+                    userTableBody.innerHTML = '<tr><td colspan="2">加载使用者失败</td></tr>';
+                }
+            }
+
+            addUserForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const username = newUsernameInput.value.trim();
+                const password = newPasswordInput.value.trim();
+                if (!username || !password) return;
+
+                try {
+                    await axios.post('/api/admin/add-user', { username, password });
+                    newUsernameInput.value = '';
+                    newPasswordInput.value = '';
+                    alert('使用者新增成功！');
+                    loadUsers();
+                } catch (error) {
+                    alert('新增失败：' + (error.response?.data?.message || '服务器错误'));
+                }
+            });
+
+            userTableBody.addEventListener('click', async (e) => {
+                const target = e.target;
+                const userId = target.dataset.userid;
+                const username = target.dataset.username;
+
+                if (target.classList.contains('change-pass-btn')) {
+                    const newPassword = prompt(`请为使用者 "${username}" 输入新密码：`);
+                    if (newPassword && newPassword.length >= 4) {
+                        try {
+                            await axios.post('/api/admin/change-password', { userId, newPassword });
+                            alert(`使用者 "${username}" 的密码已更新。`);
+                        } catch (error) {
+                            alert('密码更新失败：' + (error.response?.data?.message || '服务器错误'));
+                        }
+                    } else if (newPassword) {
+                        alert('密码长度至少需要 4 个字元。');
+                    }
+                }
+
+                if (target.classList.contains('delete-user-btn')) {
+                    if (confirm(`确定要删除使用者 "${username}" 吗？\n此操作将会删除该使用者的所有档案和资料夹，且无法复原！`)) {
+                        try {
+                            await axios.post('/api/admin/delete-user', { userId });
+                            alert(`使用者 "${username}" 已被删除。`);
+                            loadUsers();
+                        } catch (error) {
+                             alert('删除失败：' + (error.response?.data?.message || '服务器错误'));
+                        }
+                    }
+                }
+            });
+
+            loadUsers();
+            loadCurrentMode();
+            loadWebdavSettings();
+        });
+    </script>
+</body>
+</html>
