@@ -565,7 +565,7 @@ app.post('/api/folder', requireLogin, async (req, res) => {
     try {
         const conflict = await data.checkFullConflict(name, parentId, userId);
         if (conflict) {
-            return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
+            return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
         }
 
         const result = await data.createFolder(name, parentId, userId);
@@ -686,7 +686,20 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
         }
 
         const storage = storageManager.getStorage();
-        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
+        
+        if (req.headers.range) { // 支援部分内容请求 (影片拖动)
+            res.setHeader('Accept-Ranges', 'bytes');
+        } else {
+            res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
+        }
+        
+        if (fileInfo.mimetype) {
+            res.setHeader('Content-Type', fileInfo.mimetype);
+        }
+        if (fileInfo.size) {
+            res.setHeader('Content-Length', fileInfo.size);
+        }
+
 
         if (fileInfo.storage_type === 'telegram') {
             const link = await storage.getUrl(fileInfo.file_id);
@@ -701,12 +714,8 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
                 res.status(404).send('本地档案不存在');
             }
         } else if (fileInfo.storage_type === 'webdav') {
-            const link = await storage.getUrl(fileInfo.file_id, req.session.userId);
-            if (link) {
-                return res.redirect(link);
-            } else {
-                res.status(404).send('无法获取 WebDAV 文件链接');
-            }
+            const stream = await storage.stream(fileInfo.file_id, req.session.userId);
+            stream.pipe(res);
         }
 
     } catch (error) { res.status(500).send('下载代理失败'); }
@@ -1032,12 +1041,8 @@ app.get('/share/download/file/:token', async (req, res) => {
         } else if (fileInfo.storage_type === 'local') {
             res.download(fileInfo.file_id, fileInfo.fileName);
         } else if (fileInfo.storage_type === 'webdav') {
-            const link = await storage.getUrl(fileInfo.file_id, fileInfo.user_id);
-            if (link) {
-                return res.redirect(link);
-            } else {
-                res.status(404).send('无法获取 WebDAV 文件链接');
-            }
+            const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
+            stream.pipe(res);
         }
 
     } catch (error) { res.status(500).send('下载失败'); }
@@ -1088,12 +1093,8 @@ app.get('/share/download/:folderToken/:fileId', async (req, res) => {
                 res.status(404).send('本地档案不存在');
             }
         } else if (fileInfo.storage_type === 'webdav') {
-            const link = await storage.getUrl(fileInfo.file_id, fileInfo.user_id);
-            if (link) {
-                return res.redirect(link);
-            } else {
-                res.status(404).send('无法获取 WebDAV 文件链接');
-            }
+            const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
+            stream.pipe(res);
         }
     } catch (error) {
         res.status(500).send('下载失败');
