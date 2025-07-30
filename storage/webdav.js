@@ -5,16 +5,16 @@ const crypto = require('crypto');
 const fsp = require('fs').promises;
 const path = require('path');
 
-// 不再维護单一的全域 client
 let clientCache = new Map();
 
+// *** 關鍵修改：引入 storageManager 以使用輪詢函式 ***
+const storageManager = require('./index'); 
+
 function getWebdavConfigs() {
-    const storageManager = require('./index'); 
     const config = storageManager.readConfig();
     return config.webdav || [];
 }
 
-// *** 新生：根据 ID 获取特定 WebDAV 客户端的函数 ***
 function getClient(configId) {
     if (clientCache.has(configId)) {
         return clientCache.get(configId);
@@ -35,11 +35,9 @@ function getClient(configId) {
     return newClient;
 }
 
-// *** 新生：解析 file_id 以获取设定 ID 和真实路径 ***
 function parseFileId(fileId) {
     const parts = fileId.split(':');
     if (parts.length < 2) {
-        // 为了相容旧资料，如果没有 ID，预设为第一个
         const configs = getWebdavConfigs();
         if (configs.length > 0) {
             return { configId: configs[0].id, remotePath: fileId };
@@ -56,7 +54,6 @@ function resetClient() {
 }
 
 async function getFolderPath(folderId, userId) {
-    // 此函数逻辑不变
     const userRoot = await new Promise((resolve, reject) => {
         db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [userId], (err, row) => {
             if (err) return reject(err);
@@ -71,14 +68,14 @@ async function getFolderPath(folderId, userId) {
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
-// *** 修改：Upload 函数现在需要 webdavConfigId 来决定上传到哪里 ***
-async function upload(tempFilePath, fileName, mimetype, userId, folderId, caption, webdavConfigId) {
-    const configs = getWebdavConfigs();
-    if (configs.length === 0) {
+// *** 修改：Upload 函式不再需要 webdavConfigId ***
+async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
+    // *** 關鍵修改：從 storageManager 取得下一個要使用的伺服器 ***
+    const targetConfig = storageManager.getNextWebdavConfig();
+    if (!targetConfig) {
         throw new Error('尚未设定任何 WebDAV 伺服器，无法上传。');
     }
-    // 如果未指定，则预设上传到第一个设定的伺服器
-    const targetConfigId = webdavConfigId || configs[0].id;
+    const targetConfigId = targetConfig.id;
     const client = getClient(targetConfigId);
 
     const folderPath = await getFolderPath(folderId, userId);
@@ -88,7 +85,6 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId, captio
         try {
             await client.createDirectory(folderPath, { recursive: true });
         } catch (e) {
-            // 忽略“目录已存在”的错误
             if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
                  throw new Error(`建立 WebDAV 目录失败 (${e.response.status}): ${e.message}`);
             }
@@ -105,7 +101,6 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId, captio
     const stat = await client.stat(remotePath);
     const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
     
-    // *** 关键修改：储存包含设定 ID 的新格式 file_id ***
     const fileIdForDb = `${targetConfigId}:${remotePath}`;
 
     const dbResult = await data.addFile({
@@ -120,7 +115,6 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId, captio
     return { success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId };
 }
 
-// *** 修改：Remove 函数现在能处理来自不同伺服器的档案 ***
 async function remove(files, folders, userId) {
     const results = { success: true, errors: [] };
     const allItemsToDelete = [];
@@ -133,9 +127,6 @@ async function remove(files, folders, userId) {
             configId: configId
         });
     });
-    
-    // 资料夹删除逻辑不变，因为它们只存在于资料库中
-    // 物理删除操作只针对档案
     
     allItemsToDelete.sort((a, b) => b.path.length - a.path.length);
 
@@ -156,13 +147,11 @@ async function remove(files, folders, userId) {
     return results;
 }
 
-// *** 修改：Stream 和 getUrl 都需要解析 file_id ***
 async function stream(file_id, userId) {
     const { configId, remotePath } = parseFileId(file_id);
     const webdavConfig = getWebdavConfigs().find(c => c.id == configId);
     if (!webdavConfig) throw new Error(`找不到与档案关联的 WebDAV 设定 (ID: ${configId})`);
     
-    // 为每个流操作创建独立的客户端
     const streamClient = createClient(webdavConfig.url, {
         username: webdavConfig.username,
         password: webdavConfig.password
