@@ -66,16 +66,8 @@ ADMIN_PASS=your_admin_password
 **必填：用于加密 Session 的随机密钥，请换成一个复杂的随机字串
 SESSION_SECRET=a8e2a32e9b1c7d5f6a7b3c4d5e8f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f
 
-#### 3.删除旧的管理员帐号
+#### 3.重置管理员帐号密码
 
-** 您需要一个 SQLite 资料库编辑工具来操作 data/file-manager.db 这个档案。
-
-** 如果您熟悉命令列，可以在专案根目录下执行 sqlite3 data/file-manager.db 来进入资料库。
-
-** 如果您希望使用图形化介面，推荐下载并安装 DB Browser for SQLite，然后用它打开 data/file-manager.db 档案。
-
-** 无论使用哪种工具，请执行以下 SQL 指令来删除所有被标记为管理员的用户：
-
-** SQL
-
-** DELETE FROM users WHERE is_admin = 1;
+```bash
+node reset_admin_password.js
+ ```
