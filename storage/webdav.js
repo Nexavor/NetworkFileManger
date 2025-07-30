@@ -119,7 +119,8 @@ async function remove(files, folders, userId) {
     // 3. 依次执行删除
     for (const item of allItemsToDelete) {
         try {
-            // **最终勘误**：无论是档案还是资料夹，都使用 deleteFile 函数
+            // **最终勘误**：无论是档案还是资料夹，都统一使用 `deleteFile` 函数。
+            // WebDAV 服务器会根据路径是否以 '/' 结尾来区分档案和资料夹。
             await client.deleteFile(item.path);
         } catch (error) {
             if (!(error.response && error.response.status === 404)) {
