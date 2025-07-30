@@ -100,36 +100,56 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
     return { success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId };
 }
 
-async function remove(files, userId) {
+async function remove(files, folders, userId) {
     const client = getClient();
     const parentDirs = new Set();
-    
+    const results = { success: true, errors: [] };
+
+    // 1. 删除所有文件
     for (const file of files) {
         try {
-            // Bug 2 修复：确保路径格式统一，避免因路径不一致（例如，有无前导 './'）导致删除失败
-            const remotePath = path.posix.normalize('/' + file.file_id.replace(/^\.?\//, ''));
+            // Bug 2 修复：确保路径格式统一且以斜杠开头
+            const remotePath = path.posix.join('/', file.file_id);
             await client.deleteFile(remotePath);
             parentDirs.add(path.dirname(remotePath).replace(/\\/g, '/'));
         } catch (error) {
-            if (error.response) {
-                // 404 错误是可接受的，意味着文件可能已被手动删除
-                if (error.response.status !== 404) {
-                     console.error(`删除 WebDAV 档案 [${file.file_id}] 失败，状态码: ${error.response.status}`, error.message);
-                }
-            } else {
-                console.error(`删除 WebDAV 档案 [${file.file_id}] 时发生非 HTTP 错误`, error.message);
+            if (error.response && error.response.status !== 404) {
+                 const errorMessage = `删除 WebDAV 档案 [${file.file_id}] 失败: ${error.message}`;
+                 console.warn(errorMessage);
+                 results.errors.push(errorMessage);
+                 results.success = false;
             }
         }
     }
-    await data.deleteFilesByIds(files.map(f => f.message_id), userId);
 
-    // Bug 1 修复：对目录按深度（路径长度）进行降序排序，确保总是先尝试删除子目录
-    const sortedDirs = Array.from(parentDirs).sort((a, b) => b.length - a.length);
-    for (const dir of sortedDirs) {
+    // 2. 删除所有文件夹 (如果提供了文件夹列表)
+    if (folders && folders.length > 0) {
+        // Bug 1 修复：对目录按深度（路径长度）进行降序排序，确保总是先删除子目录
+        const sortedFolders = folders.sort((a, b) => b.path.length - a.path.length);
+        for (const folder of sortedFolders) {
+            try {
+                if (folder.path === '/') continue; // 不删除根目录
+                const remotePath = path.posix.join('/', folder.path);
+                await client.deleteDirectory(remotePath);
+                parentDirs.add(path.dirname(remotePath).replace(/\\/g, '/'));
+            } catch (error) {
+                if (error.response && error.response.status !== 404) {
+                     const errorMessage = `删除 WebDAV 目录 [${folder.path}] 失败: ${error.message}`;
+                     console.warn(errorMessage);
+                     results.errors.push(errorMessage);
+                     results.success = false;
+                }
+            }
+        }
+    }
+
+    // 3. 清理可能产生的空父目录
+    const sortedParentDirs = Array.from(parentDirs).sort((a, b) => b.length - a.length);
+    for (const dir of sortedParentDirs) {
         await removeEmptyDirs(dir);
     }
 
-    return { success: true };
+    return results;
 }
 
 async function stream(file_id, userId) {
