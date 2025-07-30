@@ -319,8 +319,6 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
     }
 });
 
-
-// 使用 multer 中间件的包装器以进行错误处理
 const uploadMiddleware = (req, res, next) => {
     const uploader = upload.array('files');
     uploader(req, res, function (err) {
@@ -329,7 +327,6 @@ const uploadMiddleware = (req, res, next) => {
             if (err.code === 'LIMIT_FILE_SIZE') {
                 return res.status(400).json({ success: false, message: '文件大小超出限制。' });
             }
-            // 捕获磁盘空间不足等系统错误
             if (err.code === 'EDQUOT' || err.errno === -122) {
                 return res.status(507).json({ success: false, message: '上传失败：磁盘空间不足。' });
             }
@@ -340,7 +337,6 @@ const uploadMiddleware = (req, res, next) => {
 };
 
 app.post('/upload', requireLogin, async (req, res, next) => {
-    // 每次上传前都先清理一次
     await cleanupTempDir();
     next();
 }, uploadMiddleware, fixFileNameEncoding, async (req, res) => {
@@ -354,9 +350,6 @@ app.post('/upload', requireLogin, async (req, res, next) => {
     const storage = storageManager.getStorage();
     const overwritePaths = req.body.overwritePaths ? JSON.parse(req.body.overwritePaths) : [];
     let relativePaths = req.body.relativePaths;
-    
-    // *** 如果是 WebDAV，则从 body 获取 webdavConfigId ***
-    const webdavConfigId = req.body.webdavConfigId || null; 
 
     if (!relativePaths) {
         relativePaths = req.files.map(file => file.originalname);
@@ -400,8 +393,8 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                      }
                 }
                 
-                // *** 关键修改：将 webdavConfigId 传递给 storage.upload ***
-                const result = await storage.upload(tempFilePath, fileName, file.mimetype, userId, targetFolderId, req.body.caption || '', webdavConfigId);
+                // *** 关键修改：不再传递 webdavConfigId ***
+                const result = await storage.upload(tempFilePath, fileName, file.mimetype, userId, targetFolderId, req.body.caption || '');
                 results.push(result);
 
             } finally {
@@ -642,7 +635,6 @@ app.post('/api/move', requireLogin, async (req, res) => {
     }
 });
 
-// 统一的删除处理器
 async function unifiedDeleteHandler(req, res) {
     const { messageIds = [], folderIds = [] } = req.body;
     const userId = req.session.userId;
@@ -656,7 +648,6 @@ async function unifiedDeleteHandler(req, res) {
         let filesForStorage = [];
         let foldersForStorage = [];
         
-        // 1. 收集所有要删除的项目信息
         if (folderIds.length > 0) {
             for (const folderId of folderIds) {
                 const deletionData = await data.getFolderDeletionData(folderId, userId);
@@ -670,14 +661,12 @@ async function unifiedDeleteHandler(req, res) {
             filesForStorage.push(...directFiles);
         }
         
-        // 2. 执行物理删除
         const storageResult = await storage.remove(filesForStorage, foldersForStorage, userId);
         
         if (!storageResult.success) {
             console.warn("部分档案在储存端删除失败:", storageResult.errors);
         }
 
-        // 3. 执行数据库删除
         const allFileIdsToDelete = filesForStorage.map(f => f.message_id);
         const allFolderIdsToDelete = foldersForStorage.map(f => f.id);
         await data.executeDeletion(allFileIdsToDelete, allFolderIdsToDelete, userId);
@@ -914,7 +903,6 @@ app.post('/api/cancel-share', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: '取消分享失败' }); }
 });
 
-// --- 新生：扫描 API 端点 ---
 app.post('/api/scan/local', requireAdmin, async (req, res) => {
     const { userId } = req.body;
     const log = [];
@@ -953,7 +941,7 @@ app.post('/api/scan/local', requireAdmin, async (req, res) => {
                         await data.addFile({
                             message_id: messageId,
                             fileName: entry.name,
-                            mimetype: 'application/octet-stream', // 本地扫描无法轻易得知 mimetype
+                            mimetype: 'application/octet-stream',
                             size: stats.size,
                             file_id: fileId,
                             date: stats.mtime.getTime(),
