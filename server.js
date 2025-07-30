@@ -854,21 +854,29 @@ app.post('/api/scan/local', requireAdmin, async (req, res) => {
             log.push({ message: `使用者 ${userId} 的本地储存目录不存在，跳过。`, type: 'warn' });
             return res.json({ success: true, log });
         }
-
-        const userRoot = await data.findFolderByPath(null, [], userId);
+        
+        // 修：直接从数据库获取根目录ID，而不是用 findFolderByPath
+        const rootFolder = await data.getRootFolder(userId);
+        if (!rootFolder) {
+            throw new Error(`找不到使用者 ${userId} 的根目录`);
+        }
 
         async function scanDirectory(dir, parentFolderId) {
             const entries = await fsp.readdir(dir, { withFileTypes: true });
             for (const entry of entries) {
                 const fullPath = path.join(dir, entry.name);
+                const relativePath = path.relative(userUploadDir, fullPath).replace(/\\/g, '/');
+
                 if (entry.isDirectory()) {
-                    const newParentFolder = await data.findOrCreateFolderByPath(fullPath.replace(userUploadDir, '').replace(/\\/g, '/'), userId);
-                    await scanDirectory(fullPath, newParentFolder);
+                    // 修：使用 findOrCreateFolderByPath 来处理子目录
+                    const newParentFolderId = await data.findOrCreateFolderByPath(relativePath, userId);
+                    log.push({ message: `进入目录: ${relativePath}`, type: 'info' });
+                    await scanDirectory(fullPath, newParentFolderId);
                 } else {
                     const fileId = fullPath;
                     const existing = await data.findFileByFileId(fileId, userId);
                     if (existing) {
-                        log.push({ message: `已存在: ${fileId}，跳过。`, type: 'info' });
+                        log.push({ message: `已存在: ${relativePath}，跳过。`, type: 'info' });
                     } else {
                         const stats = await fsp.stat(fullPath);
                         const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
@@ -880,14 +888,15 @@ app.post('/api/scan/local', requireAdmin, async (req, res) => {
                             file_id: fileId,
                             date: stats.mtime.getTime(),
                         }, parentFolderId, userId, 'local');
-                        log.push({ message: `已汇入: ${fileId}`, type: 'success' });
+                        log.push({ message: `已汇入: ${relativePath}`, type: 'success' });
                     }
                 }
             }
         }
-        await scanDirectory(userUploadDir, userRoot);
+        await scanDirectory(userUploadDir, rootFolder.id);
         res.json({ success: true, log });
     } catch (error) {
+        console.error('Local scan error:', error);
         log.push({ message: `扫描本地文件时出错: ${error.message}`, type: 'error' });
         res.status(500).json({ success: false, message: error.message, log });
     }
