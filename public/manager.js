@@ -1,1118 +1,770 @@
-document.addEventListener('DOMContentLoaded', () => {
-    // DOM 元素
-    const homeLink = document.getElementById('homeLink');
-    const itemGrid = document.getElementById('itemGrid');
+// nexavor/networkfilemanger/NetworkFileManger-ece0c16c1ce8238333a40fd0f76eda3f8fdfe55f/public/manager.js
+document.addEventListener('DOMContentLoaded', function () {
+    const fileList = document.getElementById('file-list');
     const breadcrumb = document.getElementById('breadcrumb');
-    const actionBar = document.getElementById('actionBar');
-    const selectionCountSpan = document.getElementById('selectionCount');
-    const createFolderBtn = document.getElementById('createFolderBtn');
-    const searchForm = document.getElementById('searchForm');
-    const searchInput = document.getElementById('searchInput');
-    const multiSelectBtn = document.getElementById('multiSelectBtn');
-    const previewBtn = document.getElementById('previewBtn');
-    const shareBtn = document.getElementById('shareBtn');
-    const renameBtn = document.getElementById('renameBtn');
-    const moveBtn = document.getElementById('moveBtn');
-    const downloadBtn = document.getElementById('downloadBtn');
-    const deleteBtn = document.getElementById('deleteBtn');
-    const selectAllBtn = document.getElementById('selectAllBtn');
-    const textEditBtn = document.getElementById('textEditBtn');
-    const logoutBtn = document.getElementById('logoutBtn');
-    const changePasswordBtn = document.getElementById('changePasswordBtn');
-    const previewModal = document.getElementById('previewModal');
-    const modalContent = document.getElementById('modalContent');
-    const closeModal = document.querySelector('.close-button');
-    const moveModal = document.getElementById('moveModal');
-    const folderTree = document.getElementById('folderTree');
-    const confirmMoveBtn = document.getElementById('confirmMoveBtn');
-    const cancelMoveBtn = document.getElementById('cancelMoveBtn');
-    const conflictModal = document.getElementById('conflictModal');
-    const conflictFileName = document.getElementById('conflictFileName');
-    const conflictOptions = document.getElementById('conflictOptions');
-    const folderConflictModal = document.getElementById('folderConflictModal');
-    const folderConflictName = document.getElementById('folderConflictName');
-    const folderConflictOptions = document.getElementById('folderConflictOptions');
-    const shareModal = document.getElementById('shareModal');
-    const uploadModal = document.getElementById('uploadModal');
-    const showUploadModalBtn = document.getElementById('showUploadModalBtn');
-    const closeUploadModalBtn = document.getElementById('closeUploadModalBtn');
-    const uploadForm = document.getElementById('uploadForm');
-    const fileInput = document.getElementById('fileInput');
-    const folderInput = document.getElementById('folderInput');
-    const uploadSubmitBtn = document.getElementById('uploadSubmitBtn');
-    const fileListContainer = document.getElementById('file-selection-list');
-    const folderSelect = document.getElementById('folderSelect');
-    const uploadNotificationArea = document.getElementById('uploadNotificationArea');
-    const dropZone = document.getElementById('dropZone');
-    const dragUploadProgressArea = document.getElementById('dragUploadProgressArea');
-    const dragUploadProgressBar = document.getElementById('dragUploadProgressBar');
-    const viewSwitchBtn = document.getElementById('view-switch-btn');
-    const itemListView = document.getElementById('itemListView');
-    const itemListBody = document.getElementById('itemListBody');
-    const collapseBtn = document.getElementById('collapseBtn');
+    const newFolderBtn = document.getElementById('new-folder-btn');
+    const newFileBtn = document.getElementById('new-file-btn');
+    const uploadLinkBtn = document.getElementById('upload-link-btn');
+    const searchInput = document.getElementById('search-input');
+    const searchClear = document.getElementById('search-clear');
+    const contextMenu = document.getElementById('context-menu');
+    const multiSelectToolbar = document.getElementById('multi-select-toolbar');
+    const selectionCount = document.getElementById('selection-count');
+    
+    let currentFolderId = null;
+    let selectedItems = new Set();
+    let fileDataCache = {}; 
+    let ctrlPressed = false;
 
-    // 状态
-    let isMultiSelectMode = false;
-    let currentFolderId = 1;
-    let currentFolderContents = { folders: [], files: [] };
-    let selectedItems = new Map();
-    let moveTargetFolderId = null;
-    let isSearchMode = false;
-    const MAX_TELEGRAM_SIZE = 50 * 1024 * 1024;
-    let foldersLoaded = false;
-    let currentView = 'grid';
+    // --- Modal Handling ---
+    const modal = document.getElementById('modal');
+    const modalTitle = document.getElementById('modal-title');
+    const modalBody = document.getElementById('modal-body');
+    const modalActionBtn = document.getElementById('modal-action-btn');
+    const modalCancelBtn = document.getElementById('modal-cancel-btn');
+    const modalCloseBtn = document.querySelector('.modal .close');
 
-    const formatBytes = (bytes, decimals = 2) => {
-        if (!bytes || bytes === 0) return '0 Bytes';
-        const k = 1024;
-        const dm = decimals < 0 ? 0 : decimals;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
-    };
-
-    function showNotification(message, type = 'info', container = null) {
-        const notification = document.createElement('div');
-        notification.className = `notification ${type}`;
-        notification.textContent = message;
-
-        if (container) {
-            notification.classList.add('local');
-            container.innerHTML = '';
-            container.appendChild(notification);
+    function showModal(title, bodyContent, actionText, actionCallback, cancelText = '取消') {
+        modalTitle.textContent = title;
+        modalBody.innerHTML = ''; 
+        if (typeof bodyContent === 'string') {
+            modalBody.innerHTML = bodyContent;
         } else {
-            notification.classList.add('global');
-            const existingNotif = document.querySelector('.notification.global');
-            if (existingNotif) existingNotif.remove();
-            document.body.appendChild(notification);
-            setTimeout(() => {
-                if (notification.parentElement) notification.parentElement.removeChild(notification);
-            }, 5000);
+            modalBody.appendChild(bodyContent);
         }
+        
+        modalActionBtn.style.display = actionCallback ? 'inline-block' : 'none';
+        modalActionBtn.textContent = actionText;
+        modalActionBtn.onclick = () => {
+             if(actionCallback) actionCallback();
+             closeModal();
+        };
+
+        modalCancelBtn.textContent = cancelText;
+        modal.style.display = 'block';
     }
     
-    const performUpload = async (formData, isDrag = false) => {
-        const progressBar = isDrag ? dragUploadProgressBar : document.getElementById('progressBar');
-        const progressArea = isDrag ? dragUploadProgressArea : document.getElementById('progressArea');
-        const submitBtn = isDrag ? null : uploadSubmitBtn;
-        const notificationContainer = isDrag ? null : uploadNotificationArea;
-    
-        progressArea.style.display = 'block';
-        progressBar.style.width = '0%';
-        progressBar.textContent = '0%';
-        if (submitBtn) submitBtn.disabled = true;
-    
-        try {
-            const res = await axios.post('/upload', formData, {
-                onUploadProgress: p => {
-                    const percent = Math.round((p.loaded * 100) / p.total);
-                    progressBar.style.width = percent + '%';
-                    progressBar.textContent = percent + '%';
-                }
-            });
-            if (res.data.success) {
-                if (!isDrag) {
-                    uploadModal.style.display = 'none';
-                }
-                showNotification('上传成功！', 'success');
-                fileInput.value = '';
-                folderInput.value = '';
-                loadFolderContents(currentFolderId);
-            } else {
-                showNotification(`上传失败: ${res.data.message}`, 'error', notificationContainer);
-            }
-        } catch (error) {
-            showNotification('上传失败: ' + (error.response?.data?.message || '服务器错误'), 'error', notificationContainer);
-        } finally {
-            if (submitBtn) submitBtn.disabled = false;
-            setTimeout(() => { progressArea.style.display = 'none'; }, 2000);
-        }
-    };
-    
-    const uploadFiles = async (files, targetFolderId, isDrag = false) => {
-        if (files.length === 0) {
-            showNotification('请选择文件。', 'error', !isDrag ? uploadNotificationArea : null);
-            return;
-        }
-    
-        const oversizedFiles = Array.from(files).filter(file => file.size > MAX_TELEGRAM_SIZE);
-        if (oversizedFiles.length > 0) {
-            const fileNames = oversizedFiles.map(f => `"${f.name}"`).join(', ');
-            showNotification(`文件 ${fileNames} 过大，超过 ${formatBytes(MAX_TELEGRAM_SIZE)} 的限制。`, 'error', !isDrag ? uploadNotificationArea : null);
-            return;
-        }
+    function closeModal() {
+        modal.style.display = 'none';
+    }
 
-        const fileObjects = Array.from(files).filter(f => f.name);
-        const filesToCheck = fileObjects.map(f => ({
-            relativePath: f.webkitRelativePath || f.name
-        }));
+    modalCloseBtn.onclick = closeModal;
+    modalCancelBtn.onclick = closeModal;
+    window.onclick = function(event) {
+        if (event.target == modal) {
+            closeModal();
+        }
+    }
 
-        let existenceData = [];
+    async function loadFolder(folderId) {
         try {
-            const res = await axios.post('/api/check-existence', { files: filesToCheck, folderId: targetFolderId });
-            existenceData = res.data.files;
-        } catch (error) {
-            showNotification(error.response?.data?.message || '检查文件是否存在时出错。', 'error', !isDrag ? null : uploadNotificationArea);
-            return;
-        }
-    
-        let filesToUpload = [];
-        let pathsToOverwrite = [];
-        const conflicts = [];
-        const nonConflicts = [];
-    
-        for (const file of fileObjects) {
-            const relativePath = file.webkitRelativePath || file.name;
-            const existing = existenceData.find(f => f.relativePath === relativePath && f.exists);
-            if (existing) {
-                conflicts.push(file);
-            } else {
-                nonConflicts.push(file);
-            }
-        }
-        
-        filesToUpload.push(...nonConflicts);
-    
-        if (conflicts.length > 0) {
-            const conflictNames = conflicts.map(f => f.webkitRelativePath || f.name);
-            const conflictResult = await handleConflict(conflictNames, '上传');
-            if (conflictResult.action === 'abort') {
-                 if (filesToUpload.length === 0) {
-                    showNotification('上传操作已取消。', 'info', !isDrag ? uploadNotificationArea : null);
-                    return;
-                }
-            } else {
-                pathsToOverwrite = conflictResult.overwriteList;
-                const filesToMaybeUpload = conflicts.filter(f => pathsToOverwrite.includes(f.webkitRelativePath || f.name));
-                filesToUpload.push(...filesToMaybeUpload);
-            }
-        }
-    
-        if (filesToUpload.length === 0) {
-            showNotification('没有文件被上传。', 'success', !isDrag ? uploadNotificationArea : null);
-            return;
-        }
-    
-        const formData = new FormData();
-        filesToUpload.forEach(file => {
-            formData.append('files', file);
-            formData.append('relativePaths', file.webkitRelativePath || file.name);
-        });
-        formData.append('folderId', targetFolderId);
-        formData.append('overwritePaths', JSON.stringify(pathsToOverwrite));
-    
-        const captionInput = document.getElementById('uploadCaption');
-        if (captionInput && captionInput.value && !isDrag) {
-            formData.append('caption', captionInput.value);
-        }
-        
-        await performUpload(formData, isDrag);
-    };
+            const response = await axios.get(`/api/folder/${folderId}`);
+            const { contents, path } = response.data;
+            fileDataCache = {};
+            contents.forEach(item => fileDataCache[item.type === 'file' ? item.message_id : `folder-${item.id}`] = item);
 
-    const loadFolderContents = async (folderId) => {
-        try {
-            isSearchMode = false;
-            if (searchInput) searchInput.value = '';
+            renderBreadcrumb(path);
+            renderFileList(contents);
             currentFolderId = folderId;
-            const res = await axios.get(`/api/folder/${folderId}`);
-            currentFolderContents = res.data.contents;
-            // 清理已不存在的选择项
-            const currentIds = new Set([...res.data.contents.folders.map(f => String(f.id)), ...res.data.contents.files.map(f => String(f.id))]);
-            selectedItems.forEach((_, key) => {
-                if (!currentIds.has(key)) {
-                    selectedItems.delete(key);
-                }
-            });
-            renderBreadcrumb(res.data.path);
-            renderItems(currentFolderContents.folders, currentFolderContents.files);
-            updateActionBar();
+            history.pushState({ folderId: folderId }, '', `/folder/${folderId}`);
         } catch (error) {
-            if (error.response && error.response.status === 401) {
-                window.location.href = '/login';
-            }
-            itemGrid.innerHTML = '<p>加载内容失败。</p>';
-            itemListBody.innerHTML = '<p>加载内容失败。</p>';
+            console.error('无法加载资料夹:', error);
+            alert('加载资料夹失败，请检查您的网路连线或权限。');
         }
-    };
-    const executeSearch = async (query) => {
-        try {
-            isSearchMode = true;
-            const res = await axios.get(`/api/search?q=${encodeURIComponent(query)}`);
-            currentFolderContents = res.data.contents;
-            selectedItems.clear();
-            renderBreadcrumb(res.data.path);
-            renderItems(currentFolderContents.folders, currentFolderContents.files);
-            updateActionBar();
-        } catch (error) {
-            itemGrid.innerHTML = '<p>搜寻失败。</p>';
-            itemListBody.innerHTML = '<p>搜寻失败。</p>';
-        }
-    };
-    const renderBreadcrumb = (path) => {
-        breadcrumb.innerHTML = '';
-        if(!path || path.length === 0) return;
-        path.forEach((p, index) => {
-            if (index > 0) breadcrumb.innerHTML += '<span class="separator">/</span>';
-            if (p.id === null) {
-                breadcrumb.innerHTML += `<span>${p.name}</span>`;
-                return;
-            }
-            const link = document.createElement(index === path.length - 1 && !isSearchMode ? 'span' : 'a');
-            link.textContent = p.name === '/' ? '根目录' : p.name;
-            if (link.tagName === 'A') {
-                link.href = '#';
-                link.dataset.folderId = p.id;
-            }
-            breadcrumb.appendChild(link);
-        });
-    };
+    }
     
-    const renderItems = (folders, files) => {
-        const parentGrid = itemGrid;
-        const parentList = itemListBody;
+    async function loadSearchResults(query) {
+        if (!query) return loadFolder(currentFolderId || 'root');
+        try {
+            const response = await axios.get(`/api/search?q=${query}`);
+            const { contents, path } = response.data;
+            renderBreadcrumb(path);
+            renderFileList(contents);
+        } catch (error) {
+            console.error('搜寻失败:', error);
+        }
+    }
 
-        parentGrid.innerHTML = '';
-        parentList.innerHTML = '';
+    function renderBreadcrumb(path) {
+        breadcrumb.innerHTML = '';
+        path.forEach((folder, index) => {
+            const li = document.createElement('li');
+            if (index < path.length - 1) {
+                const a = document.createElement('a');
+                a.href = '#';
+                a.textContent = folder.name;
+                a.dataset.folderId = folder.id;
+                a.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    loadFolder(folder.id);
+                });
+                li.appendChild(a);
+            } else {
+                li.textContent = folder.name;
+            }
+            breadcrumb.appendChild(li);
+        });
+    }
 
-        const allItems = [...folders, ...files];
-        
-        if (allItems.length === 0) {
-            if (currentView === 'grid') parentGrid.innerHTML = isSearchMode ? '<p>找不到符合条件的文件。</p>' : '<p>这个资料夹是空的。</p>';
-            else parentList.innerHTML = isSearchMode ? '<div class="list-item"><p>找不到符合条件的文件。</p></div>' : '<div class="list-item"><p>这个资料夹是空的。</p></div>';
+    function renderFileList(items) {
+        fileList.innerHTML = '';
+        if (items.length === 0) {
+            fileList.innerHTML = '<p class="empty-folder-message">这个资料夹是空的</p>';
             return;
         }
+        items.forEach(item => {
+            const div = document.createElement('div');
+            const itemId = item.type === 'file' ? item.message_id : `folder-${item.id}`;
+            div.className = 'file-item';
+            div.dataset.itemId = itemId;
+            div.dataset.type = item.type;
+            div.dataset.name = item.name;
+            div.draggable = true;
+            
+            const isSelected = selectedItems.has(String(itemId));
+            if(isSelected) div.classList.add('selected');
 
-        allItems.forEach(item => {
-            if (currentView === 'grid') {
-                parentGrid.appendChild(createItemCard(item));
-            } else {
-                parentList.appendChild(createListItem(item));
+            const iconClass = item.type === 'folder' ? 'fa-folder' : getIconForMime(item.mimetype);
+            let thumbnailHtml = `<i class="fas ${iconClass}"></i>`;
+            if (item.type === 'file' && item.thumb_file_id) {
+                 thumbnailHtml = `<img src="/thumbnail/${item.message_id}" alt="thumb" class="thumbnail-img" loading="lazy">`;
             }
+            
+            div.innerHTML = `
+                <div class="item-icon">${thumbnailHtml}</div>
+                <div class="item-name" title="${item.name}">${item.name}</div>
+            `;
+
+            div.addEventListener('click', (e) => handleItemClick(e, div, itemId));
+            div.addEventListener('dblclick', () => handleItemDblClick(item));
+            div.addEventListener('contextmenu', (e) => handleItemContextMenu(e, div, itemId));
+            div.addEventListener('dragstart', (e) => handleDragStart(e, div, itemId));
+            div.addEventListener('dragover', (e) => handleDragOver(e, div, item.type));
+            div.addEventListener('dragleave', (e) => handleDragLeave(e, div));
+            div.addEventListener('drop', (e) => handleDrop(e, div, itemId, item.type));
+
+            fileList.appendChild(div);
         });
-    };
-
-    const createItemCard = (item) => {
-        const card = document.createElement('div');
-        card.className = 'item-card';
-        card.dataset.id = item.id;
-        card.dataset.type = item.type;
-        card.dataset.name = item.name === '/' ? '根目录' : item.name;
-
-        let iconHtml = '';
-        if (item.type === 'file') {
-            const fullFile = currentFolderContents.files.find(f => f.id === item.id) || item;
-            if (fullFile.storage_type === 'telegram' && fullFile.thumb_file_id) {
-                iconHtml = `<img src="/thumbnail/${item.id}" alt="缩图" loading="lazy">`;
-            } else if (fullFile.mimetype && fullFile.mimetype.startsWith('image/')) {
-                 iconHtml = `<img src="/download/proxy/${item.id}" alt="图片" loading="lazy">`;
-            } else if (fullFile.mimetype && fullFile.mimetype.startsWith('video/')) {
-                iconHtml = `<video src="/download/proxy/${item.id}#t=0.1" preload="metadata" muted></video>`;
-            } else {
-                 iconHtml = `<i class="fas ${getFileIconClass(item.mimetype)}"></i>`;
-            }
-        } else { // folder
-            iconHtml = '<i class="fas fa-folder"></i>';
-        }
-
-        card.innerHTML = `<div class="item-icon">${iconHtml}</div><div class="item-info"><h5 title="${item.name}">${item.name === '/' ? '根目录' : item.name}</h5></div>`;
-        if (selectedItems.has(String(item.id))) card.classList.add('selected');
-        return card;
-    };
-
-    const createListItem = (item) => {
-        const itemDiv = document.createElement('div');
-        itemDiv.className = 'list-item';
-        itemDiv.dataset.id = item.id;
-        itemDiv.dataset.type = item.type;
-        itemDiv.dataset.name = item.name === '/' ? '根目录' : item.name;
-
-        const icon = item.type === 'folder' ? 'fa-folder' : getFileIconClass(item.mimetype);
-        const name = item.name === '/' ? '根目录' : item.name;
-        const size = item.type === 'file' && item.size ? formatBytes(item.size) : '—';
-        const date = item.date ? new Date(item.date).toLocaleDateString() : '—';
-
-        itemDiv.innerHTML = `
-            <div class="list-icon"><i class="fas ${icon}"></i></div>
-            <div class="list-name" title="${name}">${name}</div>
-            <div class="list-size">${size}</div>
-            <div class="list-date">${date}</div>
-        `;
-
-        if (selectedItems.has(String(item.id))) {
-            itemDiv.classList.add('selected');
-        }
-
-        return itemDiv;
-    };
-
-    const getFileIconClass = (mimetype) => {
-        if (!mimetype) return 'fa-file';
-        if (mimetype.startsWith('image/')) return 'fa-file-image';
-        if (mimetype.startsWith('video/')) return 'fa-file-video';
-        if (mimetype.startsWith('audio/')) return 'fa-file-audio';
-        if (mimetype.includes('pdf')) return 'fa-file-pdf';
-        if (mimetype.includes('archive') || mimetype.includes('zip')) return 'fa-file-archive';
-        return 'fa-file-alt';
-    };
-    const updateActionBar = () => {
-        if (!actionBar) return;
-        const count = selectedItems.size;
-        selectionCountSpan.textContent = `已选择 ${count} 个项目`;
-
-        if (downloadBtn) downloadBtn.disabled = count === 0;
-
-        const isSingleTextFile = count === 1 && selectedItems.values().next().value.name.endsWith('.txt');
-        if (textEditBtn) {
-            textEditBtn.disabled = !(count === 0 || isSingleTextFile);
-            textEditBtn.innerHTML = count === 0 ? '<i class="fas fa-file-alt"></i>' : '<i class="fas fa-edit"></i>';
-            textEditBtn.title = count === 0 ? '新建文字档' : '编辑文字档';
-        }
-
-        if (previewBtn) previewBtn.disabled = count !== 1 || (count === 1 && selectedItems.values().next().value.type === 'folder');
-
-        if (shareBtn) shareBtn.disabled = count !== 1;
-
-        if (renameBtn) renameBtn.disabled = count !== 1;
-        if (moveBtn) moveBtn.disabled = count === 0 || isSearchMode;
-        if (deleteBtn) deleteBtn.disabled = count === 0;
-
-        actionBar.classList.toggle('visible', true);
-
-        if (!isMultiSelectMode && multiSelectBtn) {
-            multiSelectBtn.classList.remove('active');
-        }
-    };
-    const rerenderSelection = () => {
-        document.querySelectorAll('.item-card, .list-item').forEach(el => {
-            el.classList.toggle('selected', selectedItems.has(el.dataset.id));
-        });
-    };
-    const loadFoldersForSelect = async () => {
-        if (foldersLoaded) return;
-        try {
-            const res = await axios.get('/api/folders');
-            const folders = res.data;
-            const folderMap = new Map(folders.map(f => [f.id, { ...f, children: [] }]));
-            const tree = [];
-            folderMap.forEach(f => {
-                if (f.parent_id && folderMap.has(f.parent_id)) folderMap.get(f.parent_id).children.push(f);
-                else tree.push(f);
-            });
-
-            folderSelect.innerHTML = '';
-            const buildOptions = (node, prefix = '') => {
-                const option = document.createElement('option');
-                option.value = node.id;
-                option.textContent = prefix + (node.name === '/' ? '根目录' : node.name);
-                folderSelect.appendChild(option);
-                node.children.sort((a,b) => a.name.localeCompare(b.name)).forEach(child => buildOptions(child, prefix + '　'));
-            };
-            tree.sort((a,b) => a.name.localeCompare(b.name)).forEach(buildOptions);
-
-            foldersLoaded = true;
-        } catch (error) {
-            console.error('加载资料夹列表失败', error);
-        }
-    };
+    }
     
-    const switchView = (view) => {
-        if (view === 'grid') {
-            itemGrid.style.display = 'grid';
-            itemListView.style.display = 'none';
-            viewSwitchBtn.innerHTML = '<i class="fas fa-list"></i>';
-            currentView = 'grid';
+    function getIconForMime(mime) {
+        if (!mime) return 'fa-file';
+        if (mime.startsWith('image/')) return 'fa-file-image';
+        if (mime.startsWith('video/')) return 'fa-file-video';
+        if (mime.startsWith('audio/')) return 'fa-file-audio';
+        if (mime === 'application/pdf') return 'fa-file-pdf';
+        if (mime.includes('zip') || mime.includes('rar') || mime.includes('7z')) return 'fa-file-archive';
+        if (mime.startsWith('text/')) return 'fa-file-alt';
+        return 'fa-file';
+    }
+    
+    function handleItemClick(e, element, itemId) {
+        e.stopPropagation();
+        hideContextMenu();
+        
+        const wasSelected = selectedItems.has(String(itemId));
+
+        if (!ctrlPressed) {
+            clearSelection();
+        }
+        
+        if (wasSelected && ctrlPressed) {
+            selectedItems.delete(String(itemId));
+            element.classList.remove('selected');
         } else {
-            itemGrid.style.display = 'none';
-            itemListView.style.display = 'block';
-            viewSwitchBtn.innerHTML = '<i class="fas fa-th"></i>';
-            currentView = 'list';
+            selectedItems.add(String(itemId));
+            element.classList.add('selected');
         }
-        renderItems(currentFolderContents.folders, currentFolderContents.files);
-    };
-
-    async function handleFolderConflict(folderName) {
-        return new Promise((resolve) => {
-            folderConflictName.textContent = folderName;
-            folderConflictModal.style.display = 'flex';
-
-            folderConflictOptions.onclick = (e) => {
-                const action = e.target.dataset.action;
-                if (!action) return;
-
-                folderConflictModal.style.display = 'none';
-                folderConflictOptions.onclick = null;
-                resolve(action);
-            };
-        });
+        updateMultiSelectToolbar();
     }
-
-    const checkScreenWidthAndCollapse = () => {
-        if (window.innerWidth <= 768) {
-            if (actionBar && !actionBar.classList.contains('collapsed')) {
-                actionBar.classList.add('collapsed');
-                const icon = collapseBtn.querySelector('i');
-                icon.classList.remove('fa-chevron-down');
-                icon.classList.add('fa-chevron-up');
-                collapseBtn.title = "展开";
-            }
+    
+    function handleItemDblClick(item) {
+        if (item.type === 'folder') {
+            loadFolder(item.id);
         } else {
-            if (actionBar && actionBar.classList.contains('collapsed')) {
-                 actionBar.classList.remove('collapsed');
-                 const icon = collapseBtn.querySelector('i');
-                 icon.classList.remove('fa-chevron-up');
-                 icon.classList.add('fa-chevron-down');
-                 collapseBtn.title = "收起";
-            }
+            previewFile(item);
         }
-    };
-
-    // --- 事件监听 ---
-    if (logoutBtn) {
-        logoutBtn.addEventListener('click', () => {
-            window.location.href = '/logout';
-        });
-    }
-
-    if (changePasswordBtn) {
-        changePasswordBtn.addEventListener('click', async () => {
-            const oldPassword = prompt('请输入您的旧密码：');
-            if (!oldPassword) return;
-
-            const newPassword = prompt('请输入您的新密码 (至少 4 个字元)：');
-            if (!newPassword) return;
-
-            if (newPassword.length < 4) {
-                alert('密码长度至少需要 4 个字元。');
-                return;
-            }
-
-            const confirmPassword = prompt('请再次输入新密码以确认：');
-            if (newPassword !== confirmPassword) {
-                alert('两次输入的密码不一致！');
-                return;
-            }
-
-            try {
-                const res = await axios.post('/api/user/change-password', { oldPassword, newPassword });
-                if (res.data.success) {
-                    alert('密码修改成功！');
-                }
-            } catch (error) {
-                alert('密码修改失败：' + (error.response?.data?.message || '服务器错误'));
-            }
-        });
     }
     
-    if (collapseBtn) {
-        collapseBtn.addEventListener('click', () => {
-            actionBar.classList.toggle('collapsed');
-            const icon = collapseBtn.querySelector('i');
-            if (actionBar.classList.contains('collapsed')) {
-                icon.classList.remove('fa-chevron-down');
-                icon.classList.add('fa-chevron-up');
-                collapseBtn.title = "展开";
-            } else {
-                icon.classList.remove('fa-chevron-up');
-                icon.classList.add('fa-chevron-down');
-                collapseBtn.title = "收起";
-            }
-        });
-    }
-
-    if (fileInput) {
-        fileInput.addEventListener('change', () => {
-            fileListContainer.innerHTML = '';
-            if (fileInput.files.length > 0) {
-                for (const file of fileInput.files) {
-                    const li = document.createElement('li');
-                    li.textContent = file.name;
-                    fileListContainer.appendChild(li);
-                }
-                uploadSubmitBtn.style.display = 'block';
-            }
-        });
-    }
-
-    if(folderInput) {
-        folderInput.addEventListener('change', (e) => {
-            const files = e.target.files;
-            if (files.length > 0) {
-                const folderName = files[0].webkitRelativePath.split('/')[0];
-                fileListContainer.innerHTML = `<li>已选择资料夹: <b>${folderName}</b> (包含 ${files.length} 个文件)</li>`;
-                uploadSubmitBtn.style.display = 'block';
-            }
-        });
-    }
-
-    if (uploadForm) {
-        uploadForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const filesToProcess = folderInput.files.length > 0 ? folderInput.files : fileInput.files;
-            const targetFolderId = folderSelect.value;
-            uploadFiles(Array.from(filesToProcess), targetFolderId, false);
-        });
-    }
-    
-    if (dropZone) {
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            dropZone.addEventListener(eventName, (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-            });
-        });
-
-        ['dragenter', 'dragover'].forEach(eventName => {
-            dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'));
-        });
-
-        ['dragleave', 'drop'].forEach(eventName => {
-            dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'));
-        });
-
-        dropZone.addEventListener('drop', (e) => {
-            const files = Array.from(e.dataTransfer.files);
-             let hasFolder = false;
-            if (e.dataTransfer.items) {
-                for(let i=0; i<e.dataTransfer.items.length; i++) {
-                    const item = e.dataTransfer.items[i];
-                    if (typeof item.webkitGetAsEntry === "function" && item.webkitGetAsEntry().isDirectory) {
-                        hasFolder = true;
-                        break;
-                    }
-                }
-            }
-
-            if (hasFolder) {
-                showNotification('不支援拖拽资料夹上传，请使用上传按钮选择资料夹。', 'error');
-                return;
-            }
-            if (files.length > 0) {
-                uploadFiles(files, currentFolderId, true);
-            }
-        });
-    }
-
-    if (homeLink) {
-        homeLink.addEventListener('click', (e) => {
-            e.preventDefault();
-            window.history.pushState(null, '', '/');
-            window.location.href = '/';
-        });
-    }
-    const handleItemClick = (e) => {
-        const target = e.target.closest('.item-card, .list-item');
-        if (!target) return;
-        const id = target.dataset.id;
-        const type = target.dataset.type;
-        const name = target.dataset.name;
-
-        if (isMultiSelectMode) {
-            if (selectedItems.has(id)) {
-                selectedItems.delete(id);
-            } else {
-                selectedItems.set(id, { type, name });
-            }
-        } else {
-            const isSelected = selectedItems.has(id);
-            selectedItems.clear();
-            if (!isSelected) {
-                selectedItems.set(id, { type, name });
-            }
+    function handleItemContextMenu(e, element, itemId) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!selectedItems.has(String(itemId))) {
+            clearSelection();
+            selectedItems.add(String(itemId));
+            element.classList.add('selected');
         }
-        rerenderSelection();
-        updateActionBar();
-    };
-
-    const handleItemDblClick = (e) => {
-        const target = e.target.closest('.item-card, .list-item');
-        if (target && target.dataset.type === 'folder') {
-            const folderId = parseInt(target.dataset.id, 10);
-            window.history.pushState(null, '', `/folder/${folderId}`);
-            loadFolderContents(folderId);
-        }
-    };
-    
-    if (itemGrid) {
-        itemGrid.addEventListener('click', handleItemClick);
-        itemGrid.addEventListener('dblclick', handleItemDblClick);
-    }
-    if (itemListBody) {
-        itemListBody.addEventListener('click', handleItemClick);
-        itemListBody.addEventListener('dblclick', handleItemDblClick);
-    }
-    
-    if (viewSwitchBtn) {
-        viewSwitchBtn.addEventListener('click', () => {
-            switchView(currentView === 'grid' ? 'list' : 'grid');
-        });
+        updateMultiSelectToolbar();
+        showContextMenu(e.clientX, e.clientY);
     }
 
-    if (breadcrumb) {
-        breadcrumb.addEventListener('click', e => {
-            e.preventDefault();
-            const link = e.target.closest('a');
-            if (link && link.dataset.folderId) {
-                const folderId = parseInt(link.dataset.folderId, 10);
-                window.history.pushState(null, '', `/folder/${folderId}`);
-                loadFolderContents(folderId);
-            }
-        });
-    }
-    window.addEventListener('popstate', () => {
-        if (document.getElementById('itemGrid')) {
-            const pathParts = window.location.pathname.split('/');
-            const lastPart = pathParts.filter(p => p).pop();
-            let folderId = parseInt(lastPart, 10);
-            if (isNaN(folderId)) {
-                folderId = 1; 
-            }
-            loadFolderContents(folderId);
+    fileList.addEventListener('click', () => {
+        clearSelection();
+        hideContextMenu();
+    });
+    document.addEventListener('click', hideContextMenu);
+    
+    window.addEventListener('keydown', e => { ctrlPressed = e.ctrlKey; });
+    window.addEventListener('keyup', e => { ctrlPressed = e.ctrlKey; });
+
+    newFolderBtn.addEventListener('click', createNewFolder);
+    newFileBtn.addEventListener('click', () => createOrEditTextFile('create'));
+    uploadLinkBtn.addEventListener('click', () => document.getElementById('upload-input').click());
+    
+    document.getElementById('upload-input').addEventListener('change', function() {
+        if (this.files.length > 0) {
+            showUploadModal(this.files);
         }
     });
-    if (createFolderBtn) {
-        createFolderBtn.addEventListener('click', async () => {
-            const name = prompt('请输入新资料夹的名称：');
-            if (name && name.trim()) {
-                try {
-                    await axios.post('/api/folder', { name: name.trim(), parentId: currentFolderId });
-                    
-                    foldersLoaded = false; 
 
-                    loadFolderContents(currentFolderId);
-                } catch (error) { alert(error.response?.data?.message || '建立失败'); }
-            }
-        });
+    function clearSelection() {
+        document.querySelectorAll('.file-item.selected').forEach(el => el.classList.remove('selected'));
+        selectedItems.clear();
+        updateMultiSelectToolbar();
     }
-    if (searchForm) {
-        searchForm.addEventListener('submit', (e) => {
-            e.preventDefault();
+
+    function updateMultiSelectToolbar() {
+        if (selectedItems.size > 0) {
+            selectionCount.textContent = `${selectedItems.size} 个项目已选择`;
+            multiSelectToolbar.classList.add('visible');
+        } else {
+            multiSelectToolbar.classList.remove('visible');
+        }
+    }
+    
+    document.getElementById('deselect-btn').addEventListener('click', clearSelection);
+
+    let searchTimeout;
+    searchInput.addEventListener('input', () => {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
             const query = searchInput.value.trim();
-            if (query) executeSearch(query);
-            else if(isSearchMode) loadFolderContents(currentFolderId);
-        });
+            searchClear.style.display = query ? 'block' : 'none';
+            loadSearchResults(query);
+        }, 300);
+    });
+    
+    searchClear.addEventListener('click', () => {
+        searchInput.value = '';
+        searchClear.style.display = 'none';
+        loadFolder(currentFolderId);
+    });
+
+    function handleDragStart(e, element, itemId) {
+        if (!selectedItems.has(String(itemId))) {
+            clearSelection();
+            selectedItems.add(String(itemId));
+            element.classList.add('selected');
+            updateMultiSelectToolbar();
+        }
+        e.dataTransfer.setData('text/plain', JSON.stringify(Array.from(selectedItems)));
+        e.dataTransfer.effectAllowed = 'move';
     }
-    if (multiSelectBtn) {
-        multiSelectBtn.addEventListener('click', () => {
-            isMultiSelectMode = !isMultiSelectMode;
-            multiSelectBtn.classList.toggle('active', isMultiSelectMode);
-            if (!isMultiSelectMode && selectedItems.size > 1) {
-                const lastItem = Array.from(selectedItems.entries()).pop();
-                selectedItems.clear();
-                selectedItems.set(lastItem[0], lastItem[1]);
-                rerenderSelection();
-                updateActionBar();
-            }
-        });
+    
+    function handleDragOver(e, element, itemType) {
+        if (itemType === 'folder') {
+            e.preventDefault();
+            element.classList.add('drag-over');
+        }
     }
-    if (selectAllBtn) {
-        selectAllBtn.addEventListener('click', () => {
-            isMultiSelectMode = true;
-            if (multiSelectBtn) multiSelectBtn.classList.add('active');
-            const allVisibleItems = [...currentFolderContents.folders, ...currentFolderContents.files];
-            const allVisibleIds = allVisibleItems.map(item => String(item.id));
-            const isAllSelected = allVisibleIds.length > 0 && allVisibleIds.every(id => selectedItems.has(id));
-            if (isAllSelected) {
-                selectedItems.clear();
+
+    function handleDragLeave(e, element) {
+        element.classList.remove('drag-over');
+    }
+
+    async function handleDrop(e, element, targetItemId, targetItemType) {
+        e.preventDefault();
+        e.stopPropagation();
+        element.classList.remove('drag-over');
+        if (targetItemType !== 'folder') return;
+        
+        const sourceItemIds = JSON.parse(e.dataTransfer.getData('text/plain'));
+        const targetFolderId = parseInt(targetItemId.replace('folder-', ''), 10);
+
+        if (sourceItemIds.includes(`folder-${targetFolderId}`)) return;
+
+        await processMove(sourceItemIds, targetFolderId);
+    }
+
+    fileList.addEventListener('dragover', e => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+    });
+    
+    fileList.addEventListener('drop', async e => {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        if (e.target === fileList) {
+            if(searchInput.value.trim()) return;
+            
+            // *** 整合：处理从外部拖入的档案 ***
+            const files = e.dataTransfer.files;
+            if (files && files.length > 0) {
+                showUploadModal(files);
             } else {
-                allVisibleItems.forEach(item => selectedItems.set(String(item.id), { type: item.type, name: item.name }));
-            }
-            rerenderSelection();
-            updateActionBar();
-        });
-    }
-    if (showUploadModalBtn) {
-        showUploadModalBtn.addEventListener('click', async () => {
-            await loadFoldersForSelect();
-            folderSelect.value = currentFolderId;
-            uploadNotificationArea.innerHTML = '';
-            uploadForm.reset();
-            fileListContainer.innerHTML = '';
-            uploadSubmitBtn.style.display = 'block';
-            uploadModal.style.display = 'flex';
-        });
-    }
-    if (closeUploadModalBtn) {
-        closeUploadModalBtn.addEventListener('click', () => {
-            uploadModal.style.display = 'none';
-        });
-    }
-    if (previewBtn) {
-        previewBtn.addEventListener('click', async () => {
-            if (previewBtn.disabled) return;
-            const messageId = selectedItems.keys().next().value;
-            const file = currentFolderContents.files.find(f => String(f.id) === messageId);
-            if (!file) return;
-
-            previewModal.style.display = 'flex';
-            modalContent.innerHTML = '正在加载预览...';
-            const downloadUrl = `/download/proxy/${messageId}`;
-
-            if (file.mimetype && file.mimetype.startsWith('image/')) {
-                modalContent.innerHTML = `<img src="${downloadUrl}" alt="图片预览">`;
-            } else if (file.mimetype && file.mimetype.startsWith('video/')) {
-                modalContent.innerHTML = `<video src="${downloadUrl}" controls autoplay></video>`;
-            } else if (file.mimetype && (file.mimetype.startsWith('text/') || file.name.endsWith('.txt'))) {
-                try {
-                    const res = await axios.get(`/file/content/${messageId}`);
-                    const escapedContent = res.data.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-                    modalContent.innerHTML = `<pre><code>${escapedContent}</code></pre>`;
-                } catch {
-                    modalContent.innerHTML = '无法载入文字内容。';
+                const sourceItemIds = JSON.parse(e.dataTransfer.getData('text/plain'));
+                if(currentFolderId && !sourceItemIds.includes(`folder-${currentFolderId}`)) {
+                    await processMove(sourceItemIds, currentFolderId);
                 }
-            } else {
-                modalContent.innerHTML = `
-                    <div class="no-preview">
-                        <i class="fas fa-file"></i>
-                        <p>此文件类型不支持预览。</p>
-                        <a href="${downloadUrl}" class="upload-link-btn" download>下载文件</a>
-                    </div>
-                `;
             }
-        });
-    }
-    if (renameBtn) {
-        renameBtn.addEventListener('click', async () => {
-             if (renameBtn.disabled) return;
-             const [id, item] = selectedItems.entries().next().value;
-             const newName = prompt('请输入新的名称:', item.name);
-             if (newName && newName.trim() && newName !== item.name) {
-                 try {
-                    await axios.post('/rename', {
-                        id: id,
-                        newName: newName.trim(),
-                        type: item.type
-                    });
-                    loadFolderContents(currentFolderId);
-                 } catch (error) {
-                     alert('重命名失败: ' + (error.response?.data?.message || '服务器错误'));
-                 }
-             }
-        });
-    }
-    if (downloadBtn) {
-        downloadBtn.addEventListener('click', async () => {
-            if (downloadBtn.disabled) return;
-            const messageIds = [];
-            const folderIds = [];
-            selectedItems.forEach((item, id) => {
-                if (item.type === 'file') messageIds.push(parseInt(id));
-                else folderIds.push(parseInt(id));
-            });
-            if (messageIds.length === 0 && folderIds.length === 0) return;
-            if (messageIds.length === 1 && folderIds.length === 0) {
-                window.location.href = `/download/proxy/${messageIds[0]}`;
+        }
+    });
+    
+    async function processMove(itemIds, targetFolderId) {
+        try {
+            const conflictRes = await axios.post('/api/check-move-conflict', { itemIds, targetFolderId });
+            const { fileConflicts, folderConflicts, isCrossWebdavMove } = conflictRes.data;
+
+            if (isCrossWebdavMove) {
+                showModal(
+                    '操作不允许',
+                    '系统不支持在不同的 WebDAV 伺服器之间直接移动档案。请在同一个 WebDAV 伺服器内进行操作。',
+                    null,
+                    null,
+                    '知道了'
+                );
+                clearSelection();
                 return;
             }
+
+            if (fileConflicts.length > 0 || folderConflicts.length > 0) {
+                showMergeOverwriteModal(itemIds, targetFolderId, fileConflicts, folderConflicts);
+            } else {
+                // *** 修正：呼叫时不带额外参数 ***
+                await performMove(itemIds, targetFolderId);
+                await loadFolder(currentFolderId);
+            }
+        } catch (error) {
+            console.error("检查移动冲突时出错:", error);
+            alert('移动失败：' + (error.response?.data?.message || '伺服器错误'));
+        }
+    }
+
+    async function performMove(itemIds, targetFolderId, mergeList = [], overwriteList = []) {
+         try {
+            await axios.post('/api/move', { 
+                itemIds: itemIds, 
+                targetFolderId,
+                mergeList,
+                overwriteList
+            });
+        } catch (error) {
+            console.error('移动项目时出错:', error);
+            alert('移动失败：' + (error.response?.data?.message || '伺服器错误'));
+        }
+    }
+    
+    function showContextMenu(x, y) {
+        const isSingleSelection = selectedItems.size === 1;
+        const [firstItemId] = selectedItems;
+        const itemData = isSingleSelection ? fileDataCache[firstItemId] : null;
+
+        document.getElementById('cm-rename').style.display = isSingleSelection ? 'block' : 'none';
+        document.getElementById('cm-preview').style.display = (isSingleSelection && itemData.type === 'file') ? 'block' : 'none';
+        document.getElementById('cm-edit').style.display = (isSingleSelection && itemData.type === 'file' && itemData.name.endsWith('.txt')) ? 'block' : 'none';
+        
+        contextMenu.style.left = `${x}px`;
+        contextMenu.style.top = `${y}px`;
+        contextMenu.style.display = 'block';
+    }
+    
+    function hideContextMenu() {
+        if (contextMenu.style.display === 'block') {
+            contextMenu.style.display = 'none';
+        }
+    }
+    
+    document.getElementById('cm-share').addEventListener('click', showShareModal);
+    document.getElementById('cm-download').addEventListener('click', downloadSelected);
+    document.getElementById('cm-delete').addEventListener('click', deleteSelected);
+    document.getElementById('cm-rename').addEventListener('click', renameSelectedItem);
+    document.getElementById('cm-preview').addEventListener('click', () => previewFile(fileDataCache[selectedItems.values().next().value]));
+    document.getElementById('cm-edit').addEventListener('click', () => createOrEditTextFile('edit', fileDataCache[selectedItems.values().next().value]));
+    document.getElementById('cm-move').addEventListener('click', showMoveModal);
+
+    async function createNewFolder() {
+        const folderName = prompt('请输入新资料夹的名称:');
+        if (folderName) {
+            try {
+                await axios.post('/api/folder', { name: folderName, parentId: currentFolderId });
+                loadFolder(currentFolderId);
+            } catch (error) {
+                alert('建立资料夹失败：' + (error.response?.data?.message || '伺服器错误'));
+            }
+        }
+    }
+
+    async function createOrEditTextFile(mode, item = null) {
+        let fileId = null, fileName = '', content = '';
+
+        if (mode === 'edit' && item) {
+            try {
+                const response = await axios.get(`/file/content/${item.message_id}`);
+                content = response.data;
+                fileName = item.name;
+                fileId = item.message_id;
+            } catch (error) {
+                alert('读取档案内容失败');
+                return;
+            }
+        }
+
+        const bodyDiv = document.createElement('div');
+        const nameLabel = document.createElement('label');
+        nameLabel.textContent = '档案名称:';
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.style.cssText = 'width: 100%; margin-bottom: 10px;';
+        nameInput.value = fileName;
+        if (mode === 'edit') nameInput.disabled = true;
+
+        const contentLabel = document.createElement('label');
+        contentLabel.textContent = '档案内容:';
+        const contentArea = document.createElement('textarea');
+        contentArea.style.cssText = 'width: 100%; height: 300px;';
+        contentArea.value = content;
+        
+        bodyDiv.appendChild(nameLabel);
+        bodyDiv.appendChild(nameInput);
+        bodyDiv.appendChild(contentLabel);
+        bodyDiv.appendChild(contentArea);
+
+        showModal(
+            mode === 'edit' ? '编辑文字档' : '建立新文字档',
+            bodyDiv,
+            '储存',
+            async () => {
+                const newFileName = nameInput.value;
+                const newContent = contentArea.value;
+                if (!newFileName.endsWith('.txt')) {
+                    alert('档名必须以 .txt 结尾。');
+                    return;
+                }
+                try {
+                    await axios.post('/api/text-file', {
+                        mode,
+                        fileId,
+                        folderId: currentFolderId,
+                        fileName: newFileName,
+                        content: newContent
+                    });
+                    loadFolder(currentFolderId);
+                } catch(error) {
+                     alert('储存失败：' + (error.response?.data?.message || '伺服器错误'));
+                }
+            }
+        );
+    }
+
+
+    async function renameSelectedItem() {
+        if (selectedItems.size !== 1) return;
+        const [itemId] = selectedItems;
+        const item = fileDataCache[itemId];
+        const newName = prompt(`请为 "${item.name}" 输入新名称:`, item.name);
+        if (newName && newName !== item.name) {
+            try {
+                await axios.post('/rename', { id: item.type === 'file' ? item.message_id : item.id, newName, type: item.type });
+                loadFolder(currentFolderId);
+            } catch (error) {
+                alert('重命名失败');
+            }
+        }
+    }
+    
+    function showShareModal() {
+        if (selectedItems.size === 0) return;
+        const bodyDiv = document.createElement('div');
+        const label = document.createElement('p');
+        label.textContent = `为 ${selectedItems.size} 个项目建立分享连结，连结将在多少天后过期？`;
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.min = '1';
+        input.value = '7';
+        bodyDiv.appendChild(label);
+        bodyDiv.appendChild(input);
+
+        showModal('建立分享连结', bodyDiv, '建立', async () => {
+            const expiresIn = parseInt(input.value);
+            if (isNaN(expiresIn) || expiresIn <= 0) {
+                alert('请输入有效的天数');
+                return;
+            }
+            try {
+                const links = [];
+                for(const itemId of selectedItems) {
+                    const item = fileDataCache[itemId];
+                     const response = await axios.post('/share', { 
+                        itemId: item.type === 'file' ? item.message_id : item.id,
+                        itemType: item.type,
+                        expiresIn: expiresIn 
+                    });
+                    if (response.data.success) {
+                        links.push(`<b>${item.name}:</b> ${response.data.url}`);
+                    }
+                }
+                showModal('分享连结', links.join('<br>'), null, null, '关闭');
+            } catch(error) {
+                alert('建立分享连结失败');
+            }
+        });
+    }
+
+    async function downloadSelected() {
+        if (selectedItems.size === 0) return;
+        const messageIds = [];
+        const folderIds = [];
+        selectedItems.forEach(id => {
+            const item = fileDataCache[id];
+            if (item.type === 'file') messageIds.push(item.message_id);
+            else folderIds.push(item.id);
+        });
+
+        if (selectedItems.size === 1 && messageIds.length === 1) {
+            window.location.href = `/download/proxy/${messageIds[0]}`;
+        } else {
             try {
                 const response = await axios.post('/api/download-archive', { messageIds, folderIds }, { responseType: 'blob' });
                 const url = window.URL.createObjectURL(new Blob([response.data]));
                 const link = document.createElement('a');
                 link.href = url;
-                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                link.setAttribute('download', `download-${timestamp}.zip`);
+                link.setAttribute('download', 'download.zip');
                 document.body.appendChild(link);
                 link.click();
-                window.URL.revokeObjectURL(url);
-                document.body.removeChild(link);
-            } catch (error) {
-                alert('下载压缩档失败！');
+                link.remove();
+            } catch(error) {
+                alert('打包下载失败');
             }
-        });
-    }
-    if (deleteBtn) {
-        deleteBtn.addEventListener('click', async () => {
-            if (selectedItems.size === 0) return;
-            if (!confirm(`确定要删除这 ${selectedItems.size} 个项目吗？\n注意：删除资料夹将会一并删除其所有内容！`)) return;
-            const filesToDelete = [], foldersToDelete = [];
-            selectedItems.forEach((item, id) => {
-                if (item.type === 'file') filesToDelete.push(parseInt(id));
-                else foldersToDelete.push(parseInt(id));
-            });
-            try {
-                if (filesToDelete.length > 0) await axios.post('/delete-multiple', { messageIds: filesToDelete });
-                for (const folderId of foldersToDelete) await axios.post('/api/folder/delete', { folderId });
-                loadFolderContents(currentFolderId);
-            } catch (error) { alert('删除失败，请重试。'); }
-        });
-    }
-
-    if (moveBtn) {
-        moveBtn.addEventListener('click', async () => {
-            if (selectedItems.size === 0) return;
-            try {
-                const res = await axios.get('/api/folders');
-                const folders = res.data;
-                folderTree.innerHTML = '';
-
-                const folderMap = new Map(folders.map(f => [f.id, { ...f, children: [] }]));
-                const tree = [];
-                folderMap.forEach(f => {
-                    if (f.parent_id && folderMap.has(f.parent_id)) {
-                        folderMap.get(f.parent_id).children.push(f);
-                    } else {
-                        tree.push(f);
-                    }
-                });
-
-                const disabledFolderIds = new Set();
-                selectedItems.forEach((item, id) => {
-                    if (item.type === 'folder') {
-                        const folderId = parseInt(id);
-                        disabledFolderIds.add(folderId);
-                        const findDescendants = (parentId) => {
-                            const parentNode = folderMap.get(parentId);
-                            if (parentNode && parentNode.children) {
-                                parentNode.children.forEach(child => {
-                                    disabledFolderIds.add(child.id);
-                                    findDescendants(child.id);
-                                });
-                            }
-                        };
-                        findDescendants(folderId);
-                    }
-                });
-
-                const buildTree = (node, prefix = '') => {
-                    const isDisabled = disabledFolderIds.has(node.id) || node.id === currentFolderId;
-
-                    const item = document.createElement('div');
-                    item.className = 'folder-item';
-                    item.dataset.folderId = node.id;
-                    item.textContent = prefix + (node.name === '/' ? '根目录' : node.name);
-
-                    if (isDisabled) {
-                        item.style.color = '#ccc';
-                        item.style.cursor = 'not-allowed';
-                    }
-
-                    folderTree.appendChild(item);
-                    node.children.sort((a,b) => a.name.localeCompare(b.name)).forEach(child => buildTree(child, prefix + '　'));
-                };
-                tree.sort((a,b) => a.name.localeCompare(b.name)).forEach(node => buildTree(node));
-
-                moveModal.style.display = 'flex';
-                moveTargetFolderId = null;
-                confirmMoveBtn.disabled = true;
-            } catch { alert('无法获取资料夹列表。'); }
-        });
-    }
-    if (folderTree) {
-        folderTree.addEventListener('click', e => {
-            const target = e.target.closest('.folder-item');
-            if (!target || target.style.cursor === 'not-allowed') return;
-
-            const previouslySelected = folderTree.querySelector('.folder-item.selected');
-            if (previouslySelected) previouslySelected.classList.remove('selected');
-            target.classList.add('selected');
-            moveTargetFolderId = parseInt(target.dataset.folderId);
-            confirmMoveBtn.disabled = false;
-        });
-    }
-
-    async function handleConflict(conflicts, operation = '移动') {
-        let overwriteList = [];
-        let i = 0;
-    
-        function showNextConflict() {
-            return new Promise((resolve) => {
-                if (i >= conflicts.length) {
-                    resolve({ action: 'finish', overwriteList });
-                    return;
-                }
-    
-                conflictFileName.textContent = conflicts[i];
-                conflictModal.style.display = 'flex';
-    
-                conflictOptions.onclick = (e) => {
-                    const action = e.target.dataset.action;
-                    if (!action) return;
-    
-                    conflictModal.style.display = 'none';
-                    conflictOptions.onclick = null; 
-    
-                    if (action === 'overwrite') {
-                        overwriteList.push(conflicts[i]);
-                        i++;
-                        resolve(showNextConflict());
-                    } else if (action === 'overwrite_all') {
-                        overwriteList = [...overwriteList, ...conflicts.slice(i)];
-                        resolve({ action: 'finish', overwriteList });
-                    } else if (action === 'skip') {
-                        i++;
-                        resolve(showNextConflict());
-                    } else if (action === 'skip_all') {
-                         resolve({ action: 'finish', overwriteList: overwriteList });
-                    } else if (action === 'abort') {
-                        resolve({ action: 'abort' });
-                    }
-                };
-            });
         }
-        return showNextConflict();
     }
 
-    if (confirmMoveBtn) {
-        confirmMoveBtn.addEventListener('click', async () => {
-            if (!moveTargetFolderId) return;
-    
-            const itemIds = Array.from(selectedItems.keys()).map(id => parseInt(id, 10));
-            
-            try {
-                const conflictCheckRes = await axios.post('/api/check-move-conflict', {
-                    itemIds: itemIds,
-                    targetFolderId: moveTargetFolderId
-                });
-    
-                const { fileConflicts, folderConflicts } = conflictCheckRes.data;
+    async function deleteSelected() {
+        if (selectedItems.size === 0) return;
+        if (!confirm(`确定要删除选择的 ${selectedItems.size} 个项目吗？此操作无法复原！`)) return;
+        try {
+            const messageIds = [];
+            const folderIds = [];
+            selectedItems.forEach(id => {
+                const item = fileDataCache[id];
+                if (item.type === 'file') messageIds.push(item.message_id);
+                else folderIds.push(item.id);
+            });
+            await axios.post('/delete-multiple', { messageIds, folderIds });
+            loadFolder(currentFolderId);
+        } catch (error) {
+            alert('删除失败');
+        }
+    }
+
+    function showUploadModal(files) {
+        const bodyDiv = document.createElement('div');
+        const fileListDiv = document.createElement('div');
+        fileListDiv.style.maxHeight = '300px';
+        fileListDiv.style.overflowY = 'auto';
+        
+        Array.from(files).forEach(file => {
+            const fileDiv = document.createElement('p');
+            fileDiv.textContent = file.webkitRelativePath || file.name;
+            fileListDiv.appendChild(fileDiv);
+        });
+        
+        bodyDiv.appendChild(fileListDiv);
+
+        showModal(
+            `上传 ${files.length} 个档案`,
+            bodyDiv,
+            '开始上传',
+            async () => {
+                const formData = new FormData();
+                formData.append('folderId', currentFolderId);
                 
-                let fileOverwriteList = [];
-                let folderMergeList = [];
-                const itemsToMove = Array.from(selectedItems.values());
-                let finalItemIds = [...itemIds];
-    
-                if (folderConflicts.length > 0) {
-                    for (const folderName of folderConflicts) {
-                        const action = await handleFolderConflict(folderName);
-                        if (action === 'merge') {
-                            folderMergeList.push(folderName);
-                        } else if (action === 'skip') {
-                            const folderToSkip = itemsToMove.find(item => item.name === folderName && item.type === 'folder');
-                            const idToSkip = Array.from(selectedItems.keys())[itemsToMove.indexOf(folderToSkip)];
-                            finalItemIds = finalItemIds.filter(id => id !== parseInt(idToSkip));
-                        } else { // abort
-                            moveModal.style.display = 'none';
-                            return;
-                        }
-                    }
+                const relativePaths = [];
+                for (let i = 0; i < files.length; i++) {
+                    formData.append('files', files[i]);
+                    relativePaths.push(files[i].webkitRelativePath || files[i].name);
                 }
                 
-                if (fileConflicts.length > 0) {
-                    const result = await handleConflict(fileConflicts, '移动');
-                     if (result.action === 'abort') {
-                        showNotification('移动操作已取消。', 'info');
-                        moveModal.style.display = 'none';
+                const existenceRes = await axios.post('/api/check-existence', { files: relativePaths.map(p => ({ relativePath: p })), folderId: currentFolderId });
+                const existingFiles = existenceRes.data.files.filter(f => f.exists);
+                
+                let overwritePaths = [];
+                if (existingFiles.length > 0) {
+                     if (!confirm(`发现 ${existingFiles.length} 个同名档案。要覆盖它们吗？`)) {
+                        closeModal();
                         return;
                     }
-                    fileOverwriteList = result.overwriteList;
+                    overwritePaths = existingFiles.map(f => f.relativePath);
                 }
-    
-                const finalFileItemsToMove = itemsToMove.filter(item => finalItemIds.includes(parseInt(Array.from(selectedItems.keys())[itemsToMove.indexOf(item)])));
-    
-                finalItemIds = finalFileItemsToMove
-                    .filter(item => {
-                        if (item.type === 'file' && fileConflicts.includes(item.name) && !fileOverwriteList.includes(item.name)) {
-                            return false;
+                formData.append('overwritePaths', JSON.stringify(overwritePaths));
+                formData.append('relativePaths', JSON.stringify(relativePaths));
+
+                try {
+                    const uploadModalBody = document.createElement('div');
+                    const progressBar = document.createElement('progress');
+                    progressBar.style.width = '100%';
+                    progressBar.value = 0;
+                    progressBar.max = 100;
+                    const progressText = document.createElement('p');
+                    progressText.textContent = '正在上传...';
+                    uploadModalBody.appendChild(progressBar);
+                    uploadModalBody.appendChild(progressText);
+                    
+                    showModal('上传中', uploadModalBody, null, null, '后台执行');
+                    
+                    await axios.post('/upload', formData, {
+                        onUploadProgress: progressEvent => {
+                            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+                            progressBar.value = percentCompleted;
+                            progressText.textContent = `正在上传... ${percentCompleted}%`;
                         }
-                        return true;
-                    })
-                    .map(item => Array.from(selectedItems.keys())[itemsToMove.indexOf(item)])
-                    .map(id => parseInt(id));
-    
-                if (finalItemIds.length === 0) {
-                    moveModal.style.display = 'none';
-                    showNotification('没有项目被移动。', 'success');
-                    loadFolderContents(currentFolderId);
-                    return;
+                    });
+
+                    showModal('上传完成', '所有档案已成功上传。', null, null, '关闭');
+                    loadFolder(currentFolderId);
+
+                } catch (error) {
+                    showModal('上传失败', '上传过程中发生错误：' + (error.response?.data?.message || error.message), null, null, '关闭');
                 }
-    
-                await axios.post('/api/move', {
-                    itemIds: finalItemIds,
-                    targetFolderId: moveTargetFolderId,
-                    overwriteList: fileOverwriteList,
-                    mergeList: folderMergeList
-                });
-    
-                moveModal.style.display = 'none';
-                loadFolderContents(currentFolderId);
-                showNotification('项目移动成功！', 'success');
-    
-            } catch (error) {
-                alert('操作失败：' + (error.response?.data?.message || '服务器错误'));
             }
-        });
+        );
     }
     
-
-    if (shareBtn && shareModal) {
-        const shareOptions = document.getElementById('shareOptions');
-        const shareResult = document.getElementById('shareResult');
-        const expiresInSelect = document.getElementById('expiresInSelect');
-        const confirmShareBtn = document.getElementById('confirmShareBtn');
-        const cancelShareBtn = document.getElementById('cancelShareBtn');
-        const shareLinkContainer = document.getElementById('shareLinkContainer');
-        const copyLinkBtn = document.getElementById('copyLinkBtn');
-        const closeShareModalBtn = document.getElementById('closeShareModalBtn');
-
-        shareBtn.addEventListener('click', () => {
-            if (shareBtn.disabled) return;
-            shareOptions.style.display = 'block';
-            shareResult.style.display = 'none';
-            shareModal.style.display = 'flex';
-        });
-        cancelShareBtn.addEventListener('click', () => shareModal.style.display = 'none');
-        closeShareModalBtn.addEventListener('click', () => shareModal.style.display = 'none');
-
-        confirmShareBtn.addEventListener('click', async () => {
-            const [itemId, item] = selectedItems.entries().next().value;
-            const itemType = item.type;
-            const expiresIn = expiresInSelect.value;
-            try {
-                const res = await axios.post('/share', { itemId, itemType, expiresIn });
-                if (res.data.success) {
-                    shareLinkContainer.textContent = res.data.url;
-                    shareOptions.style.display = 'none';
-                    shareResult.style.display = 'block';
-                } else {
-                    alert('创建分享链接失败: ' + res.data.message);
-                }
-            } catch {
-                alert('创建分享链接请求失败');
-            }
-        });
-        copyLinkBtn.addEventListener('click', () => {
-            navigator.clipboard.writeText(shareLinkContainer.textContent).then(() => {
-                copyLinkBtn.textContent = '已复制!';
-                setTimeout(() => { copyLinkBtn.textContent = '复制链接'; }, 2000);
-            });
-        });
-    }
-    if (closeModal) closeModal.onclick = () => {
-        previewModal.style.display = 'none';
-        modalContent.innerHTML = '';
-    };
-    if (cancelMoveBtn) cancelMoveBtn.addEventListener('click', () => moveModal.style.display = 'none');
-
-    if (textEditBtn) {
-        textEditBtn.addEventListener('click', () => {
-            if (textEditBtn.disabled) return;
-
-            const selectionCount = selectedItems.size;
-            if (selectionCount === 0) {
-                window.open(`/editor?mode=create&folderId=${currentFolderId}`, '_blank');
-            } else {
-                const fileId = selectedItems.keys().next().value;
-                window.open(`/editor?mode=edit&fileId=${fileId}`, '_blank');
-            }
-        });
-    }
-
-    window.addEventListener('message', (event) => {
-        if (event.data === 'refresh-files') {
-            loadFolderContents(currentFolderId);
+    function previewFile(item) {
+        let content;
+        if (item.mimetype.startsWith('image/')) {
+            content = `<img src="/download/proxy/${item.message_id}" style="max-width: 100%; max-height: 80vh;">`;
+        } else if (item.mimetype.startsWith('video/')) {
+            content = `<video src="/download/proxy/${item.message_id}" controls style="max-width: 100%;"></video>`;
+        } else if (item.mimetype.startsWith('audio/')) {
+             content = `<audio src="/download/proxy/${item.message_id}" controls></audio>`;
+        } else if (item.mimetype.startsWith('text/') || item.mimetype === 'application/json') {
+             content = `<iframe src="/file/content/${item.message_id}" style="width:100%; height: 70vh; border: 1px solid #ccc;"></iframe>`;
+        } else {
+            content = `<p>不支援预览此档案类型。</p><a href="/download/proxy/${item.message_id}" class="upload-link-btn" download>点击下载</a>`;
         }
-    });
+        showModal(item.name, content, null, null, '关闭');
+    }
     
-    // 初始化
-    if (document.getElementById('itemGrid')) {
-        const pathParts = window.location.pathname.split('/');
-        const lastPart = pathParts.filter(p => p).pop();
-        let folderId = parseInt(lastPart, 10);
-        if (isNaN(folderId)) {
-            folderId = 1; 
-        }
-        loadFolderContents(folderId);
+    async function showMoveModal() {
+        if(selectedItems.size === 0) return;
         
-        checkScreenWidthAndCollapse();
-        window.addEventListener('resize', checkScreenWidthAndCollapse);
+        try {
+            const res = await axios.get('/api/folders');
+            const folders = res.data;
+            const tree = buildTree(folders);
+
+            const bodyDiv = document.createElement('div');
+            bodyDiv.className = 'folder-tree';
+            bodyDiv.innerHTML = renderTree(tree);
+            
+            showModal('移动到...', bodyDiv, '移动到此处', () => {
+                const selectedRadio = document.querySelector('input[name="folder-dest"]:checked');
+                if(selectedRadio) {
+                    const targetFolderId = parseInt(selectedRadio.value);
+                    if(!selectedItems.has(`folder-${targetFolderId}`)) {
+                         processMove(Array.from(selectedItems), targetFolderId);
+                    }
+                }
+            });
+
+            bodyDiv.querySelectorAll('.toggle').forEach(toggle => {
+                toggle.addEventListener('click', function() {
+                    this.parentElement.parentElement.classList.toggle('collapsed');
+                    this.classList.toggle('fa-plus-square');
+                    this.classList.toggle('fa-minus-square');
+                });
+            });
+
+        } catch(error) {
+            alert('加载资料夹列表失败');
+        }
     }
+    
+    function buildTree(folders, parentId = null) {
+        return folders
+            .filter(folder => folder.parent_id === parentId)
+            .map(folder => ({ ...folder, children: buildTree(folders, folder.id) }));
+    }
+    
+    function renderTree(nodes) {
+        let html = '<ul>';
+        for(const node of nodes) {
+            const hasChildren = node.children.length > 0;
+            html += `<li class="${hasChildren ? 'collapsed' : ''}">`;
+            html += '<div class="tree-item">';
+            if(hasChildren) {
+                html += '<i class="fas fa-plus-square toggle"></i>';
+            } else {
+                 html += '<i class="fas fa-square" style="color: transparent;"></i>';
+            }
+            html += `<input type="radio" name="folder-dest" id="dest-${node.id}" value="${node.id}">`;
+            html += `<label for="dest-${node.id}"><i class="fas fa-folder"></i> ${node.name}</label>`;
+            html += '</div>';
+
+            if(hasChildren) {
+                html += renderTree(node.children);
+            }
+            html += '</li>';
+        }
+        html += '</ul>';
+        return html;
+    }
+    
+    function showMergeOverwriteModal(itemIds, targetFolderId, fileConflicts, folderConflicts) {
+        const bodyDiv = document.createElement('div');
+        bodyDiv.innerHTML = '<p>目标资料夹中存在同名项目。请选择如何处理：</p>';
+        const form = document.createElement('form');
+        form.id = 'conflict-form';
+
+        if(folderConflicts.length > 0) {
+            const folderHeader = document.createElement('h4');
+            folderHeader.textContent = '资料夹冲突:';
+            form.appendChild(folderHeader);
+            folderConflicts.forEach(name => {
+                form.innerHTML += `
+                    <div>
+                        <strong>${name}</strong>:
+                        <label><input type="radio" name="folder-${name}" value="merge" checked> 合并</label>
+                        <label><input type="radio" name="folder-${name}" value="overwrite"> 覆盖</label>
+                    </div>
+                `;
+            });
+        }
+        
+        if(fileConflicts.length > 0) {
+            const fileHeader = document.createElement('h4');
+            fileHeader.textContent = '档案冲突:';
+            form.appendChild(fileHeader);
+            fileConflicts.forEach(name => {
+                form.innerHTML += `<p><strong>${name}</strong>: 将被覆盖。</p>`;
+            });
+        }
+        bodyDiv.appendChild(form);
+
+        showModal('解决移动冲突', bodyDiv, '确定', async () => {
+            const mergeList = [];
+            const overwriteFolders = [];
+            
+            folderConflicts.forEach(name => {
+                const choice = document.querySelector(`input[name="folder-${name}"]:checked`).value;
+                if(choice === 'merge') mergeList.push(name);
+                else overwriteFolders.push(name);
+            });
+            
+            const overwriteList = [...fileConflicts, ...overwriteFolders];
+            
+            await performMove(itemIds, targetFolderId, mergeList, overwriteList);
+            await loadFolder(currentFolderId);
+        });
+    }
+
+    const initialFolderId = window.location.pathname.split('/folder/')[1] || 'root';
+    loadFolder(initialFolderId);
+    
+    window.onpopstate = function(event) {
+        if (event.state && event.state.folderId) {
+            loadFolder(event.state.folderId);
+        }
+    };
 });
