@@ -308,7 +308,12 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         if (conflict && overwriteList.includes(fileToMove.fileName)) {
             const storage = require('./storage').getStorage();
             const filesToDelete = await getFilesByIds([conflict.message_id], userId);
-            await storage.remove(filesToDelete, [], userId); 
+            // **最终修复：确保在移动前，先删除物理文件，再删除数据库记录**
+            if (filesToDelete.length > 0) {
+                await storage.remove(filesToDelete, [], userId);
+            }
+            await deleteFilesByIds([conflict.message_id], userId);
+
             await moveItems([itemId], [], targetFolderId, userId);
         } else if (!conflict) {
             await moveItems([itemId], [], targetFolderId, userId);
@@ -561,6 +566,9 @@ function createShareLink(itemId, itemType, expiresIn, userId) {
 }
 
 function deleteFilesByIds(messageIds, userId) {
+    if (!messageIds || messageIds.length === 0) {
+        return Promise.resolve({ success: true, changes: 0 });
+    }
     const placeholders = messageIds.map(() => '?').join(',');
     const sql = `DELETE FROM files WHERE message_id IN (${placeholders}) AND user_id = ?`;
     return new Promise((resolve, reject) => {
