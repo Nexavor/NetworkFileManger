@@ -7,7 +7,6 @@ const path = require('path');
 
 const CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
 
-// *** 新增：用於追蹤輪詢位置的變數 ***
 let lastUsedWebdavIndex = -1;
 
 function readConfig() {
@@ -34,7 +33,7 @@ function writeConfig(config) {
     try {
         fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
         webdavStorage.resetClient();
-        lastUsedWebdavIndex = -1; // 重設索引以避免超出範圍
+        lastUsedWebdavIndex = -1; 
         return true;
     } catch (error) {
         console.error("写入设定档失败:", error);
@@ -44,17 +43,24 @@ function writeConfig(config) {
 
 let config = readConfig();
 
-// *** 新生：取得下一個 WebDAV 設定的輪詢函式 ***
 function getNextWebdavConfig() {
     const currentConfig = readConfig();
     const webdavConfigs = currentConfig.webdav || [];
 
     if (webdavConfigs.length === 0) {
-        return null; // 沒有可用的 WebDAV
+        return null;
     }
 
     lastUsedWebdavIndex = (lastUsedWebdavIndex + 1) % webdavConfigs.length;
     return webdavConfigs[lastUsedWebdavIndex];
+}
+
+// *** 新生：允许外部模组设定最后使用的索引 ***
+function setLastUsedWebdavIndex(index) {
+    const configs = readConfig().webdav || [];
+    if (index >= 0 && index < configs.length) {
+        lastUsedWebdavIndex = index;
+    }
 }
 
 function getStorage() {
@@ -81,5 +87,6 @@ module.exports = {
     setStorageMode,
     readConfig,
     writeConfig,
-    getNextWebdavConfig // *** 新增匯出 ***
+    getNextWebdavConfig,
+    setLastUsedWebdavIndex // *** 新增汇出 ***
 };
