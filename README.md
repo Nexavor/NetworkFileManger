@@ -48,7 +48,7 @@
 
 **使用 `curl` (推荐):**
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Limkon/Netwrok-file-manager/master/install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Nexavor/NetworkFileManger/master/install.sh)"
  ```
 #### 2. 设定环境变数
 安装脚本执行完毕后，您需要在专案根目录下手动建立一个名为 .env 的档案，并填入以下内容：
