@@ -1,7 +1,8 @@
 const { createClient } = require('webdav');
 const data = require('../data.js');
 const db = require('../database.js');
-const crypto = require('crypto'); // 新生
+const crypto = require('crypto');
+const fsp = require('fs').promises; // 新生
 
 let client = null;
 
@@ -42,7 +43,6 @@ async function getFolderPath(folderId, userId) {
 
 async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
     const client = getClient();
-    const fs = require('fs');
     const folderPath = await getFolderPath(folderId, userId);
     const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
     
@@ -53,21 +53,19 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
         } catch (e) {
             // 忽略目录已存在的错误 (405 Method Not Allowed, 501 Not Implemented)
             if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
-                 // 修：抛出更具体的错误信息
                  throw new Error(`建立 WebDAV 目录失败 (${e.response.status}): ${e.message}`);
             }
         }
     }
 
-    const readStream = fs.createReadStream(tempFilePath);
-    const success = await client.putFileContents(remotePath, readStream, { overwrite: true });
+    const fileBuffer = await fsp.readFile(tempFilePath);
+    const success = await client.putFileContents(remotePath, fileBuffer, { overwrite: true });
 
     if (!success) {
         throw new Error('WebDAV putFileContents 操作失败');
     }
 
     const stat = await client.stat(remotePath);
-    // 新生：使用更可靠的方式生成唯一的 messageId，避免冲突
     const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
 
     const dbResult = await data.addFile({
