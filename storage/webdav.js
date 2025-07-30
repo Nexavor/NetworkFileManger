@@ -106,17 +106,26 @@ async function remove(files, userId) {
     
     for (const file of files) {
         try {
-            await client.deleteFile(file.file_id);
-            parentDirs.add(path.dirname(file.file_id).replace(/\\/g, '/'));
+            // Bug 2 修复：确保路径格式统一，避免因路径不一致（例如，有无前导 './'）导致删除失败
+            const remotePath = path.posix.normalize('/' + file.file_id.replace(/^\.?\//, ''));
+            await client.deleteFile(remotePath);
+            parentDirs.add(path.dirname(remotePath).replace(/\\/g, '/'));
         } catch (error) {
-            if (error.response && error.response.status !== 404) {
-                 console.warn(`删除 WebDAV 档案失败: ${file.file_id}`, error.message);
+            if (error.response) {
+                // 404 错误是可接受的，意味着文件可能已被手动删除
+                if (error.response.status !== 404) {
+                     console.error(`删除 WebDAV 档案 [${file.file_id}] 失败，状态码: ${error.response.status}`, error.message);
+                }
+            } else {
+                console.error(`删除 WebDAV 档案 [${file.file_id}] 时发生非 HTTP 错误`, error.message);
             }
         }
     }
     await data.deleteFilesByIds(files.map(f => f.message_id), userId);
 
-    for (const dir of parentDirs) {
+    // Bug 1 修复：对目录按深度（路径长度）进行降序排序，确保总是先尝试删除子目录
+    const sortedDirs = Array.from(parentDirs).sort((a, b) => b.length - a.length);
+    for (const dir of sortedDirs) {
         await removeEmptyDirs(dir);
     }
 
