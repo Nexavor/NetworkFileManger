@@ -265,27 +265,37 @@ app.post('/api/admin/delete-user', requireAdmin, async (req, res) => {
     }
 });
 
+// *** 修改：回传 WebDAV 设定阵列 ***
 app.get('/api/admin/webdav', requireAdmin, (req, res) => {
     const config = storageManager.readConfig();
-    const webdavConfig = config.webdav || {};
-    // 为了前端兼容性，即使只有一个设定，也以阵列形式回传
-    res.json(webdavConfig.url ? [{ id: 1, ...webdavConfig }] : []);
+    res.json(config.webdav || []);
 });
 
+// *** 修改：处理 WebDAV 设定的新增与更新 ***
 app.post('/api/admin/webdav', requireAdmin, (req, res) => {
-    const { url, username, password } = req.body;
+    const { id, url, username, password } = req.body;
     if (!url || !username) { 
-        return res.status(400).json({ success: false, message: '缺少必要参数' });
+        return res.status(400).json({ success: false, message: 'URL 和使用者名称为必填项' });
     }
     const config = storageManager.readConfig();
-    
-    // 简化为只管理一个 WebDAV 配置
-    config.webdav = { url, username };
-    // 只有当提供了新密码时才更新它
-    if (password) {
-        config.webdav.password = password;
+    const webdavConfigs = config.webdav || [];
+
+    if (id) { // 更新
+        const index = webdavConfigs.findIndex(c => c.id == id);
+        if (index > -1) {
+            webdavConfigs[index] = { ...webdavConfigs[index], url, username };
+            if (password) { // 只有在提供新密码时才更新
+                webdavConfigs[index].password = password;
+            }
+        } else {
+             return res.status(404).json({ success: false, message: '找不到要更新的设定' });
+        }
+    } else { // 新增
+        const newId = webdavConfigs.length > 0 ? Math.max(...webdavConfigs.map(c => c.id)) + 1 : 1;
+        webdavConfigs.push({ id: newId, url, username, password });
     }
 
+    config.webdav = webdavConfigs;
     if (storageManager.writeConfig(config)) {
         res.json({ success: true, message: 'WebDAV 设定已储存' });
     } else {
@@ -293,15 +303,25 @@ app.post('/api/admin/webdav', requireAdmin, (req, res) => {
     }
 });
 
+// *** 修改：处理 WebDAV 设定的删除 ***
 app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
+    const idToDelete = parseInt(req.params.id, 10);
     const config = storageManager.readConfig();
-    config.webdav = {}; // 直接清空设定
+    const originalLength = config.webdav ? config.webdav.length : 0;
+    
+    config.webdav = (config.webdav || []).filter(c => c.id !== idToDelete);
+    
+    if (config.webdav.length === originalLength) {
+        return res.status(404).json({ success: false, message: '找不到要删除的设定' });
+    }
+
     if (storageManager.writeConfig(config)) {
         res.json({ success: true, message: 'WebDAV 设定已删除' });
     } else {
         res.status(500).json({ success: false, message: '删除设定失败' });
     }
 });
+
 
 // 使用 multer 中间件的包装器以进行错误处理
 const uploadMiddleware = (req, res, next) => {
@@ -797,7 +817,7 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
                 res.status(404).send('本地档案不存在');
             }
         } else if (fileInfo.storage_type === 'webdav') {
-            const stream = await storage.stream(fileInfo.file_id, req.session.userId);
+            const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
             handleStream(stream, res);
         }
     } catch (error) { 
