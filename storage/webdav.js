@@ -53,7 +53,8 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
         } catch (e) {
             // 忽略目录已存在的错误 (405 Method Not Allowed, 501 Not Implemented)
             if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
-                 throw e;
+                 // 修：抛出更具体的错误信息
+                 throw new Error(`建立 WebDAV 目录失败 (${e.response.status}): ${e.message}`);
             }
         }
     }
