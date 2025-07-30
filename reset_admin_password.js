@@ -6,14 +6,15 @@ const readline = require('readline');
 // --- 配置区 ---
 // 确保这个使用者名称与您 .env 档案中的 ADMIN_USER 一致
 const ADMIN_USERNAME = process.env.ADMIN_USER || 'admin';
-const DB_PATH = path.join(__dirname, 'data', 'database.db');
+// *** 关键修正：将资料库档名从 'database.db' 改为 'file-manager.db' ***
+const DB_PATH = path.join(__dirname, 'data', 'file-manager.db');
 // --- 配置区结束 ---
 
 const db = new sqlite3.Database(DB_PATH, (err) => {
     if (err) {
         console.error('\x1b[31m%s\x1b[0m', `[错误] 无法连接到资料库: ${DB_PATH}`);
         console.error('\x1b[31m%s\x1b[0m', err.message);
-        console.log('请确认您的专案路径是否正确，以及 `data/database.db` 档案是否存在。');
+        console.log('请确认您的专案路径是否正确，以及 `data/file-manager.db` 档案是否存在。');
         return;
     }
 });
