@@ -939,8 +939,14 @@ app.post('/api/scan/webdav', requireAdmin, async (req, res) => {
         res.json({ success: true, log });
 
     } catch (error) {
-        log.push({ message: `扫描 WebDAV 时出错: ${error.message}`, type: 'error' });
-        res.status(500).json({ success: false, message: error.message, log });
+        // 修：新增对 403 错误的判断
+        let errorMessage = error.message;
+        if (error.response && error.response.status === 403) {
+            errorMessage = '存取被拒绝 (403 Forbidden)。这通常意味着您的 WebDAV 伺服器不允许列出目录内容。请检查您帐号的权限，确保它有读取和浏览目录的权限。';
+            log.push({ message: '扫描失败：无法列出远端目录内容。', type: 'error' });
+        }
+        log.push({ message: `详细错误: ${errorMessage}`, type: 'error' });
+        res.status(500).json({ success: false, message: errorMessage, log });
     }
 });
 
