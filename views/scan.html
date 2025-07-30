@@ -28,13 +28,26 @@
         #scan-log .log-error { color: #dc3545; }
         .scan-controls {
             display: flex;
+            flex-direction: column; /* 改为垂直布局 */
             gap: 15px;
-            align-items: center;
-            margin-bottom: 15px;
+            align-items: flex-start; /* 左对齐 */
+        }
+        .scan-controls .user-selection {
+             display: flex;
+             gap: 10px;
+             align-items: center;
+             margin-bottom: 10px;
         }
         .scan-controls select, .scan-controls button {
             padding: 10px;
             font-size: 16px;
+        }
+        /* *** 新增：WebDAV 按钮容器样式 *** */
+        #webdav-scan-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
         }
     </style>
 </head>
@@ -49,16 +62,22 @@
             <h2>扫描控制器</h2>
             <p>选择要将文件汇入的使用者，然后选择储存类型开始扫描。系统会自动跳过数据库中已存在的记录。</p>
             <div class="scan-controls">
-                <label for="user-select">汇入到使用者：</label>
-                <select id="user-select">
-                    <option value="">正在加载使用者...</option>
-                </select>
-                <button id="scan-local-btn" class="upload-link-btn">
-                    <i class="fas fa-hdd"></i> 扫描本地储存
-                </button>
-                <button id="scan-webdav-btn" class="upload-link-btn" style="background-color: #17a2b8;">
-                    <i class="fas fa-server"></i> 扫描 WebDAV
-                </button>
+                <div class="user-selection">
+                    <label for="user-select">汇入到使用者：</label>
+                    <select id="user-select">
+                        <option value="">正在加载使用者...</option>
+                    </select>
+                </div>
+                <div>
+                    <button id="scan-local-btn" class="upload-link-btn">
+                        <i class="fas fa-hdd"></i> 扫描本地储存
+                    </button>
+                </div>
+                <div id="webdav-scan-section">
+                    <h4>WebDAV 储存：</h4>
+                    <div id="webdav-scan-buttons">
+                        </div>
+                </div>
             </div>
         </div>
         
