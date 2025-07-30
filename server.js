@@ -1069,6 +1069,19 @@ app.get('/share/view/folder/:token', async (req, res) => {
     }
 });
 
+function handleStream(stream, res) {
+    stream.on('error', (err) => {
+        console.error('Stream error:', err);
+        if (!res.headersSent) {
+            res.status(500).send('读取文件流时发生错误');
+        }
+    }).on('close', () => {
+        stream.destroy();
+    }).pipe(res).on('finish', () => {
+        stream.destroy();
+    });
+}
+
 app.get('/share/download/file/:token', async (req, res) => {
     try {
         const token = req.params.token;
@@ -1090,7 +1103,7 @@ app.get('/share/download/file/:token', async (req, res) => {
             res.download(fileInfo.file_id, fileInfo.fileName);
         } else if (fileInfo.storage_type === 'webdav') {
             const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
-            stream.pipe(res);
+            handleStream(stream, res);
         }
 
     } catch (error) { res.status(500).send('下载失败'); }
@@ -1142,7 +1155,7 @@ app.get('/share/download/:folderToken/:fileId', async (req, res) => {
             }
         } else if (fileInfo.storage_type === 'webdav') {
             const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
-            stream.pipe(res);
+            handleStream(stream, res);
         }
     } catch (error) {
         res.status(500).send('下载失败');
