@@ -5,17 +5,24 @@ const crypto = require('crypto');
 const fsp = require('fs').promises;
 const path = require('path');
 
+// 这个 client 将只用于写入和删除等非流式操作
 let client = null;
+
+// 封装一个获取配置的函数，避免重复代码
+function getWebdavConfig() {
+    const storageManager = require('./index'); 
+    const config = storageManager.readConfig();
+    const webdavConfig = config.webdav && Array.isArray(config.webdav) ? config.webdav[0] : config.webdav;
+    if (!webdavConfig || !webdavConfig.url) {
+        throw new Error('WebDAV 设定不完整或未设定');
+    }
+    return webdavConfig;
+}
+
 
 function getClient() {
     if (!client) {
-        const storageManager = require('./index'); 
-        const config = storageManager.readConfig();
-        const webdavConfig = config.webdav && Array.isArray(config.webdav) ? config.webdav[0] : config.webdav;
-
-        if (!webdavConfig || !webdavConfig.url) {
-            throw new Error('WebDAV 设定不完整或未设定');
-        }
+        const webdavConfig = getWebdavConfig();
         client = createClient(webdavConfig.url, {
             username: webdavConfig.username,
             password: webdavConfig.password
@@ -107,55 +114,54 @@ async function remove(files, folders, userId) {
     const results = { success: true, errors: [] };
     const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-    // 封装带重试的删除逻辑
-    async function deleteWithRetry(deleteFunc, itemPath, itemName) {
+    async function deleteWithRetry(deleteFunc, itemPath) {
         let retries = 3;
+        let lastError = null;
         while (retries > 0) {
             try {
                 await deleteFunc(itemPath);
                 return; // 成功则直接返回
             } catch (error) {
-                if (error.response && error.response.status === 423 && retries > 1) { // 423 Locked
-                    console.warn(`[${itemPath}] 被锁定，将在 200ms 后重试...`);
-                    await delay(200);
+                lastError = error;
+                if (error.response && error.response.status === 423 && retries > 1) {
+                    console.warn(`[${itemPath}] 被锁定，将在 500ms 后重试... (剩余 ${retries - 1} 次)`);
+                    await delay(500); // 增加延迟时间
                     retries--;
                 } else {
-                    // 对于其他错误或最后一次重试失败，直接抛出
-                    throw error;
+                    throw error; // 对于其他错误或最后一次重试失败，直接抛出
                 }
             }
         }
+        throw lastError; // 确保即使重试失败，最终错误也会被抛出
     }
 
-    // 1. 删除所有文件
     for (const file of files) {
         try {
             const remotePath = path.posix.join('/', file.file_id);
-            await deleteWithRetry(client.deleteFile.bind(client), remotePath, file.fileName);
+            await deleteWithRetry(client.deleteFile.bind(client), remotePath);
             parentDirs.add(path.dirname(remotePath).replace(/\\/g, '/'));
         } catch (error) {
             if (error.response && error.response.status !== 404) {
                  const errorMessage = `删除 WebDAV 档案 [${file.file_id}] 失败: ${error.message}`;
-                 console.warn(errorMessage);
+                 console.error(errorMessage); // 改为 error 级别，因为这是一个关键失败
                  results.errors.push(errorMessage);
                  results.success = false;
             }
         }
     }
 
-    // 2. 删除所有文件夹 (如果提供了文件夹列表)
     if (folders && folders.length > 0) {
         const sortedFolders = folders.sort((a, b) => b.path.length - a.path.length);
         for (const folder of sortedFolders) {
             try {
-                if (folder.path === '/') continue; // 不删除根目录
+                if (folder.path === '/') continue;
                 const remotePath = path.posix.join('/', folder.path);
-                await deleteWithRetry(client.deleteDirectory.bind(client), remotePath, folder.path);
+                await deleteWithRetry(client.deleteDirectory.bind(client), remotePath);
                 parentDirs.add(path.dirname(remotePath).replace(/\\/g, '/'));
             } catch (error) {
                 if (error.response && error.response.status !== 404) {
                      const errorMessage = `删除 WebDAV 目录 [${folder.path}] 失败: ${error.message}`;
-                     console.warn(errorMessage);
+                     console.error(errorMessage);
                      results.errors.push(errorMessage);
                      results.success = false;
                 }
@@ -163,7 +169,6 @@ async function remove(files, folders, userId) {
         }
     }
 
-    // 3. 清理可能产生的空父目录
     const sortedParentDirs = Array.from(parentDirs).sort((a, b) => b.length - a.length);
     for (const dir of sortedParentDirs) {
         await removeEmptyDirs(dir);
@@ -172,10 +177,15 @@ async function remove(files, folders, userId) {
     return results;
 }
 
+// 最终修复：为每个流操作创建一个完全独立的客户端实例
 async function stream(file_id, userId) {
-    const client = getClient();
-    // 每次都创建新的客户端实例，以避免连接复用带来的问题
-    return getClient().createReadStream(path.posix.join('/', file_id));
+    const webdavConfig = getWebdavConfig();
+    const streamClient = createClient(webdavConfig.url, {
+        username: webdavConfig.username,
+        password: webdavConfig.password
+    });
+    // 使用这个一次性的客户端来创建流
+    return streamClient.createReadStream(path.posix.join('/', file_id));
 }
 
 async function getUrl(file_id, userId) {
