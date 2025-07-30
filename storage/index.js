@@ -7,34 +7,34 @@ const path = require('path');
 
 const CONFIG_FILE = path.join(__dirname, '..', 'data', 'config.json');
 
+// *** 新增：用於追蹤輪詢位置的變數 ***
+let lastUsedWebdavIndex = -1;
+
 function readConfig() {
     try {
         if (fs.existsSync(CONFIG_FILE)) {
             const rawData = fs.readFileSync(CONFIG_FILE);
             let config = JSON.parse(rawData);
 
-            // *** 关键修改：确保 webdav 设定始终是一个阵列 ***
-            // 向下相容旧版单物件设定
             if (config.webdav && !Array.isArray(config.webdav)) {
                 config.webdav = [{ id: 1, ...config.webdav }];
-                writeConfig(config); // 将旧格式自动升级并写入
+                writeConfig(config);
             } else if (!config.webdav) {
-                config.webdav = []; // 如果不存在，则初始化为空阵列
+                config.webdav = [];
             }
             return config;
         }
     } catch (error) {
         console.error("读取设定档失败:", error);
     }
-    // 预设值
     return { storageMode: 'telegram', webdav: [] }; 
 }
 
 function writeConfig(config) {
     try {
         fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
-        // 重置 WebDAV 客户端以应用任何可能的变更
         webdavStorage.resetClient();
+        lastUsedWebdavIndex = -1; // 重設索引以避免超出範圍
         return true;
     } catch (error) {
         console.error("写入设定档失败:", error);
@@ -43,6 +43,19 @@ function writeConfig(config) {
 }
 
 let config = readConfig();
+
+// *** 新生：取得下一個 WebDAV 設定的輪詢函式 ***
+function getNextWebdavConfig() {
+    const currentConfig = readConfig();
+    const webdavConfigs = currentConfig.webdav || [];
+
+    if (webdavConfigs.length === 0) {
+        return null; // 沒有可用的 WebDAV
+    }
+
+    lastUsedWebdavIndex = (lastUsedWebdavIndex + 1) % webdavConfigs.length;
+    return webdavConfigs[lastUsedWebdavIndex];
+}
 
 function getStorage() {
     config = readConfig(); 
@@ -67,5 +80,6 @@ module.exports = {
     getStorage,
     setStorageMode,
     readConfig,
-    writeConfig
+    writeConfig,
+    getNextWebdavConfig // *** 新增匯出 ***
 };
