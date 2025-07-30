@@ -98,7 +98,7 @@ async function remove(files, folders, userId) {
     files.forEach(file => {
         let p = file.file_id.startsWith('/') ? file.file_id : '/' + file.file_id;
         allItemsToDelete.push({ 
-            path: path.posix.normalize(p), // 档案路径不应有结尾斜杠
+            path: path.posix.normalize(p), 
             type: 'file' 
         });
     });
@@ -106,7 +106,6 @@ async function remove(files, folders, userId) {
     folders.forEach(folder => {
         if (folder.path && folder.path !== '/') {
             let p = folder.path.startsWith('/') ? folder.path : '/' + folder.path;
-            // **最终修复**：确保目录路径以斜杠结尾
             if (!p.endsWith('/')) {
                 p += '/';
             }
@@ -120,13 +119,9 @@ async function remove(files, folders, userId) {
     // 3. 依次执行删除
     for (const item of allItemsToDelete) {
         try {
-            if (item.type === 'file') {
-                await client.deleteFile(item.path);
-            } else {
-                await client.deleteDirectory(item.path);
-            }
+            // **最终勘误**：无论是档案还是资料夹，都使用 deleteFile 函数
+            await client.deleteFile(item.path);
         } catch (error) {
-            // 忽略 404 错误 (意味着已经不存在了)，但记录所有其他失败
             if (!(error.response && error.response.status === 404)) {
                 const errorMessage = `删除 WebDAV ${item.type} [${item.path}] 失败: ${error.message}`;
                 console.error(errorMessage);
@@ -146,7 +141,6 @@ async function stream(file_id, userId) {
         username: webdavConfig.username,
         password: webdavConfig.password
     });
-    // 使用这个一次性的客户端来创建流
     return streamClient.createReadStream(path.posix.join('/', file_id));
 }
 
