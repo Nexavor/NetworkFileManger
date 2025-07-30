@@ -4,11 +4,10 @@ const path = require('path');
 const readline = require('readline');
 
 // --- 配置区 ---
-// 一般情况下，您的管理员使用者名称是第一个建立的帐号
-const ADMIN_USERNAME = 'admin'; // 请确认这是您的管理员使用者名称，如果不是，请修改
+// 确保这个使用者名称与您 .env 档案中的 ADMIN_USER 一致
+const ADMIN_USERNAME = process.env.ADMIN_USER || 'admin';
 const DB_PATH = path.join(__dirname, 'data', 'database.db');
 // --- 配置区结束 ---
-
 
 const db = new sqlite3.Database(DB_PATH, (err) => {
     if (err) {
@@ -28,11 +27,31 @@ function askQuestion(query) {
     return new Promise(resolve => rl.question(query, resolve));
 }
 
-async function resetPassword() {
-    console.log('\x1b[33m%s\x1b[0m', '--- 管理员密码重置工具 ---');
-    console.log(`准备为使用者 [\x1b[36m${ADMIN_USERNAME}\x1b[0m] 重设密码。`);
+async function findUser(username) {
+    return new Promise((resolve, reject) => {
+        db.get("SELECT * FROM users WHERE username = ?", [username], (err, row) => {
+            if (err) return reject(err);
+            resolve(row);
+        });
+    });
+}
+
+async function createRootFolder(userId) {
+    return new Promise((resolve, reject) => {
+        const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
+        db.run(sql, ['/', null, userId], function (err) {
+            if (err) return reject(err);
+            console.log(`已为新管理员 (ID: ${userId}) 建立根目录。`);
+            resolve();
+        });
+    });
+}
+
+
+async function resetOrCreateAdmin() {
+    console.log('\x1b[33m%s\x1b[0m', '--- 管理员密码重设与建立工具 ---');
     
-    const newPassword = await askQuestion('请输入新密码 (输入后会直接显示，请确保环境安全): ');
+    const newPassword = await askQuestion(`请输入管理员 [${ADMIN_USERNAME}] 的新密码 (最少4个字元): `);
     if (!newPassword || newPassword.length < 4) {
         console.error('\x1b[31m%s\x1b[0m', '密码长度不可少于 4 个字元。操作已取消。');
         rl.close();
@@ -46,29 +65,49 @@ async function resetPassword() {
         const hashedPassword = await bcrypt.hash(newPassword, salt);
         console.log('杂凑值已产生。');
 
-        const sql = `UPDATE users SET password = ? WHERE username = ?`;
+        const existingUser = await findUser(ADMIN_USERNAME);
 
-        db.run(sql, [hashedPassword, ADMIN_USERNAME], function(err) {
-            if (err) {
-                console.error('\x1b[31m%s\x1b[0m', '更新密码时发生资料库错误:', err.message);
-            } else {
-                if (this.changes === 0) {
-                    console.error('\x1b[31m%s\x1b[0m', `错误：在资料库中找不到使用者 "${ADMIN_USERNAME}"。`);
-                    console.log('请检查您在脚本中设定的 ADMIN_USERNAME 是否正确。');
+        if (existingUser) {
+            // --- 使用者存在，更新密码 ---
+            const sql = `UPDATE users SET password = ?, is_admin = 1 WHERE id = ?`;
+            db.run(sql, [hashedPassword, existingUser.id], function(err) {
+                if (err) {
+                    console.error('\x1b[31m%s\x1b[0m', '更新密码时发生资料库错误:', err.message);
                 } else {
                     console.log('\x1b[32m%s\x1b[0m', `✅ 成功！使用者 "${ADMIN_USERNAME}" 的密码已被重设。`);
-                    console.log('现在您可以重新启动主程式 (node server.js) 并使用新密码登入。');
+                    console.log('现在您可以重新启动主程式并使用新密码登入。');
                 }
-            }
-            rl.close();
-            db.close();
-        });
+                rl.close();
+                db.close();
+            });
+        } else {
+            // --- 使用者不存在，建立新管理员 ---
+            const insertSql = `INSERT INTO users (username, password, is_admin) VALUES (?, ?, 1)`;
+            db.run(insertSql, [ADMIN_USERNAME, hashedPassword], async function(err) {
+                if (err) {
+                    console.error('\x1b[31m%s\x1b[0m', '建立新管理员时发生资料库错误:', err.message);
+                    rl.close();
+                    db.close();
+                    return;
+                }
+                const newUserId = this.lastID;
+                console.log(`成功建立管理员帐号 "${ADMIN_USERNAME}" (ID: ${newUserId})。`);
+                
+                // 为新管理员建立根目录
+                await createRootFolder(newUserId);
+                
+                console.log('\x1b[32m%s\x1b[0m', `✅ 成功！管理员帐号已建立并设定好密码。`);
+                console.log('现在您可以重新启动主程式并使用新密码登入。');
+                rl.close();
+                db.close();
+            });
+        }
 
     } catch (error) {
-        console.error('\x1b[31m%s\x1b[0m', '重设密码过程中发生未知错误:', error);
+        console.error('\x1b[31m%s\x1b[0m', '处理过程中发生未知错误:', error);
         rl.close();
         db.close();
     }
 }
 
-resetPassword();
+resetOrCreateAdmin();
