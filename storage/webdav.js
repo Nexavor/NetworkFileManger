@@ -100,17 +100,38 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
     return { success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId };
 }
 
+
 async function remove(files, folders, userId) {
     const client = getClient();
     const parentDirs = new Set();
     const results = { success: true, errors: [] };
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    // 封装带重试的删除逻辑
+    async function deleteWithRetry(deleteFunc, itemPath, itemName) {
+        let retries = 3;
+        while (retries > 0) {
+            try {
+                await deleteFunc(itemPath);
+                return; // 成功则直接返回
+            } catch (error) {
+                if (error.response && error.response.status === 423 && retries > 1) { // 423 Locked
+                    console.warn(`[${itemPath}] 被锁定，将在 200ms 后重试...`);
+                    await delay(200);
+                    retries--;
+                } else {
+                    // 对于其他错误或最后一次重试失败，直接抛出
+                    throw error;
+                }
+            }
+        }
+    }
 
     // 1. 删除所有文件
     for (const file of files) {
         try {
-            // Bug 2 修复：确保路径格式统一且以斜杠开头
             const remotePath = path.posix.join('/', file.file_id);
-            await client.deleteFile(remotePath);
+            await deleteWithRetry(client.deleteFile.bind(client), remotePath, file.fileName);
             parentDirs.add(path.dirname(remotePath).replace(/\\/g, '/'));
         } catch (error) {
             if (error.response && error.response.status !== 404) {
@@ -124,13 +145,12 @@ async function remove(files, folders, userId) {
 
     // 2. 删除所有文件夹 (如果提供了文件夹列表)
     if (folders && folders.length > 0) {
-        // Bug 1 修复：对目录按深度（路径长度）进行降序排序，确保总是先删除子目录
         const sortedFolders = folders.sort((a, b) => b.path.length - a.path.length);
         for (const folder of sortedFolders) {
             try {
                 if (folder.path === '/') continue; // 不删除根目录
                 const remotePath = path.posix.join('/', folder.path);
-                await client.deleteDirectory(remotePath);
+                await deleteWithRetry(client.deleteDirectory.bind(client), remotePath, folder.path);
                 parentDirs.add(path.dirname(remotePath).replace(/\\/g, '/'));
             } catch (error) {
                 if (error.response && error.response.status !== 404) {
@@ -154,12 +174,13 @@ async function remove(files, folders, userId) {
 
 async function stream(file_id, userId) {
     const client = getClient();
-    return client.createReadStream(file_id);
+    // 每次都创建新的客户端实例，以避免连接复用带来的问题
+    return getClient().createReadStream(path.posix.join('/', file_id));
 }
 
 async function getUrl(file_id, userId) {
     const client = getClient();
-    return client.getFileDownloadLink(file_id);
+    return client.getFileDownloadLink(path.posix.join('/', file_id));
 }
 
 module.exports = { upload, remove, getUrl, stream, resetClient, type: 'webdav' };
