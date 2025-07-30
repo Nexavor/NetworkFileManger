@@ -2,7 +2,8 @@ const { createClient } = require('webdav');
 const data = require('../data.js');
 const db = require('../database.js');
 const crypto = require('crypto');
-const fsp = require('fs').promises; // 新生
+const fsp = require('fs').promises;
+const path = require('path');
 
 let client = null;
 
@@ -10,20 +11,41 @@ function getClient() {
     if (!client) {
         const storageManager = require('./index'); 
         const config = storageManager.readConfig();
-        if (!config.webdav || !config.webdav.url) {
+        const webdavConfig = config.webdav && Array.isArray(config.webdav) ? config.webdav[0] : config.webdav;
+
+        if (!webdavConfig || !webdavConfig.url) {
             throw new Error('WebDAV 设定不完整或未设定');
         }
-        client = createClient(config.webdav.url, {
-            username: config.webdav.username,
-            password: config.webdav.password
+        client = createClient(webdavConfig.url, {
+            username: webdavConfig.username,
+            password: webdavConfig.password
         });
     }
     return client;
 }
 
-// 当 WebDAV 设定更新时，需要重置客户端
 function resetClient() {
     client = null;
+}
+
+async function removeEmptyDirs(directoryPath) {
+    const client = getClient();
+    try {
+        let currentPath = directoryPath;
+        while (currentPath && currentPath !== '/') {
+            const contents = await client.getDirectoryContents(currentPath);
+            if (contents.length === 0) {
+                await client.deleteDirectory(currentPath);
+                currentPath = path.dirname(currentPath).replace(/\\/g, '/');
+            } else {
+                break;
+            }
+        }
+    } catch (error) {
+         if (error.response && error.response.status !== 404) {
+            console.warn(`清理 WebDAV 空目录失败: ${directoryPath}`, error.message);
+         }
+    }
 }
 
 async function getFolderPath(folderId, userId) {
@@ -46,12 +68,10 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
     const folderPath = await getFolderPath(folderId, userId);
     const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
     
-    // 确保远端目录存在
     if (folderPath && folderPath !== "/") {
         try {
             await client.createDirectory(folderPath, { recursive: true });
         } catch (e) {
-            // 忽略目录已存在的错误 (405 Method Not Allowed, 501 Not Implemented)
             if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
                  throw new Error(`建立 WebDAV 目录失败 (${e.response.status}): ${e.message}`);
             }
@@ -82,17 +102,24 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
 
 async function remove(files, userId) {
     const client = getClient();
+    const parentDirs = new Set();
+    
     for (const file of files) {
         try {
             await client.deleteFile(file.file_id);
+            parentDirs.add(path.dirname(file.file_id).replace(/\\/g, '/'));
         } catch (error) {
-            // 如果档案在远端不存在 (404)，也视为成功删除
             if (error.response && error.response.status !== 404) {
                  console.warn(`删除 WebDAV 档案失败: ${file.file_id}`, error.message);
             }
         }
     }
     await data.deleteFilesByIds(files.map(f => f.message_id), userId);
+
+    for (const dir of parentDirs) {
+        await removeEmptyDirs(dir);
+    }
+
     return { success: true };
 }
 
