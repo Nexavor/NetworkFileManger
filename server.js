@@ -267,7 +267,9 @@ app.post('/api/admin/delete-user', requireAdmin, async (req, res) => {
 
 app.get('/api/admin/webdav', requireAdmin, (req, res) => {
     const config = storageManager.readConfig();
-    res.json(config.webdav || {});
+    const webdavConfig = config.webdav || {};
+    // 为了前端兼容性，即使只有一个设定，也以阵列形式回传
+    res.json(webdavConfig.url ? [{ id: 1, ...webdavConfig }] : []);
 });
 
 app.post('/api/admin/webdav', requireAdmin, (req, res) => {
@@ -276,12 +278,28 @@ app.post('/api/admin/webdav', requireAdmin, (req, res) => {
         return res.status(400).json({ success: false, message: '缺少必要参数' });
     }
     const config = storageManager.readConfig();
-    config.webdav = { url, username, password: password || '' };
+    
+    // 简化为只管理一个 WebDAV 配置
+    config.webdav = { url, username };
+    // 只有当提供了新密码时才更新它
+    if (password) {
+        config.webdav.password = password;
+    }
 
     if (storageManager.writeConfig(config)) {
         res.json({ success: true, message: 'WebDAV 设定已储存' });
     } else {
         res.status(500).json({ success: false, message: '写入设定失败' });
+    }
+});
+
+app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
+    const config = storageManager.readConfig();
+    config.webdav = {}; // 直接清空设定
+    if (storageManager.writeConfig(config)) {
+        res.json({ success: true, message: 'WebDAV 设定已删除' });
+    } else {
+        res.status(500).json({ success: false, message: '删除设定失败' });
     }
 });
 
@@ -687,7 +705,7 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
 
         const storage = storageManager.getStorage();
         
-        if (req.headers.range) { // 支援部分内容请求 (影片拖动)
+        if (req.headers.range) { 
             res.setHeader('Accept-Ranges', 'bytes');
         } else {
             res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
