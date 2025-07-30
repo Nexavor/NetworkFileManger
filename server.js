@@ -367,7 +367,11 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                     const existingFile = await data.findFileInFolder(fileName, targetFolderId, userId);
                     if (existingFile) {
                         const filesToDelete = await data.getFilesByIds([existingFile.message_id], userId);
-                        await storage.remove(filesToDelete, [], userId);
+                        // **修复：先物理删除，再数据库删除**
+                        if (filesToDelete.length > 0) {
+                           await storage.remove(filesToDelete, [], userId); 
+                        }
+                        await data.deleteFilesByIds([existingFile.message_id], userId);
                     }
                 } else {
                      const conflict = await data.findFileInFolder(fileName, targetFolderId, userId);
@@ -419,7 +423,10 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         if (mode === 'edit' && fileId) {
              const filesToDelete = await data.getFilesByIds([fileId], userId);
             if (filesToDelete.length > 0) {
+                // **修复：同样修复编辑逻辑**
                 await storage.remove(filesToDelete, [], userId);
+                await data.deleteFilesByIds([fileId], userId);
+
                 result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, filesToDelete[0].folder_id);
             } else {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
@@ -633,16 +640,10 @@ async function unifiedDeleteHandler(req, res) {
         const storage = storageManager.getStorage();
         let filesForStorage = [];
         let foldersForStorage = [];
-        let dbFileIdsToDelete = [...messageIds];
-        let dbFolderIdsToDelete = [...folderIds];
         
         // 1. 收集所有要删除的项目信息
         if (folderIds.length > 0) {
             for (const folderId of folderIds) {
-                const folderInfo = await data.getFolderPath(folderId, userId);
-                if (!folderInfo || folderInfo.length === 0 || (folderInfo.length === 1 && folderInfo[0].id === folderId)) {
-                    continue; // 跳过不存在或根目录
-                }
                 const deletionData = await data.getFolderDeletionData(folderId, userId);
                 filesForStorage.push(...deletionData.files);
                 foldersForStorage.push(...deletionData.folders);
@@ -658,12 +659,13 @@ async function unifiedDeleteHandler(req, res) {
         const storageResult = await storage.remove(filesForStorage, foldersForStorage, userId);
         
         if (!storageResult.success) {
-            // 如果物理删除部分失败，仍继续尝试删除数据库中成功删除的部分
             console.warn("部分档案在储存端删除失败:", storageResult.errors);
         }
 
         // 3. 执行数据库删除
-        await data.executeDeletion(dbFileIdsToDelete, dbFolderIdsToDelete, userId);
+        const allFileIdsToDelete = filesForStorage.map(f => f.message_id);
+        const allFolderIdsToDelete = foldersForStorage.map(f => f.id);
+        await data.executeDeletion(allFileIdsToDelete, allFolderIdsToDelete, userId);
 
         res.json({ success: true, message: '删除操作已完成。' });
 
@@ -763,7 +765,7 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
             }
         } else if (fileInfo.storage_type === 'webdav') {
             const stream = await storage.stream(fileInfo.file_id, req.session.userId);
-            stream.pipe(res);
+            handleStream(stream, res);
         }
 
     } catch (error) { res.status(500).send('下载代理失败'); }
@@ -796,13 +798,7 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
             }
         } else if (fileInfo.storage_type === 'webdav') {
             const stream = await storage.stream(fileInfo.file_id, req.session.userId);
-            stream.on('error', (err) => {
-                console.error('WebDAV stream error:', err);
-                if (!res.headersSent) {
-                    res.status(500).send('读取WebDAV文件流时发生错误');
-                }
-            });
-            stream.pipe(res);
+            handleStream(stream, res);
         }
     } catch (error) { 
         console.error("File content error:", error);
@@ -916,7 +912,6 @@ app.post('/api/scan/local', requireAdmin, async (req, res) => {
             return res.json({ success: true, log });
         }
         
-        // 修：直接从数据库获取根目录ID，而不是用 findFolderByPath
         const rootFolder = await data.getRootFolder(userId);
         if (!rootFolder) {
             throw new Error(`找不到使用者 ${userId} 的根目录`);
@@ -929,7 +924,6 @@ app.post('/api/scan/local', requireAdmin, async (req, res) => {
                 const relativePath = path.relative(userUploadDir, fullPath).replace(/\\/g, '/');
 
                 if (entry.isDirectory()) {
-                    // 修：使用 findOrCreateFolderByPath 来处理子目录
                     const newParentFolderId = await data.findOrCreateFolderByPath(relativePath, userId);
                     log.push({ message: `进入目录: ${relativePath}`, type: 'info' });
                     await scanDirectory(fullPath, newParentFolderId);
@@ -1009,7 +1003,6 @@ app.post('/api/scan/webdav', requireAdmin, async (req, res) => {
         res.json({ success: true, log });
 
     } catch (error) {
-        // 修：新增对 403 错误的判断
         let errorMessage = error.message;
         if (error.response && error.response.status === 403) {
             errorMessage = '存取被拒绝 (403 Forbidden)。这通常意味着您的 WebDAV 伺服器不允许列出目录内容。请检查您帐号的权限，确保它有读取和浏览目录的权限。';
