@@ -5,10 +5,9 @@ const crypto = require('crypto');
 const fsp = require('fs').promises;
 const path = require('path');
 
-let clientCache = new Map();
-
-// *** 关键修改：再次引入 storageManager 以便呼叫新函式 ***
 const storageManager = require('./index'); 
+
+let clientCache = new Map();
 
 function getWebdavConfigs() {
     const config = storageManager.readConfig();
@@ -41,7 +40,7 @@ function parseFileId(fileId) {
         }
         throw new Error('无法解析 file_id 且没有预设的 WebDAV 设定');
     }
-    const configId = parts.shift();
+    const configId = parseInt(parts.shift(), 10);
     const remotePath = parts.join(':');
     return { configId, remotePath };
 }
@@ -65,26 +64,23 @@ async function getFolderPath(folderId, userId) {
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
-// *** 核心修改：实作智慧型轮询和自动重试 ***
 async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
-    const allConfigs = getWebdavConfigs();
-    if (allConfigs.length === 0) {
-        throw new Error('尚未设定任何 WebDAV 伺服器，无法上传。');
+    // *** 修改：只从“可用”的伺服器中获取列表 ***
+    const availableConfigs = storageManager.getAvailableWebdavConfigs();
+    if (availableConfigs.length === 0) {
+        throw new Error('所有 WebDAV 伺服器均被标记为已满或未设定，无法上传。');
     }
 
-    // 取得轮询的起始点
     const startingConfig = storageManager.getNextWebdavConfig();
     if (!startingConfig) {
-      throw new Error('无法决定要上传到哪个 WebDAV 伺服器。');
+      throw new Error('无法从可用列表中决定要上传到哪个 WebDAV 伺服器。');
     }
-    const startIndex = allConfigs.findIndex(c => c.id === startingConfig.id);
-
+    const startIndex = availableConfigs.findIndex(c => c.id === startingConfig.id);
     let lastError = null;
 
-    // 从起始点开始，循环尝试所有伺服器
-    for (let i = 0; i < allConfigs.length; i++) {
-        const currentIndex = (startIndex + i) % allConfigs.length;
-        const targetConfig = allConfigs[currentIndex];
+    for (let i = 0; i < availableConfigs.length; i++) {
+        const currentIndex = (startIndex + i) % availableConfigs.length;
+        const targetConfig = availableConfigs[currentIndex];
         const targetConfigId = targetConfig.id;
 
         console.log(`[WebDAV] 尝试上传档案 "${fileName}" 到伺服器: ${targetConfig.url}`);
@@ -108,7 +104,6 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
             const success = await client.putFileContents(remotePath, fileBuffer, { overwrite: true });
 
             if (!success) {
-                // 有些伺服器可能不回传错误但操作失败
                 throw new Error('WebDAV putFileContents 操作返回 false。');
             }
 
@@ -122,32 +117,27 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
             }, folderId, userId, 'webdav');
             
             console.log(`[WebDAV] 成功上传到伺服器 ID: ${targetConfigId}`);
-            
-            // *** 关键：上传成功后，更新轮询索引 ***
             storageManager.setLastUsedWebdavIndex(currentIndex);
-
             return { success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId };
 
         } catch (error) {
             lastError = error;
-            // *** 关键：检查是否为容量不足错误 (HTTP 507) ***
             if (error.response && error.response.status === 507) {
-                console.warn(`[WebDAV] 伺服器 ${targetConfig.url} 容量已满 (507)。正在自动尝试下一个...`);
-                continue; // 继续循环，尝试下一个伺服器
+                console.warn(`[WebDAV] 伺服器 ${targetConfig.url} 容量已满 (507)。`);
+                // *** 关键修改：标记此伺服器为已满 ***
+                storageManager.markWebdavAsFull(targetConfigId);
+                continue; 
             } else {
-                // 对于其他错误（如认证失败、网路问题），应立即失败并抛出
                 console.error(`[WebDAV] 上传到 ${targetConfig.url} 时发生严重错误，已中断操作。`, error.message);
                 throw error;
             }
         }
     }
 
-    // 如果循环跑完都没有成功，表示所有伺服器都满了或不可用
-    console.error("[WebDAV] 所有伺服器均上传失败。");
-    throw new Error(`所有 WebDAV 伺服器均不可用或已满。最后记录的错误: ${lastError.message}`);
+    console.error("[WebDAV] 所有可用伺服器均上传失败。");
+    throw new Error(`所有可用的 WebDAV 伺服器均不可用或已满。最后记录的错误: ${lastError.message}`);
 }
 
-// remove, stream, getUrl 等函式维持不变
 async function remove(files, folders, userId) {
     const results = { success: true, errors: [] };
     const allItemsToDelete = [];
@@ -167,19 +157,26 @@ async function remove(files, folders, userId) {
         try {
             const client = getClient(item.configId);
             await client.deleteFile(item.path);
+            
+            // *** 关键修改：成功删除后，移除“已满”标记 ***
+            storageManager.unmarkWebdavAsFull(item.configId);
+
         } catch (error) {
             if (!(error.response && error.response.status === 404)) {
                 const errorMessage = `删除 WebDAV ${item.type} [${item.path}] 失败: ${error.message}`;
                 console.error(errorMessage);
                 results.errors.push(errorMessage);
                 results.success = false;
+            } else {
+                // 如果档案本来就不存在，也视同“释放空间”，可以重置标记
+                 storageManager.unmarkWebdavAsFull(item.configId);
             }
         }
     }
-
     return results;
 }
 
+// stream, getUrl 等函式维持不变
 async function stream(file_id, userId) {
     const { configId, remotePath } = parseFileId(file_id);
     const webdavConfig = getWebdavConfigs().find(c => c.id == configId);
