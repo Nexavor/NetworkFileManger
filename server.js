@@ -367,7 +367,7 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                     const existingFile = await data.findFileInFolder(fileName, targetFolderId, userId);
                     if (existingFile) {
                         const filesToDelete = await data.getFilesByIds([existingFile.message_id], userId);
-                        await storage.remove(filesToDelete, userId);
+                        await storage.remove(filesToDelete, [], userId);
                     }
                 } else {
                      const conflict = await data.findFileInFolder(fileName, targetFolderId, userId);
@@ -419,7 +419,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         if (mode === 'edit' && fileId) {
              const filesToDelete = await data.getFilesByIds([fileId], userId);
             if (filesToDelete.length > 0) {
-                await storage.remove(filesToDelete, userId);
+                await storage.remove(filesToDelete, [], userId);
                 result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, filesToDelete[0].folder_id);
             } else {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
@@ -620,27 +620,69 @@ app.post('/api/move', requireLogin, async (req, res) => {
     }
 });
 
-
-app.post('/api/folder/delete', requireLogin, async (req, res) => {
-    const { folderId } = req.body;
+// 统一的删除处理器
+async function unifiedDeleteHandler(req, res) {
+    const { messageIds = [], folderIds = [] } = req.body;
     const userId = req.session.userId;
-    const storage = storageManager.getStorage();
-    if (!folderId) return res.status(400).json({ success: false, message: '无效的资料夹 ID。' });
     
-    const folderInfo = await data.getFolderPath(folderId, userId);
-    if (!folderInfo || folderInfo.length === 0) {
-        return res.status(404).json({ success: false, message: '找不到指定的资料夹。' });
-    }
-    if (folderInfo.length === 1 && folderInfo[0].id === folderId) {
-        return res.status(400).json({ success: false, message: '无法删除根目录。' });
+    if (!Array.isArray(messageIds) || !Array.isArray(folderIds) || (messageIds.length === 0 && folderIds.length === 0)) {
+        return res.status(400).json({ success: false, message: '无效的请求参数。' });
     }
 
-    const filesToDelete = await data.deleteFolderRecursive(folderId, userId);
-    if (filesToDelete.length > 0) {
-        await storage.remove(filesToDelete, userId);
+    try {
+        const storage = storageManager.getStorage();
+        let filesForStorage = [];
+        let foldersForStorage = [];
+        let dbFileIdsToDelete = [...messageIds];
+        let dbFolderIdsToDelete = [...folderIds];
+        
+        // 1. 收集所有要删除的项目信息
+        if (folderIds.length > 0) {
+            for (const folderId of folderIds) {
+                const folderInfo = await data.getFolderPath(folderId, userId);
+                if (!folderInfo || folderInfo.length === 0 || (folderInfo.length === 1 && folderInfo[0].id === folderId)) {
+                    continue; // 跳过不存在或根目录
+                }
+                const deletionData = await data.getFolderDeletionData(folderId, userId);
+                filesForStorage.push(...deletionData.files);
+                foldersForStorage.push(...deletionData.folders);
+            }
+        }
+        
+        if (messageIds.length > 0) {
+            const directFiles = await data.getFilesByIds(messageIds, userId);
+            filesForStorage.push(...directFiles);
+        }
+        
+        // 2. 执行物理删除
+        const storageResult = await storage.remove(filesForStorage, foldersForStorage, userId);
+        
+        if (!storageResult.success) {
+            // 如果物理删除部分失败，仍继续尝试删除数据库中成功删除的部分
+            console.warn("部分档案在储存端删除失败:", storageResult.errors);
+        }
+
+        // 3. 执行数据库删除
+        await data.executeDeletion(dbFileIdsToDelete, dbFolderIdsToDelete, userId);
+
+        res.json({ success: true, message: '删除操作已完成。' });
+
+    } catch (error) {
+        console.error("删除操作失败:", error);
+        res.status(500).json({ success: false, message: '删除过程中发生错误: ' + error.message });
     }
-    res.json({ success: true });
+}
+
+
+app.post('/api/folder/delete', requireLogin, (req, res) => {
+    const { folderId } = req.body;
+    req.body.folderIds = [folderId];
+    req.body.messageIds = [];
+    unifiedDeleteHandler(req, res);
 });
+
+app.post('/delete-multiple', requireLogin, unifiedDeleteHandler);
+
 
 app.post('/rename', requireLogin, async (req, res) => {
     try {
@@ -662,18 +704,6 @@ app.post('/rename', requireLogin, async (req, res) => {
     } catch (error) { 
         res.status(500).json({ success: false, message: '重命名失败' }); 
     }
-});
-
-app.post('/delete-multiple', requireLogin, async (req, res) => {
-    const { messageIds } = req.body;
-    const userId = req.session.userId;
-    const storage = storageManager.getStorage();
-    if (!messageIds || !Array.isArray(messageIds)) return res.status(400).json({ success: false, message: '无效的 messageIds。' });
-
-    const filesToDelete = await data.getFilesByIds(messageIds, userId);
-    const result = await storage.remove(filesToDelete, userId);
-
-    res.json(result);
 });
 
 app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
