@@ -8,7 +8,7 @@ const archiver = require('archiver');
 const bcrypt = require('bcrypt');
 const fs = require('fs');
 const fsp = require('fs').promises;
-const crypto = require('crypto'); //
+const crypto = require('crypto');
 const db = require('./database.js'); 
 
 const data = require('./data.js');
@@ -144,6 +144,9 @@ app.get('/', requireLogin, (req, res) => {
 app.get('/folder/:id', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/manager.html')));
 app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/shares.html')));
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
+
+// --- 新生：扫描页面路由 ---
+app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
 app.get('/local-files/:userId/:fileId', requireLogin, (req, res) => {
     if (String(req.params.userId) !== String(req.session.userId) && !req.session.isAdmin) {
@@ -837,6 +840,108 @@ app.post('/api/cancel-share', requireLogin, async (req, res) => {
         const result = await data.cancelShare(parseInt(itemId, 10), itemType, req.session.userId);
         res.json(result);
     } catch (error) { res.status(500).json({ success: false, message: '取消分享失败' }); }
+});
+
+// --- 新生：扫描 API 端点 ---
+app.post('/api/scan/local', requireAdmin, async (req, res) => {
+    const { userId } = req.body;
+    const log = [];
+    try {
+        if (!userId) throw new Error('未提供使用者 ID');
+
+        const userUploadDir = path.join(__dirname, 'data', 'uploads', String(userId));
+        if (!fs.existsSync(userUploadDir)) {
+            log.push({ message: `使用者 ${userId} 的本地储存目录不存在，跳过。`, type: 'warn' });
+            return res.json({ success: true, log });
+        }
+
+        const userRoot = await data.findFolderByPath(null, [], userId);
+
+        async function scanDirectory(dir, parentFolderId) {
+            const entries = await fsp.readdir(dir, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    const newParentFolder = await data.findOrCreateFolderByPath(fullPath.replace(userUploadDir, '').replace(/\\/g, '/'), userId);
+                    await scanDirectory(fullPath, newParentFolder);
+                } else {
+                    const fileId = fullPath;
+                    const existing = await data.findFileByFileId(fileId, userId);
+                    if (existing) {
+                        log.push({ message: `已存在: ${fileId}，跳过。`, type: 'info' });
+                    } else {
+                        const stats = await fsp.stat(fullPath);
+                        const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
+                        await data.addFile({
+                            message_id: messageId,
+                            fileName: entry.name,
+                            mimetype: 'application/octet-stream', // 本地扫描无法轻易得知 mimetype
+                            size: stats.size,
+                            file_id: fileId,
+                            date: stats.mtime.getTime(),
+                        }, parentFolderId, userId, 'local');
+                        log.push({ message: `已汇入: ${fileId}`, type: 'success' });
+                    }
+                }
+            }
+        }
+        await scanDirectory(userUploadDir, userRoot);
+        res.json({ success: true, log });
+    } catch (error) {
+        log.push({ message: `扫描本地文件时出错: ${error.message}`, type: 'error' });
+        res.status(500).json({ success: false, message: error.message, log });
+    }
+});
+
+app.post('/api/scan/webdav', requireAdmin, async (req, res) => {
+    const { userId } = req.body;
+    const log = [];
+    try {
+        if (!userId) throw new Error('未提供使用者 ID');
+
+        const { createClient } = require('webdav');
+        const config = storageManager.readConfig();
+        if (!config.webdav || !config.webdav.url) {
+            throw new Error('WebDAV 设定不完整');
+        }
+        const client = createClient(config.webdav.url, {
+            username: config.webdav.username,
+            password: config.webdav.password
+        });
+        
+        async function scanWebdavDirectory(remotePath) {
+            const contents = await client.getDirectoryContents(remotePath, { deep: true });
+            for (const item of contents) {
+                if (item.type === 'file') {
+                    const existing = await data.findFileByFileId(item.filename, userId);
+                     if (existing) {
+                        log.push({ message: `已存在: ${item.filename}，跳过。`, type: 'info' });
+                    } else {
+                        const folderPath = path.dirname(item.filename).replace(/\\/g, '/');
+                        const folderId = await data.findOrCreateFolderByPath(folderPath, userId);
+                        
+                        const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
+                        await data.addFile({
+                            message_id: messageId,
+                            fileName: item.basename,
+                            mimetype: item.mime || 'application/octet-stream',
+                            size: item.size,
+                            file_id: item.filename,
+                            date: new Date(item.lastmod).getTime(),
+                        }, folderId, userId, 'webdav');
+                        log.push({ message: `已汇入: ${item.filename}`, type: 'success' });
+                    }
+                }
+            }
+        }
+        
+        await scanWebdavDirectory('/');
+        res.json({ success: true, log });
+
+    } catch (error) {
+        log.push({ message: `扫描 WebDAV 时出错: ${error.message}`, type: 'error' });
+        res.status(500).json({ success: false, message: error.message, log });
+    }
 });
 
 app.get('/share/view/file/:token', async (req, res) => {
