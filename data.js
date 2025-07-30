@@ -438,14 +438,11 @@ function executeDeletion(fileIds, folderIds, userId) {
 
 
 function addFile(fileData, folderId = 1, userId, storageType) {
-    // **重要**：解构出 storage_id
-    const { message_id, fileName, mimetype, file_id, thumb_file_id, date, size, storage_id } = fileData;
-    // **重要**：更新 SQL 语句以包含 storage_id
-    const sql = `INSERT INTO files (message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folder_id, user_id, storage_type, storage_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const { message_id, fileName, mimetype, file_id, thumb_file_id, date, size } = fileData;
+    const sql = `INSERT INTO files (message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folder_id, user_id, storage_type)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     return new Promise((resolve, reject) => {
-        // **重要**：在参数列表中加入 storage_id
-        db.run(sql, [message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folderId, userId, storageType, storage_id], function(err) {
+        db.run(sql, [message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
             if (err) reject(err);
             else resolve({ success: true, id: this.lastID, fileId: this.lastID });
         });

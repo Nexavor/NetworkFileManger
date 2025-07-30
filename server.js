@@ -4,7 +4,7 @@ const session = require('express-session');
 const multer = require('multer');
 const path = require('path');
 const axios = require('axios');
-const archiver = 'archiver';
+const archiver = require('archiver');
 const bcrypt = require('bcrypt');
 const fs = require('fs');
 const fsp = require('fs').promises;
@@ -265,56 +265,37 @@ app.post('/api/admin/delete-user', requireAdmin, async (req, res) => {
     }
 });
 
-// **新生：WebDAV 管理 API**
 app.get('/api/admin/webdav', requireAdmin, (req, res) => {
     const config = storageManager.readConfig();
-    res.json(config.webdav || []);
+    const webdavConfig = config.webdav || {};
+    // 为了前端兼容性，即使只有一个设定，也以阵列形式回传
+    res.json(webdavConfig.url ? [{ id: 1, ...webdavConfig }] : []);
 });
 
 app.post('/api/admin/webdav', requireAdmin, (req, res) => {
     const { url, username, password } = req.body;
     if (!url || !username) { 
-        return res.status(400).json({ success: false, message: 'URL 和使用者名称为必填' });
+        return res.status(400).json({ success: false, message: '缺少必要参数' });
     }
     const config = storageManager.readConfig();
-    const newWebdav = {
-        id: crypto.randomUUID(),
-        url,
-        username,
-        password: password || ''
-    };
-    config.webdav.push(newWebdav);
+    
+    // 简化为只管理一个 WebDAV 配置
+    config.webdav = { url, username };
+    // 只有当提供了新密码时才更新它
+    if (password) {
+        config.webdav.password = password;
+    }
+
     if (storageManager.writeConfig(config)) {
-        res.json({ success: true, message: 'WebDAV 设定已新增', item: newWebdav });
+        res.json({ success: true, message: 'WebDAV 设定已储存' });
     } else {
         res.status(500).json({ success: false, message: '写入设定失败' });
     }
 });
 
-app.put('/api/admin/webdav/:id', requireAdmin, (req, res) => {
-    const { id } = req.params;
-    const { url, username, password } = req.body;
-    const config = storageManager.readConfig();
-    const index = config.webdav.findIndex(w => w.id === id);
-    if (index === -1) {
-        return res.status(404).json({ success: false, message: '找不到该设定' });
-    }
-    config.webdav[index].url = url;
-    config.webdav[index].username = username;
-    if (password) { // 只有提供新密码时才更新
-        config.webdav[index].password = password;
-    }
-    if (storageManager.writeConfig(config)) {
-        res.json({ success: true, message: 'WebDAV 设定已更新' });
-    } else {
-        res.status(500).json({ success: false, message: '更新设定失败' });
-    }
-});
-
 app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
-    const { id } = req.params;
     const config = storageManager.readConfig();
-    config.webdav = config.webdav.filter(w => w.id !== id);
+    config.webdav = {}; // 直接清空设定
     if (storageManager.writeConfig(config)) {
         res.json({ success: true, message: 'WebDAV 设定已删除' });
     } else {
@@ -331,6 +312,7 @@ const uploadMiddleware = (req, res, next) => {
             if (err.code === 'LIMIT_FILE_SIZE') {
                 return res.status(400).json({ success: false, message: '文件大小超出限制。' });
             }
+            // 捕获磁盘空间不足等系统错误
             if (err.code === 'EDQUOT' || err.errno === -122) {
                 return res.status(507).json({ success: false, message: '上传失败：磁盘空间不足。' });
             }
@@ -341,31 +323,27 @@ const uploadMiddleware = (req, res, next) => {
 };
 
 app.post('/upload', requireLogin, async (req, res, next) => {
+    // 每次上传前都先清理一次
     await cleanupTempDir();
     next();
 }, uploadMiddleware, fixFileNameEncoding, async (req, res) => {
+
     if (!req.files || req.files.length === 0) {
         return res.status(400).json({ success: false, message: '没有选择文件' });
     }
 
     const initialFolderId = parseInt(req.body.folderId, 10);
     const userId = req.session.userId;
+    const storage = storageManager.getStorage();
     const overwritePaths = req.body.overwritePaths ? JSON.parse(req.body.overwritePaths) : [];
     let relativePaths = req.body.relativePaths;
-    
-    // **新生**：获取储存目标
-    const targetStorage = storageManager.getTargetStorageForUpload();
-    const storage = storageManager.getStorage(); // 获取对应的储存模块
-
-    if (targetStorage.storage_type !== 'webdav' && targetStorage.storage_type !== 'local') {
-         return res.status(500).json({ success: false, message: '未设定或不支援的储存模式。' });
-    }
 
     if (!relativePaths) {
         relativePaths = req.files.map(file => file.originalname);
     } else if (!Array.isArray(relativePaths)) {
         relativePaths = [relativePaths];
     }
+
     if (req.files.length !== relativePaths.length) {
         return res.status(400).json({ success: false, message: '上传档案和路径资讯不匹配。' });
     }
@@ -376,10 +354,12 @@ app.post('/upload', requireLogin, async (req, res, next) => {
             const file = req.files[i];
             const tempFilePath = file.path;
             const relativePath = relativePaths[i];
+
             try {
                 const pathParts = (relativePath || file.originalname).split('/');
                 const fileName = pathParts.pop() || file.originalname;
                 const folderPathParts = pathParts;
+
                 const isOverwrite = overwritePaths.includes(relativePath);
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                 
@@ -387,6 +367,7 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                     const existingFile = await data.findFileInFolder(fileName, targetFolderId, userId);
                     if (existingFile) {
                         const filesToDelete = await data.getFilesByIds([existingFile.message_id], userId);
+                        // **修复：先物理删除，再数据库删除**
                         if (filesToDelete.length > 0) {
                            await storage.remove(filesToDelete, [], userId); 
                         }
@@ -396,14 +377,16 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                      const conflict = await data.findFileInFolder(fileName, targetFolderId, userId);
                      if (conflict) {
                          console.log(`Skipping file "${relativePath}" because it exists and was not marked for overwrite.`);
-                         continue;
+                         continue; // 跳过此文件
                      }
                 }
-                
-                // **重要**：将储存目标 ID 传递给 upload 函数
-                const result = await storage.upload(tempFilePath, fileName, file.mimetype, userId, targetFolderId, targetStorage.storage_id);
+
+                // 核心修改：传递临时文件路径而不是 buffer
+                const result = await storage.upload(tempFilePath, fileName, file.mimetype, userId, targetFolderId, req.body.caption || '');
                 results.push(result);
+
             } finally {
+                // 无论成功或失败都删除临时文件
                 if (fs.existsSync(tempFilePath)) {
                     await fsp.unlink(tempFilePath).catch(err => console.error(`无法删除临时档: ${tempFilePath}`, err));
                 }
@@ -412,6 +395,7 @@ app.post('/upload', requireLogin, async (req, res, next) => {
         res.json({ success: true, results });
     } catch (error) {
         console.error("Upload processing error:", error);
+        // 如果出错，确保清理所有已上传的临时文件
         for (const file of req.files) {
             if (fs.existsSync(file.path)) {
                 await fsp.unlink(file.path).catch(err => console.error(`无法删除错误处理中的临时档: ${file.path}`, err));
@@ -424,38 +408,35 @@ app.post('/upload', requireLogin, async (req, res, next) => {
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
     const userId = req.session.userId;
-    
+    const storage = storageManager.getStorage();
+
     if (!fileName || !fileName.endsWith('.txt')) {
         return res.status(400).json({ success: false, message: '档名无效或不是 .txt 档案' });
     }
 
     const tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.txt`);
+
     try {
         await fsp.writeFile(tempFilePath, content, 'utf8');
         let result;
 
         if (mode === 'edit' && fileId) {
-            const filesToDelete = await data.getFilesByIds([fileId], userId);
+             const filesToDelete = await data.getFilesByIds([fileId], userId);
             if (filesToDelete.length > 0) {
-                const storage = storageManager.getStorage();
+                // **修复：同样修复编辑逻辑**
                 await storage.remove(filesToDelete, [], userId);
                 await data.deleteFilesByIds([fileId], userId);
-                
-                // **重要**：编辑时使用原始档案的 storage_id
-                const originalStorageId = filesToDelete[0].storage_id;
-                result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, filesToDelete[0].folder_id, originalStorageId);
+
+                result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, filesToDelete[0].folder_id);
             } else {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
             }
         } else if (mode === 'create' && folderId) {
-            const conflict = await data.checkFullConflict(fileName, folderId, userId);
+             const conflict = await data.checkFullConflict(fileName, folderId, userId);
             if (conflict) {
                 return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
             }
-            // **重要**：建立时获取新的储存目标
-            const targetStorage = storageManager.getTargetStorageForUpload();
-            const storage = storageManager.getStorage();
-            result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, folderId, targetStorage.storage_id);
+            result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, folderId);
         } else {
             return res.status(400).json({ success: false, message: '请求参数无效' });
         }
@@ -464,6 +445,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         console.error("Text file error:", error);
         res.status(500).json({ success: false, message: '伺服器内部错误' });
     } finally {
+        // 清理临时文件
         if (fs.existsSync(tempFilePath)) {
             await fsp.unlink(tempFilePath).catch(err => console.error(`无法删除文字档的临时档: ${tempFilePath}`, err));
         }
@@ -673,12 +655,8 @@ async function unifiedDeleteHandler(req, res) {
             filesForStorage.push(...directFiles);
         }
         
-        // **重要**：将所有档案和资料夹的 storage_id 补全，以便 remove 函数分组
-        const fileDataWithStorage = await data.getFilesByIds(filesForStorage.map(f => f.message_id), userId);
-        
         // 2. 执行物理删除
-        // **重要**：传递带有 storage_id 的档案资讯
-        const storageResult = await storage.remove(fileDataWithStorage, foldersForStorage, userId);
+        const storageResult = await storage.remove(filesForStorage, foldersForStorage, userId);
         
         if (!storageResult.success) {
             console.warn("部分档案在储存端删除失败:", storageResult.errors);
@@ -737,7 +715,7 @@ app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
 
         if (fileInfo && fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
             const storage = storageManager.getStorage();
-            const link = await storage.getUrl(fileInfo.thumb_file_id, fileInfo.storage_id);
+            const link = await storage.getUrl(fileInfo.thumb_file_id);
             if (link) return res.redirect(link);
         }
         
@@ -772,7 +750,7 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
             res.setHeader('Content-Length', fileInfo.size);
         }
 
-        // **重要**：传递 storage_id
+
         if (fileInfo.storage_type === 'telegram') {
             const link = await storage.getUrl(fileInfo.file_id);
             if (link) {
@@ -786,7 +764,7 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
                 res.status(404).send('本地档案不存在');
             }
         } else if (fileInfo.storage_type === 'webdav') {
-            const stream = await storage.stream(fileInfo.file_id, fileInfo.storage_id);
+            const stream = await storage.stream(fileInfo.file_id, req.session.userId);
             handleStream(stream, res);
         }
 
@@ -805,7 +783,6 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
         const storage = storageManager.getStorage();
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
-        // **重要**：传递 storage_id
         if (fileInfo.storage_type === 'telegram') {
             const link = await storage.getUrl(fileInfo.file_id);
             if (link) {
@@ -820,7 +797,7 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
                 res.status(404).send('本地档案不存在');
             }
         } else if (fileInfo.storage_type === 'webdav') {
-            const stream = await storage.stream(fileInfo.file_id, fileInfo.storage_id);
+            const stream = await storage.stream(fileInfo.file_id, req.session.userId);
             handleStream(stream, res);
         }
     } catch (error) { 
@@ -870,7 +847,7 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
                     archive.file(file.file_id, { name: file.path });
                 }
             } else if (file.storage_type === 'webdav') {
-                const stream = await storage.stream(file.file_id, file.storage_id);
+                const stream = await storage.stream(file.file_id, userId);
                 archive.append(stream, { name: file.path });
             }
         }
@@ -981,20 +958,19 @@ app.post('/api/scan/local', requireAdmin, async (req, res) => {
 });
 
 app.post('/api/scan/webdav', requireAdmin, async (req, res) => {
-    const { userId, storageId } = req.body; // **新生**：需要从前端知道要扫描哪个伺服器
+    const { userId } = req.body;
     const log = [];
     try {
-        if (!userId || !storageId) throw new Error('未提供使用者 ID 或储存 ID');
+        if (!userId) throw new Error('未提供使用者 ID');
 
         const { createClient } = require('webdav');
         const config = storageManager.readConfig();
-        const webdavConfig = config.webdav.find(c => c.id === storageId);
-        if (!webdavConfig) {
-            throw new Error(`找不到 ID 为 ${storageId} 的 WebDAV 设定`);
+        if (!config.webdav || !config.webdav.url) {
+            throw new Error('WebDAV 设定不完整');
         }
-        const client = createClient(webdavConfig.url, {
-            username: webdavConfig.username,
-            password: webdavConfig.password
+        const client = createClient(config.webdav.url, {
+            username: config.webdav.username,
+            password: config.webdav.password
         });
         
         async function scanWebdavDirectory(remotePath) {
@@ -1016,7 +992,6 @@ app.post('/api/scan/webdav', requireAdmin, async (req, res) => {
                             size: item.size,
                             file_id: item.filename,
                             date: new Date(item.lastmod).getTime(),
-                            storage_id: storageId // **重要**：记录档案来源
                         }, folderId, userId, 'webdav');
                         log.push({ message: `已汇入: ${item.filename}`, type: 'success' });
                     }
@@ -1056,7 +1031,7 @@ app.get('/share/view/file/:token', async (req, res) => {
                 } else if (fileInfo.storage_type === 'local') {
                     textContent = await fsp.readFile(fileInfo.file_id, 'utf-8');
                 } else if (fileInfo.storage_type === 'webdav') {
-                    const stream = await storage.stream(fileInfo.file_id, fileInfo.storage_id);
+                    const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
                     textContent = await new Promise((resolve, reject) => {
                         let data = '';
                         stream.on('data', chunk => data += chunk);
@@ -1120,7 +1095,7 @@ app.get('/share/download/file/:token', async (req, res) => {
         } else if (fileInfo.storage_type === 'local') {
             res.download(fileInfo.file_id, fileInfo.fileName);
         } else if (fileInfo.storage_type === 'webdav') {
-            const stream = await storage.stream(fileInfo.file_id, fileInfo.storage_id);
+            const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
             handleStream(stream, res);
         }
 
@@ -1172,7 +1147,7 @@ app.get('/share/download/:folderToken/:fileId', async (req, res) => {
                 res.status(404).send('本地档案不存在');
             }
         } else if (fileInfo.storage_type === 'webdav') {
-            const stream = await storage.stream(fileInfo.file_id, fileInfo.storage_id);
+            const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
             handleStream(stream, res);
         }
     } catch (error) {
