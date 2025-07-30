@@ -631,20 +631,32 @@ function findFileByFileId(fileId, userId) {
     });
 }
 
-async function findOrCreateFolderByPath(fullPath, userId) {
-    const pathParts = fullPath.split('/').filter(p => p);
-    let parentId = await new Promise((resolve, reject) => {
+// 修：新增函数以直接获取根目录
+function getRootFolder(userId) {
+    return new Promise((resolve, reject) => {
         db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [userId], (err, row) => {
-            if (err || !row) return reject(new Error('找不到根目录'));
-            resolve(row.id);
+            if (err) return reject(err);
+            resolve(row);
         });
     });
+}
+
+async function findOrCreateFolderByPath(fullPath, userId) {
+    // 修：确保能正确处理根目录 (fullPath 为 '/' 或 '')
+    if (!fullPath || fullPath === '/') {
+        const root = await getRootFolder(userId);
+        return root.id;
+    }
+
+    const pathParts = fullPath.split('/').filter(p => p);
+    let parentId = (await getRootFolder(userId)).id;
 
     for (const part of pathParts) {
         let folder = await findFolderByName(part, parentId, userId);
         if (folder) {
             parentId = folder.id;
         } else {
+            console.log(`Creating folder '${part}' inside parent folder ${parentId} for user ${userId}`);
             const result = await createFolder(part, parentId, userId);
             parentId = result.id;
         }
@@ -719,5 +731,6 @@ module.exports = {
     getDescendantFiles,
     // --- 新生导出 ---
     findFileByFileId,
-    findOrCreateFolderByPath
+    findOrCreateFolderByPath,
+    getRootFolder
 };
