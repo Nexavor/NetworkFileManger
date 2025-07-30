@@ -69,35 +69,56 @@ db.exec(initialSchema, (err) => {
     }
 });
 
+// --- 重构：更通用的资料库迁移函式 ---
+async function runMigrations() {
+    console.log("正在检查并执行资料库迁移...");
+    
+    // 迁移任务列表
+    const migrations = [
+        {
+            name: "add_storage_id_to_files",
+            query: "ALTER TABLE files ADD COLUMN storage_id TEXT;",
+            check: async () => {
+                return new Promise((resolve) => {
+                    db.all("PRAGMA table_info(files);", [], (err, columns) => {
+                        if (err) return resolve(false);
+                        resolve(!columns.some(col => col.name === 'storage_id'));
+                    });
+                });
+            }
+        },
+        // 未来可以新增更多迁移任务...
+        // {
+        //     name: "add_new_feature_column",
+        //     query: "ALTER TABLE users ADD COLUMN new_feature INTEGER DEFAULT 0;",
+        //     check: async () => { ... }
+        // }
+    ];
 
-// --- 新生：自动资料库迁移脚本 ---
-function runMigration() {
-    console.log("正在检查资料库结构...");
-    db.all("PRAGMA table_info(files);", [], (err, columns) => {
-        if (err) {
-            console.error("无法读取 'files' 表的资讯:", err.message);
-            return;
-        }
-
-        const hasStorageIdColumn = columns.some(col => col.name === 'storage_id');
-
-        if (!hasStorageIdColumn) {
-            console.log("'files' 表缺少 'storage_id' 字段，正在自动新增...");
-            db.run("ALTER TABLE files ADD COLUMN storage_id TEXT;", (alterErr) => {
-                if (alterErr) {
-                    console.error("自动新增 'storage_id' 字段失败:", alterErr.message);
-                } else {
-                    console.log("成功新增 'storage_id' 字段到 'files' 表。");
-                }
+    for (const migration of migrations) {
+        const needsMigration = await migration.check();
+        if (needsMigration) {
+            console.log(`需要执行迁移: ${migration.name}...`);
+            await new Promise((resolve, reject) => {
+                db.run(migration.query, (err) => {
+                    if (err) {
+                        console.error(`迁移 ${migration.name} 失败:`, err.message);
+                        return reject(err);
+                    }
+                    console.log(`成功完成迁移: ${migration.name}。`);
+                    resolve();
+                });
             });
-        } else {
-            console.log("资料库结构已是最新，无需变更。");
         }
-    });
+    }
+    console.log("资料库结构检查完成。");
 }
 
-// 在模块加载时立即执行迁移检查
-runMigration();
+
+// 在模组加载时立即执行迁移检查
+runMigrations().catch(err => {
+    console.error("资料库迁移过程中发生严重错误:", err);
+});
 
 
 module.exports = db;
