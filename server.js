@@ -605,17 +605,13 @@ app.get('/api/folders', requireLogin, async (req, res) => {
 
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
-        const { itemIds, targetFolderId, overwriteList = [], mergeList = [] } = req.body;
+        const { items, targetFolderId, overwriteList = [], mergeList = [] } = req.body;
         const userId = req.session.userId;
-        if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0 || !targetFolderId) {
+        if (!items || !Array.isArray(items) || items.length === 0 || !targetFolderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
         
-        // **修正关键点**：现在 getItemsByIds 会回传 parent_id
-        const items = await data.getItemsByIds(itemIds, userId);
-        
         for (const item of items) {
-            // **修正关键点**：将完整的 item 物件传递给 moveItem
             await data.moveItem(item, targetFolderId, userId, { overwriteList, mergeList });
         }
         
