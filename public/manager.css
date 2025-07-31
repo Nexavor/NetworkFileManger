@@ -203,7 +203,16 @@ body {
 .preview-modal-content { background: transparent; width: auto; max-width: 90vw; max-height: 90vh; }
 #previewModal .close-button { color: #333; }
 .preview-modal-content pre { background-color: #2b2b2b; color: #f1f1f1; padding: 20px; border-radius: 5px; text-align: left; white-space: pre-wrap; word-wrap: break-word; max-height: 90vh; overflow-y: auto; font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; font-size: 14px; }
-.no-preview { color: #212529; text-align: center; }
+.no-preview {
+    color: #212529;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    height: 100%;
+}
 .no-preview i { font-size: 48px; margin-bottom: 10px; display: block; }
 .share-modal-content { background-color: #fff; padding: 25px; border-radius: 8px; width: 90%; max-width: 400px; text-align: center; }
 .share-modal-content h3 { margin-top: 0; }
