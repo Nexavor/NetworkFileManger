@@ -120,12 +120,16 @@ function getItemsByIds(itemIds, userId) {
     });
 }
 
+// *** 核心修正 ***
+// 此函数现在能正确地为子档案和子资料夹提供父 ID
 function getChildrenOfFolder(folderId, userId) {
     return new Promise((resolve, reject) => {
         const sql = `
-            SELECT id, name, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ?
+            SELECT id, name, 'folder' as type, parent_id
+            FROM folders WHERE parent_id = ? AND user_id = ?
             UNION ALL
-            SELECT message_id as id, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ?
+            SELECT message_id as id, fileName as name, 'file' as type, folder_id as parent_id 
+            FROM files WHERE folder_id = ? AND user_id = ?
         `;
         db.all(sql, [folderId, userId, folderId, userId], (err, rows) => {
             if (err) return reject(err);
@@ -274,8 +278,6 @@ function getAllFolders(userId) {
     });
 }
 
-// *** 核心修正 ***
-// moveItem 函数现在能正确处理覆盖档案和合并资料夹的逻辑
 async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], mergeFolderNames = []) {
     const storage = require('./storage').getStorage();
     const dbRun = (sql, params) => new Promise((res, rej) => db.run(sql, params, function(e) { e ? rej(e) : res(this); }));
@@ -330,7 +332,7 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
     
     // 3. 执行实体移动 (对于非 Telegram 储存)
     if (storage.type !== 'telegram') {
-        if (!sourceParentId) {
+        if (sourceParentId === undefined || sourceParentId === null) {
             throw new Error(`无法确定项目 "${item.name}" 的来源资料夹。`);
         }
         const sourcePathArr = await getFolderPath(sourceParentId, userId);
