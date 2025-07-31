@@ -281,64 +281,56 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
     const dbRun = (sql, params) => new Promise((res, rej) => db.run(sql, params, function(e) { e ? rej(e) : res(this); }));
     const sourceParentId = item.parent_id ?? item.folder_id;
 
-    // 1. 安全检查: 防止移动到自身或子目录
     if (item.type === 'folder') {
         const numericTargetFolderId = Number(targetFolderId);
         const numericItemId = Number(item.id);
-        if (numericItemId === numericTargetFolderId) {
-            throw new Error('无法将资料夹移动到其自身内部。');
-        }
+        if (numericItemId === numericTargetFolderId) throw new Error('无法将资料夹移动到其自身内部。');
         const descendants = await getAllDescendantFolderIds(numericItemId, userId);
-        if (descendants.map(Number).includes(numericTargetFolderId)) {
-            throw new Error('无法将资料夹移动到其子目录中。');
-        }
+        if (descendants.map(Number).includes(numericTargetFolderId)) throw new Error('无法将资料夹移动到其子目录中。');
     }
 
-    // 2. 检查冲突（除非被告知要覆盖或合并）
     const isFileOverwrite = item.type === 'file' && overwriteFileNames.includes(item.name);
     const isFolderMerge = item.type === 'folder' && mergeFolderNames.includes(item.name);
 
-    if (isFileOverwrite) {
-        const existingFile = await findFileInFolder(item.name, targetFolderId, userId);
-        if (existingFile) {
-            const filesToDelete = await getFilesByIds([existingFile.message_id], userId);
-            if (filesToDelete.length > 0) {
-               await storage.remove(filesToDelete, [], userId); 
-            }
-            await deleteFilesByIds([existingFile.message_id], userId);
-        }
-    } else if (isFolderMerge) {
+    if (isFolderMerge) {
         const targetFolder = await findFolderByName(item.name, targetFolderId, userId);
-        if (!targetFolder) {
-            throw new Error(`合并失败：找不到目标资料夹 "${item.name}"。`);
-        }
+        if (!targetFolder) throw new Error(`合并失败：找不到目标资料夹 "${item.name}"。`);
+        
         const sourceChildren = await getChildrenOfFolder(item.id, userId);
-        let allChildrenMoved = true;
+        let allChildrenMovedSuccessfully = true;
+
         for (const child of sourceChildren) {
             const moveResult = await moveItem(child, targetFolder.id, userId, overwriteFileNames, mergeFolderNames);
             if (moveResult && moveResult.skipped) {
-                allChildrenMoved = false;
+                allChildrenMovedSuccessfully = false;
             }
         }
-        if (allChildrenMoved) {
+        
+        if (allChildrenMovedSuccessfully) {
             await dbRun("DELETE FROM folders WHERE id = ? AND user_id = ?", [item.id, userId]);
         }
         return { success: true };
+
     } else {
         const conflict = await checkFullConflict(item.name, targetFolderId, userId);
         if (conflict) {
-            if (item.type === 'file' && !overwriteFileNames.includes(item.name)) {
-                return { success: true, skipped: true };
+            if (isFileOverwrite) {
+                const existingFile = await findFileInFolder(item.name, targetFolderId, userId);
+                if (existingFile) {
+                    const filesToDelete = await getFilesByIds([existingFile.message_id], userId);
+                    if (filesToDelete.length > 0) {
+                       await storage.remove(filesToDelete, [], userId); 
+                    }
+                    await deleteFilesByIds([existingFile.message_id], userId);
+                }
+            } else {
+                 return { success: true, skipped: true };
             }
-            throw new Error(`移动失败：目标位置已存在同名档案或资料夹 "${item.name}"。`);
         }
     }
     
-    // 3. 执行实体移动 (对于非 Telegram 储存)
     if (storage.type !== 'telegram') {
-        if (sourceParentId === undefined || sourceParentId === null) {
-            throw new Error(`无法确定项目 "${item.name}" 的来源资料夹。`);
-        }
+        if (sourceParentId === undefined || sourceParentId === null) throw new Error(`无法确定项目 "${item.name}" 的来源资料夹。`);
         const sourcePathArr = await getFolderPath(sourceParentId, userId);
         const sourceParentPath = sourcePathArr.length > 1 ? path.posix.join(...sourcePathArr.slice(1).map(p => p.name)) : '';
         const targetPathArr = await getFolderPath(targetFolderId, userId);
@@ -357,9 +349,7 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
         }
 
         const moveResult = await storage.move(oldPath, newPath, { overwrite: isFileOverwrite });
-        if (!moveResult.success) {
-            throw new Error(`移动实体档案/资料夹 "${item.name}" 时发生错误。`);
-        }
+        if (!moveResult.success) throw new Error(`移动实体档案/资料夹 "${item.name}" 时发生错误。`);
         
         if (item.type === 'file') {
             await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [newFileIdForDb, item.id, userId]);
@@ -373,14 +363,13 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
         }
     }
     
-    // 4. 更新资料库中的父子关系
     if (item.type === 'file') {
         await dbRun("UPDATE files SET folder_id = ? WHERE message_id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
-    } else { // folder
+    } else {
         await dbRun("UPDATE folders SET parent_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
     }
 
-    return { success: true };
+    return { success: true, skipped: false };
 }
 
 
@@ -539,8 +528,6 @@ function findFileInSharedFolder(fileId, folderToken) {
 }
 
 function renameFile(messageId, newFileName, userId) {
-    // 同样，重命名也需要更新实体路径
-    // 此处简化，仅更新档名，完整修复需要像 move 一样处理实体档案
     const sql = `UPDATE files SET fileName = ? WHERE message_id = ? AND user_id = ?`;
     return new Promise((resolve, reject) => {
         db.run(sql, [newFileName, messageId, userId], function(err) {
@@ -552,7 +539,6 @@ function renameFile(messageId, newFileName, userId) {
 }
 
 function renameFolder(folderId, newFolderName, userId) {
-    // 同样，重命名也需要更新实体路径
     const sql = `UPDATE folders SET name = ? WHERE id = ? AND user_id = ?`;
     return new Promise((resolve, reject) => {
         db.run(sql, [newFolderName, folderId, userId], function(err) {
