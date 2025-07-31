@@ -274,11 +274,14 @@ function getAllFolders(userId) {
     });
 }
 
-// --- 修：修正后的 moveItem 函数 ---
-async function moveItem(item, targetFolderId, userId) {
+// *** 核心修正 ***
+// moveItem 函数现在能正确处理覆盖档案和合并资料夹的逻辑
+async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], mergeFolderNames = []) {
     const storage = require('./storage').getStorage();
+    const dbRun = (sql, params) => new Promise((res, rej) => db.run(sql, params, function(e) { e ? rej(e) : res(this); }));
+    const sourceParentId = item.parent_id ?? item.folder_id;
 
-    // 防呆：检查是否尝试移动到自身或子目录
+    // 1. 安全检查: 防止移动到自身或子目录
     if (item.type === 'folder') {
         const numericTargetFolderId = Number(targetFolderId);
         const numericItemId = Number(item.id);
@@ -291,62 +294,85 @@ async function moveItem(item, targetFolderId, userId) {
         }
     }
 
-    const dbRun = (sql, params) => new Promise((res, rej) => db.run(sql, params, function(e) { e ? rej(e) : res(this); }));
+    // 2. 检查冲突（除非被告知要覆盖或合并）
+    const isFileOverwrite = item.type === 'file' && overwriteFileNames.includes(item.name);
+    const isFolderMerge = item.type === 'folder' && mergeFolderNames.includes(item.name);
 
-    if (storage.type === 'telegram') {
-        if (item.type === 'file') {
-            await dbRun("UPDATE files SET folder_id = ? WHERE message_id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
-        } else {
-            await dbRun("UPDATE folders SET parent_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
+    if (isFileOverwrite) {
+        // 如果要覆盖档案，先删除目标位置的旧档案记录
+        const existingFile = await findFileInFolder(item.name, targetFolderId, userId);
+        if (existingFile) {
+            // 注意：实体档案将由 storage.move 覆盖，这里只删除资料库记录
+            await deleteFilesByIds([existingFile.message_id], userId);
         }
-        return;
-    }
-    
-    const sourceParentFolderId = item.parent_id;
-    if (sourceParentFolderId === undefined || sourceParentFolderId === null) {
-        throw new Error(`无法确定项目 "${item.name}" 的来源资料夹。`);
-    }
-
-    const sourceFolderPathArr = await getFolderPath(sourceParentFolderId, userId);
-    const sourceParentPath = sourceFolderPathArr.length > 1 ? path.posix.join(...sourceFolderPathArr.slice(1).map(p => p.name)) : '';
-
-    const targetFolderPathArr = await getFolderPath(targetFolderId, userId);
-    const targetPath = targetFolderPathArr.length > 1 ? path.posix.join(...targetFolderPathArr.slice(1).map(p => p.name)) : '';
-
-    let oldPath, newPath;
-    if (storage.type === 'local') {
-        const userUploadDir = path.join(__dirname, '..', 'data', 'uploads', String(userId));
-        oldPath = path.join(userUploadDir, sourceParentPath, item.name);
-        newPath = path.join(userUploadDir, targetPath, item.name);
-    } else { // webdav
-        oldPath = path.posix.join('/', sourceParentPath, item.name);
-        newPath = path.posix.join('/', targetPath, item.name);
-    }
-
-    // 检查目标路径是否已存在（此检查现在依赖于 storage 模组中的 exists 函数）
-    const targetExists = await storage.exists(newPath);
-    if (targetExists) {
-        // 在 server.js 中已经有更复杂的冲突处理逻辑，这里保留一个基础的防护
-        throw new Error(`移动失败：目标位置已存在同名档案或资料夹 "${item.name}"。`);
-    }
-    
-    const moveResult = await storage.move(oldPath, newPath);
-    if (!moveResult.success) {
-        throw new Error(`移动实体 "${item.name}" 时发生错误。`);
-    }
-
-    if (item.type === 'file') {
-        await dbRun("UPDATE files SET folder_id = ?, file_id = ? WHERE message_id = ? AND user_id = ?",
-            [targetFolderId, newPath, item.id, userId]);
+    } else if (isFolderMerge) {
+        // 合并资料夹的逻辑：将来源资料夹的所有内容移动到目标资料夹，然后删除来源资料夹
+        const targetFolder = await findFolderByName(item.name, targetFolderId, userId);
+        if (!targetFolder) {
+            throw new Error(`合并失败：找不到目标资料夹 "${item.name}"。`);
+        }
+        const sourceChildren = await getChildrenOfFolder(item.id, userId);
+        for (const child of sourceChildren) {
+            // 递归调用 moveItem，将子项目移动到目标合并资料夹
+            // 注意：子项目的冲突也需要处理，这里简化为不处理内部冲突
+            await moveItem(child, targetFolder.id, userId, overwriteFileNames, mergeFolderNames);
+        }
+        // 移动完所有子项后，删除空的来源资料夹记录
+        await dbRun("DELETE FROM folders WHERE id = ? AND user_id = ?", [item.id, userId]);
+        return; // 合并操作到此结束
     } else {
-        await dbRun("UPDATE folders SET parent_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
-        const allDescendantFiles = await getFilesRecursive(item.id, userId);
-
-        for (const file of allDescendantFiles) {
-            const relativePathInsideMovedFolder = file.path.substring(item.name.length + 1);
-            const newFileId = path.posix.join(newPath, relativePathInsideMovedFolder);
-            await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [newFileId, file.message_id, userId]);
+        // 如果不是覆盖或合并，则进行标准的冲突检查
+        const conflict = await checkFullConflict(item.name, targetFolderId, userId);
+        if (conflict) {
+            throw new Error(`移动失败：目标位置已存在同名档案或资料夹 "${item.name}"。`);
         }
+    }
+    
+    // 3. 执行实体移动 (对于非 Telegram 储存)
+    if (storage.type !== 'telegram') {
+        if (!sourceParentId) {
+            throw new Error(`无法确定项目 "${item.name}" 的来源资料夹。`);
+        }
+        const sourcePathArr = await getFolderPath(sourceParentId, userId);
+        const sourceParentPath = sourcePathArr.length > 1 ? path.posix.join(...sourcePathArr.slice(1).map(p => p.name)) : '';
+        const targetPathArr = await getFolderPath(targetFolderId, userId);
+        const targetParentPath = targetPathArr.length > 1 ? path.posix.join(...targetPathArr.slice(1).map(p => p.name)) : '';
+
+        let oldPath, newPath, newFileIdForDb;
+        if (storage.type === 'local') {
+            const userUploadDir = path.join(__dirname, '..', 'data', 'uploads', String(userId));
+            oldPath = path.join(userUploadDir, sourceParentPath, item.name);
+            newPath = path.join(userUploadDir, targetParentPath, item.name);
+            newFileIdForDb = newPath;
+        } else { // webdav
+            oldPath = path.posix.join('/', sourceParentPath, item.name);
+            newPath = path.posix.join('/', targetParentPath, item.name);
+            newFileIdForDb = newPath;
+        }
+
+        const moveResult = await storage.move(oldPath, newPath, { overwrite: isFileOverwrite });
+        if (!moveResult.success) {
+            throw new Error(`移动实体档案/资料夹 "${item.name}" 时发生错误。`);
+        }
+        
+        // 更新资料库中的 file_id
+        if (item.type === 'file') {
+            await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [newFileIdForDb, item.id, userId]);
+        } else { // 资料夹移动后，其下所有子档案的路径也需要更新
+            const allDescendantFiles = await getFilesRecursive(item.id, userId, item.name);
+            for (const file of allDescendantFiles) {
+                const relativePathInsideMovedFolder = file.path.substring(item.name.length);
+                const finalNewFileId = path.posix.join(newPath, relativePathInsideMovedFolder);
+                await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [finalNewFileId, file.message_id, userId]);
+            }
+        }
+    }
+    
+    // 4. 更新资料库中的父子关系
+    if (item.type === 'file') {
+        await dbRun("UPDATE files SET folder_id = ? WHERE message_id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
+    } else { // folder
+        await dbRun("UPDATE folders SET parent_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
     }
 }
 
