@@ -109,11 +109,10 @@ function getItemsByIds(itemIds, userId) {
         if (!itemIds || itemIds.length === 0) return resolve([]);
         const placeholders = itemIds.map(() => '?').join(',');
         const sql = `
-            SELECT id, name, 'folder' as type FROM folders WHERE id IN (${placeholders}) AND user_id = ?
+            SELECT id, name, 'folder' as type, parent_id FROM folders WHERE id IN (${placeholders}) AND user_id = ?
             UNION ALL
-            SELECT message_id as id, fileName as name, 'file' as type FROM files WHERE message_id IN (${placeholders}) AND user_id = ?
+            SELECT message_id as id, fileName as name, 'file' as type, folder_id as parent_id FROM files WHERE message_id IN (${placeholders}) AND user_id = ?
         `;
-        // 修正：确保 userId 参数数量正确
         db.all(sql, [...itemIds, userId, ...itemIds, userId], (err, rows) => {
             if (err) return reject(err);
             resolve(rows);
@@ -275,126 +274,73 @@ function getAllFolders(userId) {
     });
 }
 
-// --- 核心修正：重构移动逻辑 ---
-async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
+async function moveItem(item, targetFolderId, userId, options = {}) {
     const { overwriteList = [], mergeList = [] } = options;
     const storage = require('./storage').getStorage();
 
-    const targetFolderPathArr = await getFolderPath(targetFolderId, userId);
-    const targetPath = (targetFolderPathArr.length > 1 ? '/' : '') + targetFolderPathArr.slice(1).map(p => p.name).join('/');
-    
+    // 检查是否尝试移动到自身或子目录
+    if (item.type === 'folder') {
+        if (item.id === targetFolderId) {
+            throw new Error('无法将资料夹移动到其自身内部。');
+        }
+        const descendants = await getAllDescendantFolderIds(item.id, userId);
+        if (descendants.includes(targetFolderId)) {
+            throw new Error('无法将资料夹移动到其子目录中。');
+        }
+    }
+
     const dbRun = (sql, params) => new Promise((res, rej) => db.run(sql, params, e => e ? rej(e) : res()));
 
-    async function moveSingleFile(file, targetFolderId, targetPath, shouldOverwrite = false) {
-        const conflictFile = await findFileInFolder(file.fileName, targetFolderId, userId);
-        if (conflictFile) {
-            if (!shouldOverwrite) return; 
-            const filesToDelete = await getFilesByIds([conflictFile.message_id], userId);
-            if (filesToDelete.length > 0) {
-                await storage.remove(filesToDelete, [], userId);
-                await deleteFilesByIds([conflictFile.message_id], userId);
-            }
-        }
-
-        const oldPath = file.file_id;
-        let newPath;
-
-        if (storage.type === 'local') {
-            const userUploadDir = path.join(__dirname, '..', 'data', 'uploads', String(userId));
-            const targetDir = path.join(userUploadDir, targetPath);
-            newPath = path.join(targetDir, file.fileName);
-        } else if (storage.type === 'webdav') {
-            newPath = path.posix.join(targetPath, file.fileName);
-        }
-        
-        if (newPath) {
-             const moveResult = await storage.move(oldPath, newPath);
-            if (!moveResult.success) throw new Error(`无法移动实体档案: ${file.fileName}`);
-            await dbRun("UPDATE files SET folder_id = ?, file_id = ? WHERE message_id = ? AND user_id = ?",
-                [targetFolderId, newPath, file.message_id, userId]);
-        } else { // Telegram
-             await dbRun("UPDATE files SET folder_id = ? WHERE message_id = ? AND user_id = ?",
-                [targetFolderId, file.message_id, userId]);
-        }
-    }
-
-    if (itemType === 'file') {
-        const [fileToMove] = await getFilesByIds([itemId], userId);
-        if (!fileToMove) throw new Error(`找不到来源档案 ID: ${itemId}`);
-        const shouldOverwrite = overwriteList.includes(fileToMove.fileName);
-        await moveSingleFile(fileToMove, targetFolderId, targetPath, shouldOverwrite);
-    } else { // folder
-        const folderToMove = (await getItemsByIds([itemId], userId))[0];
-        if (!folderToMove) throw new Error(`找不到来源资料夹 ID: ${itemId}`);
-
-        const existingFolderInTarget = await findFolderByName(folderToMove.name, targetFolderId, userId);
-
-        if (existingFolderInTarget) {
-            if (mergeList.includes(folderToMove.name)) {
-                const children = await getChildrenOfFolder(itemId, userId);
-                for (const child of children) {
-                    await moveItem(child.id, child.type, existingFolderInTarget.id, userId, options);
-                }
-                const remainingChildren = await getChildrenOfFolder(itemId, userId);
-                if (remainingChildren.length === 0) {
-                    await deleteSingleFolder(itemId, userId);
-                }
-            }
+    if (storage.type === 'telegram') {
+        // 对于 Telegram，只需要更新数据库中的 parent_id/folder_id
+        if (item.type === 'file') {
+            await dbRun("UPDATE files SET folder_id = ? WHERE message_id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
         } else {
-            if (storage.type === 'telegram') {
-                await dbRun("UPDATE folders SET parent_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, itemId, userId]);
-            } else {
-                const sourceFolderPathArr = await getFolderPath(itemId, userId);
-                const sourceParentPath = (sourceFolderPathArr.length > 2 ? '/' : '') + sourceFolderPathArr.slice(1, -1).map(p => p.name).join('/');
+            await dbRun("UPDATE folders SET parent_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
+        }
+        return;
+    }
+    
+    // 对于 local 和 webdav，需要移动实体档案/资料夹并更新数据库
+    // 1. 获取来源和目标路径
+    const sourceFolderPathArr = await getFolderPath(item.parent_id, userId);
+    const sourceParentPath = sourceFolderPathArr.slice(1).map(p => p.name).join('/');
+    
+    const targetFolderPathArr = await getFolderPath(targetFolderId, userId);
+    const targetPath = targetFolderPathArr.slice(1).map(p => p.name).join('/');
 
-                let oldPath, newPath;
-                if (storage.type === 'local') {
-                    const userUploadDir = path.join(__dirname, '..', 'data', 'uploads', String(userId));
-                    oldPath = path.join(userUploadDir, sourceParentPath, folderToMove.name);
-                    newPath = path.join(userUploadDir, targetPath, folderToMove.name);
-                } else { // webdav
-                    oldPath = path.posix.join(sourceParentPath, folderToMove.name);
-                    newPath = path.posix.join(targetPath, folderToMove.name);
-                }
-                
-                const moveResult = await storage.move(oldPath, newPath);
-                if (!moveResult.success) throw new Error(`无法移动实体资料夹: ${folderToMove.name}`);
+    // 2. 定义旧路径和新路径
+    let oldPath, newPath;
+    if (storage.type === 'local') {
+        const userUploadDir = path.join(__dirname, '..', 'data', 'uploads', String(userId));
+        oldPath = path.join(userUploadDir, sourceParentPath, item.name);
+        newPath = path.join(userUploadDir, targetPath, item.name);
+    } else { // webdav
+        oldPath = path.posix.join('/', sourceParentPath, item.name);
+        newPath = path.posix.join('/', targetPath, item.name);
+    }
 
-                await dbRun("UPDATE folders SET parent_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, itemId, userId]);
-                
-                // 递归更新所有子档案的 file_id
-                const allDescendantFiles = await getFilesRecursive(itemId, userId);
-                for (const file of allDescendantFiles) {
-                    const newFileId = file.file_id.replace(oldPath, newPath);
-                    await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [newFileId, file.message_id, userId]);
-                }
-            }
+    // 3. 执行移动
+    const moveResult = await storage.move(oldPath, newPath);
+    if (!moveResult.success) {
+        throw new Error(`无法移动实体档案或资料夹: ${item.name}`);
+    }
+
+    // 4. 更新数据库
+    if (item.type === 'file') {
+        await dbRun("UPDATE files SET folder_id = ?, file_id = ? WHERE message_id = ? AND user_id = ?",
+            [targetFolderId, newPath, item.id, userId]);
+    } else { // folder
+        await dbRun("UPDATE folders SET parent_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
+        // 递归更新所有子档案的 file_id
+        const allDescendantFiles = await getFilesRecursive(item.id, userId);
+        for (const file of allDescendantFiles) {
+            const relativeFilePath = path.posix.relative(oldPath, file.file_id);
+            const newFileId = path.posix.join(newPath, relativeFilePath);
+            await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [newFileId, file.message_id, userId]);
         }
     }
 }
-
-
-function moveItems(fileIds, folderIds, targetFolderId, userId) {
-    const sqlFile = `UPDATE files SET folder_id = ? WHERE message_id IN (${fileIds.map(()=>'?').join(',')}) AND user_id = ?`;
-    const sqlFolder = `UPDATE folders SET parent_id = ? WHERE id IN (${folderIds.map(()=>'?').join(',')}) AND user_id = ?`;
-
-    return new Promise((resolve, reject) => {
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION;");
-            const promises = [];
-            if (fileIds && fileIds.length > 0) {
-                promises.push(new Promise((res, rej) => db.run(sqlFile, [targetFolderId, ...fileIds, userId], (e)=>e?rej(e):res())));
-            }
-            if (folderIds && folderIds.length > 0) {
-                promises.push(new Promise((res, rej) => db.run(sqlFolder, [targetFolderId, ...folderIds, userId], (e)=>e?rej(e):res())));
-            }
-            Promise.all(promises)
-                .then(() => db.run("COMMIT;", (e) => e ? reject(e) : resolve({ success: true })))
-                .catch(err => db.run("ROLLBACK;", () => reject(err)));
-        });
-    });
-}
-
 
 function deleteSingleFolder(folderId, userId) {
     return new Promise((resolve, reject) => {
@@ -812,7 +758,6 @@ module.exports = {
     getFilesByIds,
     getItemsByIds,
     getChildrenOfFolder,
-    moveItems,
     moveItem,
     getFileByShareToken,
     getFolderByShareToken,
