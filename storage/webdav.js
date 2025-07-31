@@ -47,18 +47,21 @@ async function getFolderPath(folderId, userId) {
     if (folderId === userRoot.id) return '/';
     
     const pathParts = await data.getFolderPath(folderId, userId);
+    // 修正：确保路径总是以 / 开头
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
 async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
     const client = getClient();
     const folderPath = await getFolderPath(folderId, userId);
-    const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
+    const remotePath = path.posix.join(folderPath, fileName);
     
+    // 确保远端父目录存在
     if (folderPath && folderPath !== "/") {
         try {
             await client.createDirectory(folderPath, { recursive: true });
         } catch (e) {
+            // 忽略“Method Not Allowed”或“Not Implemented”错误，因为有些伺服器不支持递归创建
             if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
                  throw new Error(`建立 WebDAV 目录失败 (${e.response.status}): ${e.message}`);
             }
@@ -80,7 +83,7 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
         fileName,
         mimetype,
         size: stat.size,
-        file_id: remotePath,
+        file_id: remotePath, // file_id 储存的是远端相对路径
         date: new Date(stat.lastmod).getTime(),
     }, folderId, userId, 'webdav');
     
@@ -106,6 +109,7 @@ async function remove(files, folders, userId) {
     folders.forEach(folder => {
         if (folder.path && folder.path !== '/') {
             let p = folder.path.startsWith('/') ? folder.path : '/' + folder.path;
+            // 确保资料夹路径以 / 结尾
             if (!p.endsWith('/')) {
                 p += '/';
             }
@@ -119,10 +123,10 @@ async function remove(files, folders, userId) {
     // 3. 依次执行删除
     for (const item of allItemsToDelete) {
         try {
-            // **最终勘误**：无论是档案还是资料夹，都统一使用 `deleteFile` 函数。
-            // WebDAV 服务器会根据路径是否以 '/' 结尾来区分档案和资料夹。
+            // WebDAV 客户端的 deleteFile 可以删除文件和空目录
             await client.deleteFile(item.path);
         } catch (error) {
+            // 忽略 "Not Found" 错误
             if (!(error.response && error.response.status === 404)) {
                 const errorMessage = `删除 WebDAV ${item.type} [${item.path}] 失败: ${error.message}`;
                 console.error(errorMessage);
@@ -150,4 +154,28 @@ async function getUrl(file_id, userId) {
     return client.getFileDownloadLink(path.posix.join('/', file_id));
 }
 
-module.exports = { upload, remove, getUrl, stream, resetClient, type: 'webdav' };
+// --- 新增的 move 函数 ---
+async function move(oldPath, newPath) {
+    const client = getClient();
+    try {
+        // 确保目标父目录存在
+        const newParentDir = path.posix.dirname(newPath);
+        if (newParentDir && newParentDir !== '/') {
+            try {
+                 await client.createDirectory(newParentDir, { recursive: true });
+            } catch(e) {
+                 if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
+                    throw e;
+                }
+            }
+        }
+        await client.moveFile(oldPath, newPath);
+        return { success: true };
+    } catch (error) {
+        console.error(`WebDAV 移动失败 从 ${oldPath} 到 ${newPath}:`, error);
+        return { success: false, error };
+    }
+}
+
+
+module.exports = { upload, remove, getUrl, stream, move, resetClient, type: 'webdav' };
