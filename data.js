@@ -274,6 +274,7 @@ function getAllFolders(userId) {
     });
 }
 
+// --- 修：修正后的 moveItem 函数 ---
 async function moveItem(item, targetFolderId, userId) {
     const storage = require('./storage').getStorage();
 
@@ -301,7 +302,6 @@ async function moveItem(item, targetFolderId, userId) {
         return;
     }
     
-    // 对于 local 和 webdav，需要移动实体档案/资料夹并更新数据库
     const sourceParentFolderId = item.parent_id;
     if (sourceParentFolderId === undefined || sourceParentFolderId === null) {
         throw new Error(`无法确定项目 "${item.name}" 的来源资料夹。`);
@@ -323,9 +323,10 @@ async function moveItem(item, targetFolderId, userId) {
         newPath = path.posix.join('/', targetPath, item.name);
     }
 
-    // 检查目标路径是否已存在
+    // 检查目标路径是否已存在（此检查现在依赖于 storage 模组中的 exists 函数）
     const targetExists = await storage.exists(newPath);
-    if(targetExists) {
+    if (targetExists) {
+        // 在 server.js 中已经有更复杂的冲突处理逻辑，这里保留一个基础的防护
         throw new Error(`移动失败：目标位置已存在同名档案或资料夹 "${item.name}"。`);
     }
     
@@ -348,6 +349,7 @@ async function moveItem(item, targetFolderId, userId) {
         }
     }
 }
+
 
 function deleteSingleFolder(folderId, userId) {
     return new Promise((resolve, reject) => {
