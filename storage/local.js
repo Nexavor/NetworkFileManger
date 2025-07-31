@@ -66,7 +66,7 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
     return { success: true, message: '文件已储存至本地。', fileId: dbResult.fileId };
 }
 
-// --- 修正后的 remove 函数 ---
+// --- 修：修正并强化 remove 函数 ---
 async function remove(files, folders, userId) {
     const results = { success: true, errors: [] };
     const parentDirs = new Set();
@@ -87,20 +87,18 @@ async function remove(files, folders, userId) {
         }
     }
     
-    // 2. 构建并排序资料夹路径，确保从最深层开始删除
-    const folderPaths = folders
-        .map(f => path.join(userUploadDir, f.path))
-        .sort((a, b) => b.length - a.length);
+    // 2. 构建资料夹路径列表 (不再需要排序)
+    const folderPaths = folders.map(f => path.join(userUploadDir, f.path));
 
-    // 3. 删除所有资料夹
+    // 3. 递归删除所有资料夹
     for (const folderPath of folderPaths) {
         try {
             if (fsSync.existsSync(folderPath)) {
                 parentDirs.add(path.dirname(folderPath));
-                await fs.rmdir(folderPath);
+                // 使用 fsp.rm 进行递归删除，更稳固
+                await fs.rm(folderPath, { recursive: true, force: true });
             }
         } catch (e) {
-            // 如果 rmdir 失败 (例如因为目录不为空)，记录错误
             const errorMessage = `删除本地资料夹失败: ${folderPath}, ${e.message}`;
             console.warn(errorMessage);
             results.errors.push(errorMessage);
@@ -115,6 +113,7 @@ async function remove(files, folders, userId) {
 
     return results;
 }
+
 
 async function getUrl(file_id, userId) {
     return `/local-files/${userId}/${path.basename(file_id)}`;
