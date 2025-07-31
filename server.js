@@ -628,7 +628,7 @@ app.post('/api/move', requireLogin, async (req, res) => {
     }
 });
 
-// 统一的删除处理器
+// --- 新生：统一的删除处理器 (v2) ---
 async function unifiedDeleteHandler(req, res) {
     const { messageIds = [], folderIds = [] } = req.body;
     const userId = req.session.userId;
@@ -659,11 +659,14 @@ async function unifiedDeleteHandler(req, res) {
         // 2. 执行物理删除
         const storageResult = await storage.remove(filesForStorage, foldersForStorage, userId);
         
+        // --- 修：关键逻辑修正 ---
+        // 如果实体档案删除失败，则中止操作，不删除资料库纪录
         if (!storageResult.success) {
-            console.warn("部分档案在储存端删除失败:", storageResult.errors);
+            console.warn("一个或多个实体档案在储存端删除失败:", storageResult.errors);
+            throw new Error(`实体档案删除失败，资料库记录未变更。详细原因: ${JSON.stringify(storageResult.errors)}`);
         }
 
-        // 3. 执行数据库删除
+        // 3. 仅在实体档案成功删除后，才执行资料库删除
         const allFileIdsToDelete = filesForStorage.map(f => f.message_id);
         const allFolderIdsToDelete = foldersForStorage.map(f => f.id);
         await data.executeDeletion(allFileIdsToDelete, allFolderIdsToDelete, userId);
