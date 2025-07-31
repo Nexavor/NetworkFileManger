@@ -603,22 +603,28 @@ app.get('/api/folders', requireLogin, async (req, res) => {
     res.json(folders);
 });
 
+// **核心修正点**：这是重构后的移动 API 端点
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
-        const { items, targetFolderId, overwriteList = [], mergeList = [] } = req.body;
+        const { items, targetFolderId } = req.body;
         const userId = req.session.userId;
+
         if (!items || !Array.isArray(items) || items.length === 0 || !targetFolderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
         
         for (const item of items) {
-            await data.moveItem(item, targetFolderId, userId, { overwriteList, mergeList });
+             // 校验每个 item 对象是否包含必要字段
+            if (!item.id || !item.name || !item.type || item.parent_id === undefined) {
+                 return res.status(400).json({ success: false, message: `请求中包含无效的项目资料: ${JSON.stringify(item)}` });
+            }
+            await data.moveItem(item, targetFolderId, userId);
         }
         
         res.json({ success: true, message: "移动成功" });
     } catch (error) { 
-        console.error("Move error:", error);
-        res.status(500).json({ success: false, message: '移动失败：' + error.message }); 
+        console.error("移动操作失败:", error);
+        res.status(500).json({ success: false, message: `移动失败：${error.message}` }); 
     }
 });
 
