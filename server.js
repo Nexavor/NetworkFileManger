@@ -603,7 +603,6 @@ app.get('/api/folders', requireLogin, async (req, res) => {
     res.json(folders);
 });
 
-// --- 修正后的 /api/move 路由 ---
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
         const { itemIds, targetFolderId, overwriteList = [], mergeList = [] } = req.body;
@@ -612,11 +611,12 @@ app.post('/api/move', requireLogin, async (req, res) => {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
         
+        // **修正关键点**：现在 getItemsByIds 会回传 parent_id
         const items = await data.getItemsByIds(itemIds, userId);
         
         for (const item of items) {
-            // 直接调用修正后的 moveItem 函数
-            await data.moveItem(item.id, item.type, targetFolderId, userId, { overwriteList, mergeList });
+            // **修正关键点**：将完整的 item 物件传递给 moveItem
+            await data.moveItem(item, targetFolderId, userId, { overwriteList, mergeList });
         }
         
         res.json({ success: true, message: "移动成功" });
