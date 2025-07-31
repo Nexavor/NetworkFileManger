@@ -367,7 +367,6 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                     const existingFile = await data.findFileInFolder(fileName, targetFolderId, userId);
                     if (existingFile) {
                         const filesToDelete = await data.getFilesByIds([existingFile.message_id], userId);
-                        // **修复：先物理删除，再数据库删除**
                         if (filesToDelete.length > 0) {
                            await storage.remove(filesToDelete, [], userId); 
                         }
@@ -423,10 +422,8 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         if (mode === 'edit' && fileId) {
              const filesToDelete = await data.getFilesByIds([fileId], userId);
             if (filesToDelete.length > 0) {
-                // **修复：同样修复编辑逻辑**
                 await storage.remove(filesToDelete, [], userId);
                 await data.deleteFilesByIds([fileId], userId);
-
                 result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, filesToDelete[0].folder_id);
             } else {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
@@ -606,6 +603,7 @@ app.get('/api/folders', requireLogin, async (req, res) => {
     res.json(folders);
 });
 
+// --- 修正后的 /api/move 路由 ---
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
         const { itemIds, targetFolderId, overwriteList = [], mergeList = [] } = req.body;
@@ -617,6 +615,7 @@ app.post('/api/move', requireLogin, async (req, res) => {
         const items = await data.getItemsByIds(itemIds, userId);
         
         for (const item of items) {
+            // 直接调用修正后的 moveItem 函数
             await data.moveItem(item.id, item.type, targetFolderId, userId, { overwriteList, mergeList });
         }
         
