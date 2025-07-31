@@ -603,22 +603,22 @@ app.get('/api/folders', requireLogin, async (req, res) => {
     res.json(folders);
 });
 
-// **核心修正点**：这是重构后的移动 API 端点
+// *** 核心修正 ***
+// 移动 API 端点，现在会处理覆盖和合并的指令
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
-        const { items, targetFolderId } = req.body;
+        const { items, targetFolderId, overwriteFileNames, mergeFolderNames } = req.body;
         const userId = req.session.userId;
 
-        if (!items || !Array.isArray(items) || items.length === 0 || !targetFolderId) {
+        if (!items || !Array.isArray(items) || !targetFolderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
         
         for (const item of items) {
-             // 校验每个 item 对象是否包含必要字段
-            if (!item.id || !item.name || !item.type || item.parent_id === undefined) {
+            if (!item.id || !item.name || !item.type) {
                  return res.status(400).json({ success: false, message: `请求中包含无效的项目资料: ${JSON.stringify(item)}` });
             }
-            await data.moveItem(item, targetFolderId, userId);
+            await data.moveItem(item, targetFolderId, userId, overwriteFileNames, mergeFolderNames);
         }
         
         res.json({ success: true, message: "移动成功" });
@@ -628,7 +628,7 @@ app.post('/api/move', requireLogin, async (req, res) => {
     }
 });
 
-// --- 新生：统一的删除处理器 (v2) ---
+// 统一的删除处理器
 async function unifiedDeleteHandler(req, res) {
     const { messageIds = [], folderIds = [] } = req.body;
     const userId = req.session.userId;
@@ -642,7 +642,6 @@ async function unifiedDeleteHandler(req, res) {
         let filesForStorage = [];
         let foldersForStorage = [];
         
-        // 1. 收集所有要删除的项目信息
         if (folderIds.length > 0) {
             for (const folderId of folderIds) {
                 const deletionData = await data.getFolderDeletionData(folderId, userId);
@@ -656,17 +655,13 @@ async function unifiedDeleteHandler(req, res) {
             filesForStorage.push(...directFiles);
         }
         
-        // 2. 执行物理删除
         const storageResult = await storage.remove(filesForStorage, foldersForStorage, userId);
         
-        // --- 修：关键逻辑修正 ---
-        // 如果实体档案删除失败，则中止操作，不删除资料库纪录
         if (!storageResult.success) {
             console.warn("一个或多个实体档案在储存端删除失败:", storageResult.errors);
             throw new Error(`实体档案删除失败，资料库记录未变更。详细原因: ${JSON.stringify(storageResult.errors)}`);
         }
 
-        // 3. 仅在实体档案成功删除后，才执行资料库删除
         const allFileIdsToDelete = filesForStorage.map(f => f.message_id);
         const allFolderIdsToDelete = foldersForStorage.map(f => f.id);
         await data.executeDeletion(allFileIdsToDelete, allFolderIdsToDelete, userId);
@@ -678,14 +673,6 @@ async function unifiedDeleteHandler(req, res) {
         res.status(500).json({ success: false, message: '删除过程中发生错误: ' + error.message });
     }
 }
-
-
-app.post('/api/folder/delete', requireLogin, (req, res) => {
-    const { folderId } = req.body;
-    req.body.folderIds = [folderId];
-    req.body.messageIds = [];
-    unifiedDeleteHandler(req, res);
-});
 
 app.post('/delete-multiple', requireLogin, unifiedDeleteHandler);
 
