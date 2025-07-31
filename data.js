@@ -316,7 +316,6 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
         const sourceChildren = await getChildrenOfFolder(item.id, userId);
         for (const child of sourceChildren) {
             // 递归调用 moveItem，将子项目移动到目标合并资料夹
-            // 注意：子项目的冲突也需要处理，这里简化为不处理内部冲突
             await moveItem(child, targetFolder.id, userId, overwriteFileNames, mergeFolderNames);
         }
         // 移动完所有子项后，删除空的来源资料夹记录
@@ -326,6 +325,15 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
         // 如果不是覆盖或合并，则进行标准的冲突检查
         const conflict = await checkFullConflict(item.name, targetFolderId, userId);
         if (conflict) {
+            // --- *** 逻辑修正开始 *** ---
+            // 在递归合并文件夹时，如果遇到同名文件冲突，但该文件不在覆盖列表中，
+            // 则应跳过此文件而不是抛出错误中止整个移动过程。
+            if (item.type === 'file' && !overwriteFileNames.includes(item.name)) {
+                console.log(`跳过移动冲突文件: ${item.name} 到目录 ID ${targetFolderId}`);
+                return; // 静默跳过
+            }
+            // --- *** 逻辑修正结束 *** ---
+            // 对于其他所有情况（例如非合并移动，或文件夹名称冲突），仍然抛出错误。
             throw new Error(`移动失败：目标位置已存在同名档案或资料夹 "${item.name}"。`);
         }
     }
