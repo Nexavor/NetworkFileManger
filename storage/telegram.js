@@ -45,10 +45,14 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId, captio
   }
 }
 
-async function remove(files, userId) {
+// --- 修：重构 remove 函数以符合统一介面 ---
+async function remove(files, folders, userId) { // 修正函式签名
     const messageIds = files.map(f => f.message_id);
-    const results = { success: [], failure: [] };
-    if (!Array.isArray(messageIds) || messageIds.length === 0) return results;
+    const results = { success: true, errors: [] }; // 修正回传格式
+
+    if (!Array.isArray(messageIds) || messageIds.length === 0) {
+        return results;
+    }
 
     for (const messageId of messageIds) {
         try {
@@ -56,25 +60,22 @@ async function remove(files, userId) {
                 chat_id: process.env.CHANNEL_ID,
                 message_id: messageId,
             });
-            if (res.data.ok || (res.data.description && res.data.description.includes("message to delete not found"))) {
-                results.success.push(messageId);
-            } else {
-                results.failure.push({ id: messageId, reason: res.data.description });
+            // 如果 API 回传不成功，且错误不是“找不到讯息”，则记录错误
+            if (!res.data.ok && !(res.data.description && res.data.description.includes("message to delete not found"))) {
+                 const reason = res.data.description || 'Unknown Telegram API error';
+                 results.errors.push(`删除 Telegram 讯息 ${messageId} 失败: ${reason}`);
+                 results.success = false;
             }
         } catch (error) {
             const reason = error.response ? error.response.data.description : error.message;
-            if (reason.includes("message to delete not found")) {
-                results.success.push(messageId);
-            } else {
-                results.failure.push({ id: messageId, reason });
+            // 如果捕获到错误，同样忽略“找不到讯息”的情况
+             if (!reason.includes("message to delete not found")) {
+                results.errors.push(`删除 Telegram 讯息 ${messageId} 失败 (请求错误): ${reason}`);
+                results.success = false;
             }
         }
     }
-
-    if (results.success.length > 0) {
-        await data.deleteFilesByIds(results.success, userId);
-    }
-
+    // 移除资料库操作，统一由 server.js 处理
     return results;
 }
 
