@@ -972,6 +972,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 let fileOverwriteList = [];
                 let folderMergeList = [];
                 let finalItemsToMove = [...itemsToMoveWithDetails];
+                // *** 新增：用于追踪使用者选择跳过的项目 ***
+                const skippedFolderNames = new Set();
+                const skippedFileNames = new Set();
+
 
                 if (folderConflicts.length > 0) {
                     for (const folderName of folderConflicts) {
@@ -979,7 +983,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (action === 'merge') {
                             folderMergeList.push(folderName);
                         } else if (action === 'skip') {
-                            finalItemsToMove = finalItemsToMove.filter(item => !(item.name === folderName && item.type === 'folder'));
+                            // 只记录被跳过的资料夹名称
+                            skippedFolderNames.add(folderName);
                         } else { // abort
                             moveModal.style.display = 'none';
                             return;
@@ -995,10 +1000,20 @@ document.addEventListener('DOMContentLoaded', () => {
                         return;
                     }
                     fileOverwriteList = result.overwriteList;
+                    // *** 新增：找出哪些档案被跳过了 ***
+                    fileConflicts.forEach(name => {
+                        if (!fileOverwriteList.includes(name)) {
+                            skippedFileNames.add(name);
+                        }
+                    });
                 }
     
+                // *** 核心修正：基于跳过清单来过滤最终移动的项目 ***
                 finalItemsToMove = finalItemsToMove.filter(item => {
-                    if (item.type === 'file' && fileConflicts.includes(item.name) && !fileOverwriteList.includes(item.name)) {
+                    if (item.type === 'folder' && skippedFolderNames.has(item.name)) {
+                        return false;
+                    }
+                    if (item.type === 'file' && skippedFileNames.has(item.name)) {
                         return false;
                     }
                     return true;
@@ -1011,8 +1026,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
     
-                // *** 核心修正 ***
-                // 将覆盖和合并的清单一同发送给后端
                 await axios.post('/api/move', {
                     items: finalItemsToMove,
                     targetFolderId: moveTargetFolderId,
