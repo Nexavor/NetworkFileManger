@@ -66,7 +66,7 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
     return { success: true, message: '文件已储存至本地。', fileId: dbResult.fileId };
 }
 
-// --- 修正后的 remove 函数 ---
+// --- 强化后的 remove 函数 ---
 async function remove(files, folders, userId) {
     const results = { success: true, errors: [] };
     const parentDirs = new Set();
@@ -100,7 +100,6 @@ async function remove(files, folders, userId) {
                 await fs.rm(folderPath, { recursive: true, force: true });
             }
         } catch (e) {
-            // 如果 rmdir 失败 (例如因为目录不为空)，记录错误
             const errorMessage = `删除本地资料夹失败: ${folderPath}, ${e.message}`;
             console.warn(errorMessage);
             results.errors.push(errorMessage);
@@ -120,15 +119,20 @@ async function getUrl(file_id, userId) {
     return `/local-files/${userId}/${path.basename(file_id)}`;
 }
 
-// --- 新增的 move 函数 ---
-async function move(oldPath, newPath) {
+// *** 核心修正 ***
+// move 函数现在接受 options 并处理 overwrite 旗标
+async function move(oldPath, newPath, options = {}) {
     try {
-        // 确保目标父目录存在
         const newParentDir = path.dirname(newPath);
         await fs.mkdir(newParentDir, { recursive: true });
-        // 移动文件或文件夹
+
+        // 如果允许覆盖，且目标档案已存在，则先删除它
+        if (options.overwrite && fsSync.existsSync(newPath)) {
+            await fs.unlink(newPath);
+        }
+        
         await fs.rename(oldPath, newPath);
-        // 清理旧的空父目录
+        
         await removeEmptyDirs(path.dirname(oldPath));
         return { success: true };
     } catch (error) {
@@ -137,7 +141,6 @@ async function move(oldPath, newPath) {
     }
 }
 
-// --- 新生: 新增 exists 函数 ---
 async function exists(filePath) {
     return fsSync.existsSync(filePath);
 }
