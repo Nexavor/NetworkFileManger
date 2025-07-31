@@ -274,22 +274,23 @@ function getAllFolders(userId) {
     });
 }
 
-async function moveItem(item, targetFolderId, userId, options = {}) {
-    const { overwriteList = [], mergeList = [] } = options;
+async function moveItem(item, targetFolderId, userId) {
     const storage = require('./storage').getStorage();
 
-    // 检查是否尝试移动到自身或子目录
+    // 防呆：检查是否尝试移动到自身或子目录
     if (item.type === 'folder') {
-        if (item.id === targetFolderId) {
+        const numericTargetFolderId = Number(targetFolderId);
+        const numericItemId = Number(item.id);
+        if (numericItemId === numericTargetFolderId) {
             throw new Error('无法将资料夹移动到其自身内部。');
         }
-        const descendants = await getAllDescendantFolderIds(item.id, userId);
-        if (descendants.includes(targetFolderId)) {
+        const descendants = await getAllDescendantFolderIds(numericItemId, userId);
+        if (descendants.map(Number).includes(numericTargetFolderId)) {
             throw new Error('无法将资料夹移动到其子目录中。');
         }
     }
 
-    const dbRun = (sql, params) => new Promise((res, rej) => db.run(sql, params, e => e ? rej(e) : res()));
+    const dbRun = (sql, params) => new Promise((res, rej) => db.run(sql, params, function(e) { e ? rej(e) : res(this); }));
 
     if (storage.type === 'telegram') {
         if (item.type === 'file') {
@@ -300,15 +301,17 @@ async function moveItem(item, targetFolderId, userId, options = {}) {
         return;
     }
     
-    const sourceParentFolder = (item.type === 'file') 
-        ? (await data.getFilesByIds([item.id], userId))[0].folder_id
-        : (await data.getItemsByIds([item.id], userId))[0].parent_id;
+    // 对于 local 和 webdav，需要移动实体档案/资料夹并更新数据库
+    const sourceParentFolderId = item.parent_id;
+    if (sourceParentFolderId === undefined || sourceParentFolderId === null) {
+        throw new Error(`无法确定项目 "${item.name}" 的来源资料夹。`);
+    }
 
-    const sourceFolderPathArr = await getFolderPath(sourceParentFolder, userId);
-    const sourceParentPath = sourceFolderPathArr.slice(1).map(p => p.name).join('/');
-    
+    const sourceFolderPathArr = await getFolderPath(sourceParentFolderId, userId);
+    const sourceParentPath = sourceFolderPathArr.length > 1 ? path.posix.join(...sourceFolderPathArr.slice(1).map(p => p.name)) : '';
+
     const targetFolderPathArr = await getFolderPath(targetFolderId, userId);
-    const targetPath = targetFolderPathArr.slice(1).map(p => p.name).join('/');
+    const targetPath = targetFolderPathArr.length > 1 ? path.posix.join(...targetFolderPathArr.slice(1).map(p => p.name)) : '';
 
     let oldPath, newPath;
     if (storage.type === 'local') {
@@ -320,20 +323,27 @@ async function moveItem(item, targetFolderId, userId, options = {}) {
         newPath = path.posix.join('/', targetPath, item.name);
     }
 
+    // 检查目标路径是否已存在
+    const targetExists = await storage.exists(newPath);
+    if(targetExists) {
+        throw new Error(`移动失败：目标位置已存在同名档案或资料夹 "${item.name}"。`);
+    }
+    
     const moveResult = await storage.move(oldPath, newPath);
     if (!moveResult.success) {
-        throw new Error(`无法移动实体档案或资料夹: ${item.name}`);
+        throw new Error(`移动实体 "${item.name}" 时发生错误。`);
     }
 
     if (item.type === 'file') {
         await dbRun("UPDATE files SET folder_id = ?, file_id = ? WHERE message_id = ? AND user_id = ?",
             [targetFolderId, newPath, item.id, userId]);
-    } else { // folder
+    } else {
         await dbRun("UPDATE folders SET parent_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
         const allDescendantFiles = await getFilesRecursive(item.id, userId);
+
         for (const file of allDescendantFiles) {
-            const relativeFilePath = file.file_id.substring(oldPath.length);
-            const newFileId = path.posix.join(newPath, relativeFilePath);
+            const relativePathInsideMovedFolder = file.path.substring(item.name.length + 1);
+            const newFileId = path.posix.join(newPath, relativePathInsideMovedFolder);
             await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [newFileId, file.message_id, userId]);
         }
     }
