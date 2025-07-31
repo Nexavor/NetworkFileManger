@@ -138,7 +138,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const oversizedFiles = Array.from(files).filter(file => file.size > MAX_TELEGRAM_SIZE);
         if (oversizedFiles.length > 0) {
             const fileNames = oversizedFiles.map(f => `"${f.name}"`).join(', ');
-            showNotification(`文件 ${fileNames} 过大，超过 ${formatBytes(MAX_TELEGRAM_SIZE)} 的限制。`, 'error', !isDrag ? uploadNotificationArea : null);
+            showNotification(`文件 ${fileNames} 过大，超过 ${formatBytes(MAX_TELEGRAM_SIZE)} 的限制。`, 'error', !isDrag ? null : uploadNotificationArea);
             return;
         }
 
@@ -218,11 +218,7 @@ document.addEventListener('DOMContentLoaded', () => {
             currentFolderContents = res.data.contents;
             // 清理已不存在的选择项
             const currentIds = new Set([...res.data.contents.folders.map(f => String(f.id)), ...res.data.contents.files.map(f => String(f.id))]);
-            selectedItems.forEach((_, key) => {
-                if (!currentIds.has(key)) {
-                    selectedItems.delete(key);
-                }
-            });
+            selectedItems.clear();
             renderBreadcrumb(res.data.path);
             renderItems(currentFolderContents.folders, currentFolderContents.files);
             updateActionBar();
@@ -606,17 +602,23 @@ document.addEventListener('DOMContentLoaded', () => {
         const type = target.dataset.type;
         const name = target.dataset.name;
 
+        // 查找完整的项目信息
+        const fullItem = (type === 'folder' 
+            ? currentFolderContents.folders.find(i => String(i.id) === id) 
+            : currentFolderContents.files.find(i => String(i.id) === id)) || { type, name };
+
+
         if (isMultiSelectMode) {
             if (selectedItems.has(id)) {
                 selectedItems.delete(id);
             } else {
-                selectedItems.set(id, { type, name });
+                selectedItems.set(id, fullItem);
             }
         } else {
             const isSelected = selectedItems.has(id);
             selectedItems.clear();
             if (!isSelected) {
-                selectedItems.set(id, { type, name });
+                selectedItems.set(id, fullItem);
             }
         }
         rerenderSelection();
@@ -708,13 +710,17 @@ document.addEventListener('DOMContentLoaded', () => {
         selectAllBtn.addEventListener('click', () => {
             isMultiSelectMode = true;
             if (multiSelectBtn) multiSelectBtn.classList.add('active');
+            
             const allVisibleItems = [...currentFolderContents.folders, ...currentFolderContents.files];
             const allVisibleIds = allVisibleItems.map(item => String(item.id));
             const isAllSelected = allVisibleIds.length > 0 && allVisibleIds.every(id => selectedItems.has(id));
+
             if (isAllSelected) {
                 selectedItems.clear();
             } else {
-                allVisibleItems.forEach(item => selectedItems.set(String(item.id), { type: item.type, name: item.name }));
+                allVisibleItems.forEach(item => {
+                    selectedItems.set(String(item.id), item);
+                });
             }
             rerenderSelection();
             updateActionBar();
@@ -829,8 +835,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 else foldersToDelete.push(parseInt(id));
             });
             try {
-                if (filesToDelete.length > 0) await axios.post('/delete-multiple', { messageIds: filesToDelete });
-                for (const folderId of foldersToDelete) await axios.post('/api/folder/delete', { folderId });
+                await axios.post('/delete-multiple', { messageIds: filesToDelete, folderIds: foldersToDelete });
                 loadFolderContents(currentFolderId);
             } catch (error) { alert('删除失败，请重试。'); }
         });
@@ -954,32 +959,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (confirmMoveBtn) {
         confirmMoveBtn.addEventListener('click', async () => {
             if (!moveTargetFolderId) return;
-
-            const selectedIds = Array.from(selectedItems.keys()).map(id => parseInt(id, 10));
+        
+            const itemsToMoveWithDetails = Array.from(selectedItems.values());
             
             try {
-                // *** 关键修正 开始 ***
-                // 建立后端需要的、包含完整资讯的 items 阵列
-                const itemsToMoveWithDetails = selectedIds.map(id => {
-                    const folder = currentFolderContents.folders.find(f => f.id === id);
-                    if (folder) {
-                        return { id: folder.id, name: folder.name, type: 'folder', parent_id: folder.parent_id };
-                    }
-                    const file = currentFolderContents.files.find(f => f.id === id);
-                    if (file) {
-                        return { id: file.id, name: file.fileName, type: 'file', parent_id: file.folder_id };
-                    }
-                    return null;
-                }).filter(Boolean);
-
-                if (itemsToMoveWithDetails.length !== selectedIds.length) {
-                    alert('错误：一个或多个选定项目的详细资讯遗失。');
-                    return;
-                }
-                
-                // 注意：这里的冲突检查仍然使用 ID，但最终提交的是包含详细资讯的阵列
                 const conflictCheckRes = await axios.post('/api/check-move-conflict', {
-                    itemIds: selectedIds,
+                    itemIds: itemsToMoveWithDetails.map(item => item.id),
                     targetFolderId: moveTargetFolderId
                 });
                 
@@ -1012,7 +997,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     fileOverwriteList = result.overwriteList;
                 }
     
-                // 过滤掉需要跳过的文件
                 finalItemsToMove = finalItemsToMove.filter(item => {
                     if (item.type === 'file' && fileConflicts.includes(item.name) && !fileOverwriteList.includes(item.name)) {
                         return false;
@@ -1027,13 +1011,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
     
-                // 发送包含完整项目资讯的请求
+                // *** 核心修正 ***
+                // 将覆盖和合并的清单一同发送给后端
                 await axios.post('/api/move', {
                     items: finalItemsToMove,
-                    targetFolderId: moveTargetFolderId
-                    // 后端不再需要 overwriteList 和 mergeList，因为它会根据是否存在进行移动或合并逻辑
+                    targetFolderId: moveTargetFolderId,
+                    overwriteFileNames: fileOverwriteList,
+                    mergeFolderNames: folderMergeList
                 });
-                // *** 关键修正 结束 ***
     
                 moveModal.style.display = 'none';
                 loadFolderContents(currentFolderId);
