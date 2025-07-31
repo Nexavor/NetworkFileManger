@@ -292,7 +292,6 @@ async function moveItem(item, targetFolderId, userId, options = {}) {
     const dbRun = (sql, params) => new Promise((res, rej) => db.run(sql, params, e => e ? rej(e) : res()));
 
     if (storage.type === 'telegram') {
-        // 对于 Telegram，只需要更新数据库中的 parent_id/folder_id
         if (item.type === 'file') {
             await dbRun("UPDATE files SET folder_id = ? WHERE message_id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
         } else {
@@ -301,15 +300,16 @@ async function moveItem(item, targetFolderId, userId, options = {}) {
         return;
     }
     
-    // 对于 local 和 webdav，需要移动实体档案/资料夹并更新数据库
-    // 1. 获取来源和目标路径
-    const sourceFolderPathArr = await getFolderPath(item.parent_id, userId);
+    const sourceParentFolder = (item.type === 'file') 
+        ? (await data.getFilesByIds([item.id], userId))[0].folder_id
+        : (await data.getItemsByIds([item.id], userId))[0].parent_id;
+
+    const sourceFolderPathArr = await getFolderPath(sourceParentFolder, userId);
     const sourceParentPath = sourceFolderPathArr.slice(1).map(p => p.name).join('/');
     
     const targetFolderPathArr = await getFolderPath(targetFolderId, userId);
     const targetPath = targetFolderPathArr.slice(1).map(p => p.name).join('/');
 
-    // 2. 定义旧路径和新路径
     let oldPath, newPath;
     if (storage.type === 'local') {
         const userUploadDir = path.join(__dirname, '..', 'data', 'uploads', String(userId));
@@ -320,22 +320,19 @@ async function moveItem(item, targetFolderId, userId, options = {}) {
         newPath = path.posix.join('/', targetPath, item.name);
     }
 
-    // 3. 执行移动
     const moveResult = await storage.move(oldPath, newPath);
     if (!moveResult.success) {
         throw new Error(`无法移动实体档案或资料夹: ${item.name}`);
     }
 
-    // 4. 更新数据库
     if (item.type === 'file') {
         await dbRun("UPDATE files SET folder_id = ?, file_id = ? WHERE message_id = ? AND user_id = ?",
             [targetFolderId, newPath, item.id, userId]);
     } else { // folder
         await dbRun("UPDATE folders SET parent_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
-        // 递归更新所有子档案的 file_id
         const allDescendantFiles = await getFilesRecursive(item.id, userId);
         for (const file of allDescendantFiles) {
-            const relativeFilePath = path.posix.relative(oldPath, file.file_id);
+            const relativeFilePath = file.file_id.substring(oldPath.length);
             const newFileId = path.posix.join(newPath, relativeFilePath);
             await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [newFileId, file.message_id, userId]);
         }
