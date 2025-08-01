@@ -119,20 +119,27 @@ async function getUrl(file_id, userId) {
     return `/local-files/${userId}/${path.basename(file_id)}`;
 }
 
-// *** 核心修正 ***
-// move 函数现在接受 options 并处理 overwrite 旗标
+// --- BUG 2 修复：重构 move 函数以提高稳健性 ---
 async function move(oldPath, newPath, options = {}) {
     try {
+        // 确保源路径存在
+        if (!fsSync.existsSync(oldPath)) {
+            throw new Error(`来源路径不存在: ${oldPath}`);
+        }
+        
         const newParentDir = path.dirname(newPath);
         await fs.mkdir(newParentDir, { recursive: true });
 
-        // 如果允许覆盖，且目标档案已存在，则先删除它
+        // 如果目标路径已存在，且 options.overwrite 为 true，则先强制删除目标。
+        // fs.rm 可以同时处理文件和文件夹，比 fs.unlink 更稳健。
         if (options.overwrite && fsSync.existsSync(newPath)) {
-            await fs.unlink(newPath);
+            await fs.rm(newPath, { recursive: true, force: true });
         }
         
+        // 现在目标路径已清空，可以安全地重命名。
         await fs.rename(oldPath, newPath);
         
+        // 清理源文件所在的旧目录（如果它变为空）
         await removeEmptyDirs(path.dirname(oldPath));
         return { success: true };
     } catch (error) {
