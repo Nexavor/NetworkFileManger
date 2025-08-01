@@ -547,6 +547,10 @@ app.get('/api/folders', requireLogin, async (req, res) => {
 });
 
 app.post('/api/move', requireLogin, async (req, res) => {
+    // --- 调试日志 ---
+    console.log(`[DEBUG] Received /api/move request`);
+    console.log(`[DEBUG] Body: ${JSON.stringify(req.body, null, 2)}`);
+    // --- 调试日志结束 ---
     try {
         const { itemIds, targetFolderId, resolutions = {} } = req.body;
         const userId = req.session.userId;
@@ -563,7 +567,7 @@ app.post('/api/move', requireLogin, async (req, res) => {
             try {
                 const items = await data.getItemsByIds([itemId], userId);
                 if (items.length === 0) {
-                    console.log(`移动操作已跳过不存在的项目 ID: ${itemId}`);
+                    console.log(`[DEBUG] Move operation skipped non-existent item ID: ${itemId}`);
                     skippedCount++;
                     continue; 
                 }
@@ -576,7 +580,7 @@ app.post('/api/move', requireLogin, async (req, res) => {
                     skippedCount++;
                 }
             } catch (err) {
-                console.error(`移动项目 ID ${itemId} 时发生错误:`, err);
+                console.error(`[ERROR] Error moving item ID ${itemId}:`, err);
                 errors.push(err.message);
             }
         }
@@ -591,11 +595,11 @@ app.post('/api/move', requireLogin, async (req, res) => {
         } else if (movedCount > 0) {
             message = `${movedCount} 个项目移动成功。`;
         }
-
+        console.log(`[DEBUG] Move operation finished. Moved: ${movedCount}, Skipped: ${skippedCount}, Errors: ${errors.length}`);
         res.json({ success: errors.length === 0, message: message });
 
     } catch (error) { 
-        console.error("Move API error:", error);
+        console.error("[FATAL] /api/move error:", error);
         res.status(500).json({ success: false, message: '移动失败：' + error.message }); 
     }
 });
