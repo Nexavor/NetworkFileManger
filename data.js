@@ -292,11 +292,13 @@ function getAllFolders(userId) {
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     console.log(`[DEBUG] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标文件夹 ID ${targetFolderId}`);
     const { resolutions = {}, pathPrefix = '' } = options;
+    const report = { moved: 0, skipped: 0, errors: 0 };
     
     const sourceItem = (await getItemsByIds([itemId], userId))[0];
     if (!sourceItem) {
         console.error(`[DEBUG] moveItem: 找不到来源项目 ID: ${itemId}`);
-        throw new Error(`找不到来源项目 ID: ${itemId}`);
+        report.errors++;
+        return report;
     }
     
     const currentPath = path.join(pathPrefix, sourceItem.name).replace(/\\/g, '/');
@@ -308,7 +310,8 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         case 'skip':
         case 'skip_default':
             console.log(`[DEBUG] moveItem: 跳过项目 "${currentPath}"。`);
-            return false;
+            report.skipped++;
+            return report;
 
         case 'rename':
             const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
@@ -319,52 +322,59 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             } else {
                 await renameAndMoveFile(itemId, newName, targetFolderId, userId);
             }
-            return true;
+            report.moved++;
+            return report;
 
         case 'overwrite':
             if (!existingItemInTarget) {
                 console.warn(`[DEBUG] moveItem: 尝试覆盖但目标位置不存在项目 "${currentPath}"。`);
-                return false; 
+                report.skipped++;
+                return report;
             }
-            // *** 日志优化: 使用 existingItemInTarget.name ***
             console.log(`[DEBUG] moveItem: 覆盖目标位置的项目 "${existingItemInTarget.name}" (ID: ${existingItemInTarget.id})。`);
             await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
-            return true;
+            report.moved++;
+            return report;
 
         case 'merge':
             if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') {
                 console.warn(`[DEBUG] moveItem: 尝试合并但条件不满足（来源或目标不是文件夹）。`);
-                return false;
+                report.skipped++;
+                return report;
             }
             console.log(`[DEBUG] moveItem: 开始合并文件夹 ID ${itemId} 到文件夹 ID ${existingItemInTarget.id}`);
             
             const children = await getChildrenOfFolder(itemId, userId);
             console.log(`[DEBUG] moveItem: 在源文件夹 ID ${itemId} 中找到 ${children.length} 个子项目。`);
-            let allChildrenMoved = true;
+            let allChildrenProcessedSuccessfully = true;
 
             for (const child of children) {
                 console.log(`[DEBUG] moveItem: -> 正在递归移动子项目 "${child.name}" (ID: ${child.id})`);
-                const childMoved = await moveItem(child.id, child.type, existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
-                if (!childMoved) {
-                    allChildrenMoved = false;
+                const childReport = await moveItem(child.id, child.type, existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
+                report.moved += childReport.moved;
+                report.skipped += childReport.skipped;
+                report.errors += childReport.errors;
+                if(childReport.skipped > 0 || childReport.errors > 0) {
+                    allChildrenProcessedSuccessfully = false;
                 }
-                console.log(`[DEBUG] moveItem: -> 子项目 "${child.name}" 移动结果: ${childMoved ? '成功' : '跳过'}`);
+                console.log(`[DEBUG] moveItem: -> 子项目 "${child.name}" 移动结果: moved=${childReport.moved}, skipped=${childReport.skipped}`);
             }
             
-            if (allChildrenMoved) {
+            if (allChildrenProcessedSuccessfully) {
                 console.log(`[DEBUG] moveItem: 所有子项目都已成功移动，删除空的源文件夹 ID ${itemId}`);
                 await unifiedDelete(itemId, 'folder', userId);
             } else {
                 console.log(`[DEBUG] moveItem: 源文件夹 ID ${itemId} 中有子项目被跳过，不删除该文件夹。`);
             }
             
-            return true;
+            return report;
 
         default: // 'move'
             console.log(`[DEBUG] moveItem: 直接移动项目 "${currentPath}"。`);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
-            return true;
+            report.moved++;
+            return report;
     }
 }
 
