@@ -10,7 +10,7 @@
 <body>
     <div class="container">
         <header class="main-header">
-            <input type="text" id="fileNameInput" placeholder="请输入档名" style="font-size: 18px; font-weight: 500; padding: 8px; border-radius: 4px; flex-grow: 1; border: 1px solid #ccc;">
+            <input type="text" id="fileNameInput" placeholder="请输入文件名" style="font-size: 18px; font-weight: 500; padding: 8px; border-radius: 4px; flex-grow: 1; border: 1px solid #ccc;">
             <div class="header-buttons">
                 <span id="saveStatus" style="color: var(--success-color); font-weight: bold; margin-right: 15px;"></span>
                 <button id="saveBtn" class="upload-link-btn">保存</button>
@@ -23,7 +23,6 @@
     </div>
     <script src="/vendor/axios/axios.min.js"></script>
     <script>
-        // Javascript 程式码保持不变
         document.addEventListener('DOMContentLoaded', () => {
             const fileNameInput = document.getElementById('fileNameInput');
             const editor = document.getElementById('editor');
@@ -36,19 +35,34 @@
             let fileId = urlParams.get('fileId');
             const folderId = urlParams.get('folderId');
 
+            let initialFileName = '';
+            let initialContent = '';
+
+            // 检查内容是否有变更并更新按钮状态
+            const checkForChanges = () => {
+                const nameChanged = fileNameInput.value !== initialFileName;
+                const contentChanged = editor.value !== initialContent;
+                saveBtn.disabled = !(nameChanged || contentChanged);
+            };
+
             async function loadFileContent() {
+                saveBtn.disabled = true; // 初始禁用保存按钮
                 if (mode === 'edit' && fileId) {
                     try {
                         const fileInfoRes = await axios.get(`/api/file-info/${fileId}`);
                         const fileContentRes = await axios.get(`/file/content/${fileId}`);
                         
-                        fileNameInput.value = fileInfoRes.data.fileName;
-                        editor.value = fileContentRes.data;
+                        initialFileName = fileInfoRes.data.fileName;
+                        initialContent = fileContentRes.data;
+
+                        fileNameInput.value = initialFileName;
+                        editor.value = initialContent;
                     } catch (error) {
                         alert('载入档案失败！');
                         window.close();
                     }
                 }
+                // 新建文件时，按钮初始也是禁用的，直到用户输入内容
             }
 
             saveBtn.addEventListener('click', async () => {
@@ -61,7 +75,7 @@
                     fileName += '.txt';
                 }
                 const content = editor.value;
-                saveBtn.disabled = true;
+                saveBtn.disabled = true; // 点击后立刻禁用，防止重复点击
                 saveBtn.textContent = '储存中...';
                 saveStatus.textContent = '';
 
@@ -83,6 +97,10 @@
                         saveStatus.textContent = '';
                     }, 2000);
 
+                    // 更新初始状态为当前已保存的状态
+                    initialFileName = fileName;
+                    initialContent = content;
+
                     if (response.data.success && response.data.fileId) {
                         fileId = response.data.fileId;
                         mode = 'edit';
@@ -92,15 +110,20 @@
                     }
                 } catch (error) {
                     alert('储存失败：' + (error.response?.data?.message || '伺服器错误'));
+                    // 储存失败时，根据当前内容重新判断按钮是否可用
+                    checkForChanges();
                 } finally {
-                    saveBtn.disabled = false;
-                    saveBtn.textContent = '储存';
+                    saveBtn.textContent = '保存';
                 }
             });
 
             backBtn.addEventListener('click', () => {
                 window.close();
             });
+
+            // 监听输入变化
+            fileNameInput.addEventListener('input', checkForChanges);
+            editor.addEventListener('input', checkForChanges);
 
             loadFileContent();
         });
