@@ -367,7 +367,7 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                     const existingFile = await data.findFileInFolder(fileName, targetFolderId, userId);
                     if (existingFile) {
                         const filesToDelete = await data.getFilesByIds([existingFile.message_id], userId);
-                        // **修复：先物理删除，再数据库删除**
+                        // **修正：先物理删除，再数据库删除**
                         if (filesToDelete.length > 0) {
                            await storage.remove(filesToDelete, [], userId); 
                         }
@@ -404,7 +404,7 @@ app.post('/upload', requireLogin, async (req, res, next) => {
         res.status(500).json({ success: false, message: '处理上传时发生错误: ' + error.message });
     }
 });
-
+// **重构：修复文字档案编辑逻辑**
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
     const userId = req.session.userId;
@@ -421,18 +421,20 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         let result;
 
         if (mode === 'edit' && fileId) {
-             const filesToDelete = await data.getFilesByIds([fileId], userId);
-            if (filesToDelete.length > 0) {
-                // **修复：同样修复编辑逻辑**
-                await storage.remove(filesToDelete, [], userId);
+            const filesToUpdate = await data.getFilesByIds([fileId], userId);
+            if (filesToUpdate.length > 0) {
+                // **修正：先上传新文件，成功后再删除旧文件**
+                const originalFile = filesToUpdate[0];
+                result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, originalFile.folder_id);
+                
+                // 上传成功后，安全地删除旧的物理文件和资料库记录
+                await storage.remove(filesToUpdate, [], userId);
                 await data.deleteFilesByIds([fileId], userId);
-
-                result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, filesToDelete[0].folder_id);
             } else {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
             }
         } else if (mode === 'create' && folderId) {
-             const conflict = await data.checkFullConflict(fileName, folderId, userId);
+            const conflict = await data.checkFullConflict(fileName, folderId, userId);
             if (conflict) {
                 return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
             }
@@ -500,6 +502,7 @@ app.post('/api/check-existence', requireLogin, async (req, res) => {
     }
 });
 
+// **重构: 完整的递迴冲突检查**
 app.post('/api/check-move-conflict', requireLogin, async (req, res) => {
     try {
         const { itemIds, targetFolderId } = req.body;
@@ -509,44 +512,13 @@ app.post('/api/check-move-conflict', requireLogin, async (req, res) => {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
 
-        const fileConflictNames = new Set();
-        const folderConflictNames = new Set();
-
-        async function findConflictsRecursive(itemsToMove, destinationFolderId) {
-            if (!itemsToMove || itemsToMove.length === 0) {
-                return;
-            }
-
-            const itemNames = itemsToMove.map(item => item.name);
-            const conflictsInDest = await data.getConflictingItems(itemNames, destinationFolderId, userId);
-
-            for (const item of itemsToMove) {
-                const conflict = conflictsInDest.find(c => c.name === item.name);
-
-                if (conflict) {
-                    if (item.type === 'folder' && conflict.type === 'folder') {
-                        folderConflictNames.add(item.name);
-                        
-                        const sourceChildren = await data.getChildrenOfFolder(item.id, userId);
-                        const destFolderForMerge = await data.findFolderByName(item.name, destinationFolderId, userId);
-                        
-                        if (destFolderForMerge) {
-                            await findConflictsRecursive(sourceChildren, destFolderForMerge.id);
-                        }
-                    } else {
-                        fileConflictNames.add(item.name);
-                    }
-                }
-            }
-        }
-
         const topLevelItems = await data.getItemsByIds(itemIds, userId);
-        await findConflictsRecursive(topLevelItems, targetFolderId);
+        const { fileConflicts, folderConflicts } = await data.getConflictingItems(topLevelItems, targetFolderId, userId);
 
         res.json({
             success: true,
-            fileConflicts: Array.from(fileConflictNames),
-            folderConflicts: Array.from(folderConflictNames)
+            fileConflicts,
+            folderConflicts
         });
 
     } catch (error) {
@@ -596,7 +568,7 @@ app.post('/api/folder', requireLogin, async (req, res) => {
         const result = await data.createFolder(name, parentId, userId);
         res.json(result);
     } catch (error) {
-         res.status(500).json({ success: false, message: error.message || '处理资料夹时发生错误。' });
+         res.status(500).json({ success: false, message: error.message || '处理资料夾时发生错误。' });
     }
 });
 
@@ -606,6 +578,7 @@ app.get('/api/folders', requireLogin, async (req, res) => {
     res.json(folders);
 });
 
+// **重构: 使用新的 moveItem 逻辑**
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
         const { itemIds, targetFolderId, overwriteList = [], mergeList = [] } = req.body;
@@ -614,11 +587,12 @@ app.post('/api/move', requireLogin, async (req, res) => {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
         
-        const items = await data.getItemsByIds(itemIds, userId);
+        const itemsToMove = await data.getItemsByIds(itemIds, userId);
         let movedCount = 0;
         let skippedCount = 0;
         
-        for (const item of items) {
+        for (const item of itemsToMove) {
+            // 使用重构后的 data.moveItem
             const moved = await data.moveItem(item.id, item.type, targetFolderId, userId, { overwriteList, mergeList });
             if (moved) {
                 movedCount++;
@@ -641,7 +615,7 @@ app.post('/api/move', requireLogin, async (req, res) => {
     }
 });
 
-// 统一的删除处理器
+// **重构：统一的删除处理器**
 async function unifiedDeleteHandler(req, res) {
     const { messageIds = [], folderIds = [] } = req.body;
     const userId = req.session.userId;
