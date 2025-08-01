@@ -4,10 +4,8 @@ const path = require('path');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 
-// *** CRITICAL FIX: Use path.resolve for an unambiguous, absolute path ***
 const UPLOAD_DIR = path.resolve(__dirname, 'data', 'uploads');
 
-// --- User Management (Unchanged) ---
 function createUser(username, hashedPassword) {
     return new Promise((resolve, reject) => {
         const sql = `INSERT INTO users (username, password, is_admin) VALUES (?, ?, 0)`;
@@ -88,7 +86,6 @@ async function deleteUser(userId) {
 }
 
 
-// --- File and Folder Search (Unchanged) ---
 function searchItems(query, userId) {
     return new Promise((resolve, reject) => {
         const searchQuery = `%${query}%`;
@@ -118,7 +115,6 @@ function searchItems(query, userId) {
     });
 }
 
-// --- Folder and File Operations ---
 function getItemsByIds(itemIds, userId) {
     return new Promise((resolve, reject) => {
         if (!itemIds || itemIds.length === 0) return resolve([]);
@@ -293,56 +289,90 @@ function getAllFolders(userId) {
     });
 }
 
+// --- *** 代码重构开始 (加入调试日志) *** ---
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     const { resolutions = {} } = options;
+    const indent = options.logIndent || ''; // 用于递归调用的日志缩进
+    
+    console.log(`${indent}[DEBUG] moveItem started for item ID: ${itemId}, Type: ${itemType}, Target Folder ID: ${targetFolderId}`);
 
     const sourceItem = (await getItemsByIds([itemId], userId))[0];
-    if (!sourceItem) throw new Error(`找不到来源项目 ID: ${itemId}`);
+    if (!sourceItem) {
+        // 这个错误应该在 server.js 中被捕获，但这里也加上日志
+        console.error(`${indent}[ERROR] Source item not found for ID: ${itemId}. This should have been caught earlier.`);
+        throw new Error(`找不到来源项目 ID: ${itemId}`);
+    }
     
+    console.log(`${indent}[DEBUG] Found source item: { name: "${sourceItem.name}", type: "${sourceItem.type}" }`);
+
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
-    const resolutionAction = resolutions[sourceItem.name] || (existingItemInTarget ? 'skip' : 'move');
+    const resolutionAction = resolutions[sourceItem.name] || (existingItemInTarget ? 'skip_default' : 'move');
+
+    console.log(`${indent}[DEBUG] Conflict check: Item "${sourceItem.name}" ${existingItemInTarget ? 'exists' : 'does not exist'} in target.`);
+    console.log(`${indent}[DEBUG] Resolution from client for "${sourceItem.name}": ${resolutions[sourceItem.name]}`);
+    console.log(`${indent}[DEBUG] Final decided action: ${resolutionAction}`);
 
     try {
         switch (resolutionAction) {
             case 'skip':
+            case 'skip_default':
+                console.log(`${indent}[INFO] Action is SKIP for "${sourceItem.name}". Returning false.`);
                 return false;
 
             case 'rename':
+                console.log(`${indent}[INFO] Action is RENAME for "${sourceItem.name}".`);
                 const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
+                console.log(`${indent}[DEBUG] Found available new name: "${newName}"`);
                 if (itemType === 'folder') {
                     await renameFolder(itemId, newName, userId);
                     await moveItems([], [itemId], targetFolderId, userId);
                 } else {
                     await renameAndMoveFile(itemId, newName, targetFolderId, userId);
                 }
+                console.log(`${indent}[SUCCESS] RENAME operation completed for "${sourceItem.name}".`);
                 return true;
 
             case 'overwrite':
-                if (!existingItemInTarget) return false; // Should not happen
+                if (!existingItemInTarget) {
+                    console.error(`${indent}[ERROR] OVERWRITE requested for "${sourceItem.name}", but no existing item found.`);
+                    return false;
+                }
+                console.log(`${indent}[INFO] Action is OVERWRITE for "${sourceItem.name}". Deleting existing item ID: ${existingItemInTarget.id}`);
                 await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
                 await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
+                console.log(`${indent}[SUCCESS] OVERWRITE operation completed for "${sourceItem.name}".`);
                 return true;
 
             case 'merge':
-                if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') return false;
-                const children = await getChildrenOfFolder(itemId, userId);
-                for (const child of children) {
-                    // Pass resolutions down for recursive merge conflicts
-                    await moveItem(child.id, child.type, existingItemInTarget.id, userId, options);
+                if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') {
+                    console.error(`${indent}[ERROR] MERGE requested for "${sourceItem.name}", but conditions not met.`);
+                    return false;
                 }
-                // After moving all children, delete the now-empty source folder
+                console.log(`${indent}[INFO] Action is MERGE for "${sourceItem.name}". Merging into existing folder ID: ${existingItemInTarget.id}`);
+                const children = await getChildrenOfFolder(itemId, userId);
+                console.log(`${indent}[DEBUG] Found ${children.length} children to merge.`);
+                for (const child of children) {
+                    // 传递 resolutions，并增加日志缩进
+                    await moveItem(child.id, child.type, existingItemInTarget.id, userId, { ...options, logIndent: (indent + '  ') });
+                }
+                console.log(`${indent}[DEBUG] Merging of children complete. Deleting original source folder ID: ${itemId}`);
                 await unifiedDelete(itemId, 'folder', userId);
+                console.log(`${indent}[SUCCESS] MERGE operation completed for "${sourceItem.name}".`);
                 return true;
 
-            default: // 'move' or no specific resolution needed
+            default: // 'move'
+                console.log(`${indent}[INFO] Action is MOVE for "${sourceItem.name}".`);
                 await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
+                console.log(`${indent}[SUCCESS] MOVE operation completed for "${sourceItem.name}".`);
                 return true;
         }
     } catch (err) {
-        console.error(`移动操作失败 [${sourceItem.name}]:`, err);
+        console.error(`${indent}[FATAL] Move operation failed for "${sourceItem.name}":`, err);
         throw err; // Propagate error to stop the process
     }
 }
+// --- *** 代码重构结束 *** ---
+
 
 async function unifiedDelete(itemId, itemType, userId) {
     const storage = require('./storage').getStorage();
@@ -537,8 +567,6 @@ function getFilesByIds(messageIds, userId) {
     });
 }
 
-// ... (Rest of the file remains unchanged: getFileByShareToken, getFolderByShareToken, etc.)
-// ... (Make sure to include all functions from the previous correct version here)
 function getFileByShareToken(token) {
      return new Promise((resolve, reject) => {
         const sql = "SELECT * FROM files WHERE share_token = ?";
