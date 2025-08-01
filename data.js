@@ -279,8 +279,8 @@ function getAllFolders(userId) {
 async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], mergeFolderNames = []) {
     const storage = require('./storage').getStorage();
     const dbRun = (sql, params) => new Promise((res, rej) => db.run(sql, params, function(e) { e ? rej(e) : res(this); }));
-    const sourceParentId = item.parent_id ?? item.folder_id;
-
+    
+    // --- Validation ---
     if (item.type === 'folder') {
         const numericTargetFolderId = Number(targetFolderId);
         const numericItemId = Number(item.id);
@@ -298,19 +298,16 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
         
         const sourceChildren = await getChildrenOfFolder(item.id, userId);
         let allChildrenMovedSuccessfully = true;
-
         for (const child of sourceChildren) {
             const moveResult = await moveItem(child, targetFolder.id, userId, overwriteFileNames, mergeFolderNames);
             if (moveResult && moveResult.skipped) {
                 allChildrenMovedSuccessfully = false;
             }
         }
-        
         if (allChildrenMovedSuccessfully) {
             await dbRun("DELETE FROM folders WHERE id = ? AND user_id = ?", [item.id, userId]);
         }
         return { success: true };
-
     } else {
         const conflict = await checkFullConflict(item.name, targetFolderId, userId);
         if (conflict) {
@@ -329,40 +326,36 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
         }
     }
     
+    // --- Physical & DB Move ---
     if (storage.type !== 'telegram') {
-        if (sourceParentId === undefined || sourceParentId === null) throw new Error(`无法确定项目 "${item.name}" 的来源资料夹。`);
-        const sourcePathArr = await getFolderPath(sourceParentId, userId);
-        const sourceParentPath = sourcePathArr.length > 1 ? path.posix.join(...sourcePathArr.slice(1).map(p => p.name)) : '';
         const targetPathArr = await getFolderPath(targetFolderId, userId);
-        const targetParentPath = targetPathArr.length > 1 ? path.posix.join(...targetPathArr.slice(1).map(p => p.name)) : '';
+        const targetParentPath = path.posix.join(...targetPathArr.slice(1).map(p => p.name));
 
-        let oldPath, newPath, newFileIdForDb;
-        if (storage.type === 'local') {
-            const userUploadDir = path.join(__dirname, '..', 'data', 'uploads', String(userId));
-            oldPath = path.join(userUploadDir, sourceParentPath, item.name);
-            newPath = path.join(userUploadDir, targetParentPath, item.name);
-            newFileIdForDb = newPath;
-        } else { // webdav
-            oldPath = path.posix.join('/', sourceParentPath, item.name);
-            newPath = path.posix.join('/', targetParentPath, item.name);
-            newFileIdForDb = newPath;
-        }
-
-        const moveResult = await storage.move(oldPath, newPath, { overwrite: isFileOverwrite });
-        if (!moveResult.success) throw new Error(`移动实体档案/资料夹 "${item.name}" 时发生错误。`);
-        
         if (item.type === 'file') {
-            await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [newFileIdForDb, item.id, userId]);
-        } else {
-            const allDescendantFiles = await getFilesRecursive(item.id, userId, item.name);
+            const [fileInfo] = await getFilesByIds([item.id], userId);
+            if (!fileInfo || !fileInfo.file_id) throw new Error(`移动失败：数据库中找不到文件 ID ${item.id} 或其路径。`);
+
+            const oldPath = fileInfo.file_id;
+            const newPath = path.posix.join(targetParentPath, item.name);
+
+            const moveResult = await storage.move(oldPath, newPath, { overwrite: isFileOverwrite }, userId);
+            if (!moveResult.success) throw new Error(`移动实体档案/资料夹 "${item.name}" 时发生错误。`);
+            
+            await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [newPath, item.id, userId]);
+        } else { // FOLDER
+            const allDescendantFiles = await getFilesRecursive(item.id, userId, '');
             for (const file of allDescendantFiles) {
-                const relativePathInsideMovedFolder = file.path.substring(item.name.length);
-                const finalNewFileId = path.posix.join(newPath, relativePathInsideMovedFolder);
-                await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [finalNewFileId, file.message_id, userId]);
+                const oldFilePath = file.file_id;
+                const newRelativeFilePath = path.posix.join(targetParentPath, item.name, file.path);
+                
+                await storage.move(oldFilePath, newRelativeFilePath, { overwrite: true }, userId); // Always overwrite on folder merge
+                
+                await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [newRelativeFilePath, file.message_id, userId]);
             }
         }
     }
     
+    // Update logical folder in DB
     if (item.type === 'file') {
         await dbRun("UPDATE files SET folder_id = ? WHERE message_id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
     } else {
