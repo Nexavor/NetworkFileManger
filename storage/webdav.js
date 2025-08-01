@@ -150,4 +150,28 @@ async function getUrl(file_id, userId) {
     return client.getFileDownloadLink(path.posix.join('/', file_id));
 }
 
-module.exports = { upload, remove, getUrl, stream, resetClient, getClient, type: 'webdav' };
+// --- *** 新增函数 *** ---
+async function createDirectory(fullPath) {
+    const client = getClient();
+    try {
+        // 确保路径以斜线开头且规范化
+        const remotePath = path.posix.join('/', fullPath);
+        if (await client.exists(remotePath)) {
+            console.log(`WebDAV directory already exists: ${remotePath}`);
+            return true;
+        }
+        await client.createDirectory(remotePath, { recursive: true });
+        return true;
+    } catch (e) {
+        // 忽略目录已存在的错误 (405 Method Not Allowed 是一个常见响应)
+        if (e.response && (e.response.status === 405 || e.response.status === 501)) {
+            console.warn(`无法创建目录 (可能已存在或方法不允许): ${fullPath}`);
+            return true;
+        }
+        console.error(`建立 WebDAV 目录 '${fullPath}' 失败:`, e);
+        throw new Error(`建立 WebDAV 目录失败: ${e.message}`);
+    }
+}
+// --- *** 新增函数结束 *** ---
+
+module.exports = { upload, remove, getUrl, stream, resetClient, getClient, createDirectory, type: 'webdav' };
