@@ -289,17 +289,16 @@ function getAllFolders(userId) {
     });
 }
 
-// --- *** 代码重构开始 (加入调试日志) *** ---
+// --- *** 关键修正逻辑 *** ---
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     const { resolutions = {} } = options;
-    const indent = options.logIndent || ''; // 用于递归调用的日志缩进
-    
+    const indent = options.logIndent || '';
+
     console.log(`${indent}[DEBUG] moveItem started for item ID: ${itemId}, Type: ${itemType}, Target Folder ID: ${targetFolderId}`);
 
     const sourceItem = (await getItemsByIds([itemId], userId))[0];
     if (!sourceItem) {
-        // 这个错误应该在 server.js 中被捕获，但这里也加上日志
-        console.error(`${indent}[ERROR] Source item not found for ID: ${itemId}. This should have been caught earlier.`);
+        console.error(`${indent}[ERROR] Source item not found for ID: ${itemId}.`);
         throw new Error(`找不到来源项目 ID: ${itemId}`);
     }
     
@@ -317,7 +316,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             case 'skip':
             case 'skip_default':
                 console.log(`${indent}[INFO] Action is SKIP for "${sourceItem.name}". Returning false.`);
-                return false;
+                return false; // 返回 false 表示未移动
 
             case 'rename':
                 console.log(`${indent}[INFO] Action is RENAME for "${sourceItem.name}".`);
@@ -330,7 +329,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
                     await renameAndMoveFile(itemId, newName, targetFolderId, userId);
                 }
                 console.log(`${indent}[SUCCESS] RENAME operation completed for "${sourceItem.name}".`);
-                return true;
+                return true; // 返回 true 表示已移动
 
             case 'overwrite':
                 if (!existingItemInTarget) {
@@ -351,14 +350,24 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
                 console.log(`${indent}[INFO] Action is MERGE for "${sourceItem.name}". Merging into existing folder ID: ${existingItemInTarget.id}`);
                 const children = await getChildrenOfFolder(itemId, userId);
                 console.log(`${indent}[DEBUG] Found ${children.length} children to merge.`);
+                
+                let allChildrenMoved = true; // **新增**: 标记所有子项是否都成功移动
                 for (const child of children) {
-                    // 传递 resolutions，并增加日志缩进
-                    await moveItem(child.id, child.type, existingItemInTarget.id, userId, { ...options, logIndent: (indent + '  ') });
+                    const childMoved = await moveItem(child.id, child.type, existingItemInTarget.id, userId, { ...options, logIndent: (indent + '  ') });
+                    if (!childMoved) {
+                        allChildrenMoved = false; // **新增**: 如果任何一个子项被跳过，则标记为 false
+                    }
                 }
-                console.log(`${indent}[DEBUG] Merging of children complete. Deleting original source folder ID: ${itemId}`);
-                await unifiedDelete(itemId, 'folder', userId);
-                console.log(`${indent}[SUCCESS] MERGE operation completed for "${sourceItem.name}".`);
-                return true;
+                
+                if (allChildrenMoved) {
+                    console.log(`${indent}[DEBUG] All children merged successfully. Deleting original source folder ID: ${itemId}`);
+                    await unifiedDelete(itemId, 'folder', userId);
+                    console.log(`${indent}[SUCCESS] MERGE operation completed for "${sourceItem.name}".`);
+                    return true;
+                } else {
+                    console.log(`${indent}[INFO] Not all children of "${sourceItem.name}" were moved (some were skipped). The original folder will not be deleted.`);
+                    return false; // **修正**: 因为有子项被跳过，所以父文件夹本身不算完全移动成功
+                }
 
             default: // 'move'
                 console.log(`${indent}[INFO] Action is MOVE for "${sourceItem.name}".`);
@@ -368,10 +377,9 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         }
     } catch (err) {
         console.error(`${indent}[FATAL] Move operation failed for "${sourceItem.name}":`, err);
-        throw err; // Propagate error to stop the process
+        throw err;
     }
 }
-// --- *** 代码重构结束 *** ---
 
 
 async function unifiedDelete(itemId, itemType, userId) {
@@ -388,7 +396,6 @@ async function unifiedDelete(itemId, itemType, userId) {
         filesForStorage.push(...directFiles);
     }
     
-    // Physical delete first, with proper error handling
     try {
         await storage.remove(filesForStorage, foldersForStorage, userId);
     } catch (err) {
@@ -396,7 +403,6 @@ async function unifiedDelete(itemId, itemType, userId) {
         throw new Error("实体档案删除失败，操作已中止。");
     }
     
-    // Then DB delete
     await executeDeletion(filesForStorage.map(f => f.message_id), foldersForStorage.map(f => f.id), userId);
 }
 
