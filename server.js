@@ -560,41 +560,30 @@ app.post('/api/move', requireLogin, async (req, res) => {
         const { itemIds, targetFolderId, resolutions = {} } = req.body;
         const userId = req.session.userId;
 
-        // --- *** 调试日志 开始 *** ---
-        console.log('--- [DEBUG] /api/move: 收到移动请求 ---');
-        console.log(`[DEBUG] User ID: ${userId}`);
-        console.log(`[DEBUG] Target Folder ID: ${targetFolderId}`);
-        console.log('[DEBUG] Item IDs:', itemIds);
-        console.log('[DEBUG] Resolutions:', resolutions);
-        console.log('--- [DEBUG] /api/move: 请求内容结束 ---');
-        // --- *** 调试日志 结束 *** ---
-
         if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0 || !targetFolderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
         
-        let movedCount = 0;
-        let skippedCount = 0;
+        let totalMoved = 0;
+        let totalSkipped = 0;
         const errors = [];
         
         for (const itemId of itemIds) {
             try {
                 const items = await data.getItemsByIds([itemId], userId);
                 if (items.length === 0) {
-                    skippedCount++;
+                    totalSkipped++;
                     continue; 
                 }
                 
                 const item = items[0];
-                // 调用重构后的核心移动逻辑
-                const wasProcessed = await data.moveItem(item.id, item.type, targetFolderId, userId, { resolutions });
-                
-                // 根据返回的布尔值来计数
-                if (wasProcessed) {
-                    movedCount++;
-                } else {
-                    skippedCount++;
+                const report = await data.moveItem(item.id, item.type, targetFolderId, userId, { resolutions });
+                totalMoved += report.moved;
+                totalSkipped += report.skipped;
+                if (report.errors > 0) {
+                    errors.push(`项目 "${item.name}" 处理失败。`);
                 }
+
             } catch (err) {
                 console.error(`移动项目 ID ${itemId} 时发生错误:`, err);
                 errors.push(err.message);
@@ -604,12 +593,12 @@ app.post('/api/move', requireLogin, async (req, res) => {
         let message = "操作完成。";
         if (errors.length > 0) {
             message = `操作完成，但出现错误: ${errors.join(', ')}`;
-        } else if (movedCount > 0 && skippedCount > 0) {
-            message = `操作完成，${movedCount} 个项目已移动，${skippedCount} 个项目被跳过。`;
-        } else if (movedCount === 0 && skippedCount > 0) {
+        } else if (totalMoved > 0 && totalSkipped > 0) {
+            message = `操作完成，${totalMoved} 个项目已移动，${totalSkipped} 个项目被跳过。`;
+        } else if (totalMoved === 0 && totalSkipped > 0) {
             message = "所有选定项目均被跳过。";
-        } else if (movedCount > 0) {
-            message = `${movedCount} 个项目移动成功。`;
+        } else if (totalMoved > 0) {
+            message = `${totalMoved} 个项目移动成功。`;
         }
 
         res.json({ success: errors.length === 0, message: message });
