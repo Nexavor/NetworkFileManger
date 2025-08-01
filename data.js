@@ -289,95 +289,72 @@ function getAllFolders(userId) {
     });
 }
 
-// --- *** 关键修正逻辑 *** ---
+// **重构**: 移动单个项目（文件或文件夹）的核心逻辑
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     const { resolutions = {} } = options;
-    const indent = options.logIndent || '';
-
-    console.log(`${indent}[DEBUG] moveItem started for item ID: ${itemId}, Type: ${itemType}, Target Folder ID: ${targetFolderId}`);
-
+    
     const sourceItem = (await getItemsByIds([itemId], userId))[0];
     if (!sourceItem) {
-        console.error(`${indent}[ERROR] Source item not found for ID: ${itemId}.`);
         throw new Error(`找不到来源项目 ID: ${itemId}`);
     }
     
-    console.log(`${indent}[DEBUG] Found source item: { name: "${sourceItem.name}", type: "${sourceItem.type}" }`);
-
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
+    // 决定最终操作：优先使用客户端传来的解决方案，否则根据是否存在冲突来决定是默认跳过还是直接移动
     const resolutionAction = resolutions[sourceItem.name] || (existingItemInTarget ? 'skip_default' : 'move');
 
-    console.log(`${indent}[DEBUG] Conflict check: Item "${sourceItem.name}" ${existingItemInTarget ? 'exists' : 'does not exist'} in target.`);
-    console.log(`${indent}[DEBUG] Resolution from client for "${sourceItem.name}": ${resolutions[sourceItem.name]}`);
-    console.log(`${indent}[DEBUG] Final decided action: ${resolutionAction}`);
+    switch (resolutionAction) {
+        case 'skip':
+        case 'skip_default':
+            // 跳过操作，返回 false 表示未移动
+            return false;
 
-    try {
-        switch (resolutionAction) {
-            case 'skip':
-            case 'skip_default':
-                console.log(`${indent}[INFO] Action is SKIP for "${sourceItem.name}". Returning false.`);
-                return false; // 返回 false 表示未移动
+        case 'rename':
+            // 重命名并移动
+            const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
+            if (itemType === 'folder') {
+                await renameFolder(itemId, newName, userId);
+                await moveItems([], [itemId], targetFolderId, userId);
+            } else {
+                await renameAndMoveFile(itemId, newName, targetFolderId, userId);
+            }
+            return true;
 
-            case 'rename':
-                console.log(`${indent}[INFO] Action is RENAME for "${sourceItem.name}".`);
-                const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
-                console.log(`${indent}[DEBUG] Found available new name: "${newName}"`);
-                if (itemType === 'folder') {
-                    await renameFolder(itemId, newName, userId);
-                    await moveItems([], [itemId], targetFolderId, userId);
-                } else {
-                    await renameAndMoveFile(itemId, newName, targetFolderId, userId);
-                }
-                console.log(`${indent}[SUCCESS] RENAME operation completed for "${sourceItem.name}".`);
-                return true; // 返回 true 表示已移动
+        case 'overwrite':
+            // 覆盖操作
+            if (!existingItemInTarget) return false; // 安全检查
+            await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
+            await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
+            return true;
 
-            case 'overwrite':
-                if (!existingItemInTarget) {
-                    console.error(`${indent}[ERROR] OVERWRITE requested for "${sourceItem.name}", but no existing item found.`);
-                    return false;
-                }
-                console.log(`${indent}[INFO] Action is OVERWRITE for "${sourceItem.name}". Deleting existing item ID: ${existingItemInTarget.id}`);
-                await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
-                await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
-                console.log(`${indent}[SUCCESS] OVERWRITE operation completed for "${sourceItem.name}".`);
-                return true;
+        case 'merge':
+            // 合并操作，仅当来源和目标都是文件夹时有效
+            if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') {
+                return false;
+            }
 
-            case 'merge':
-                if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') {
-                    console.error(`${indent}[ERROR] MERGE requested for "${sourceItem.name}", but conditions not met.`);
-                    return false;
-                }
-                console.log(`${indent}[INFO] Action is MERGE for "${sourceItem.name}". Merging into existing folder ID: ${existingItemInTarget.id}`);
-                const children = await getChildrenOfFolder(itemId, userId);
-                console.log(`${indent}[DEBUG] Found ${children.length} children to merge.`);
-                
-                let allChildrenMoved = true; // **新增**: 标记所有子项是否都成功移动
-                for (const child of children) {
-                    const childMoved = await moveItem(child.id, child.type, existingItemInTarget.id, userId, { ...options, logIndent: (indent + '  ') });
-                    if (!childMoved) {
-                        allChildrenMoved = false; // **新增**: 如果任何一个子项被跳过，则标记为 false
-                    }
-                }
-                
-                if (allChildrenMoved) {
-                    console.log(`${indent}[DEBUG] All children merged successfully. Deleting original source folder ID: ${itemId}`);
-                    await unifiedDelete(itemId, 'folder', userId);
-                    console.log(`${indent}[SUCCESS] MERGE operation completed for "${sourceItem.name}".`);
-                    return true;
-                } else {
-                    console.log(`${indent}[INFO] Not all children of "${sourceItem.name}" were moved (some were skipped). The original folder will not be deleted.`);
-                    return false; // **修正**: 因为有子项被跳过，所以父文件夹本身不算完全移动成功
-                }
+            const children = await getChildrenOfFolder(itemId, userId);
+            let allChildrenMoved = true; // 标记所有子项是否都成功移动
 
-            default: // 'move'
-                console.log(`${indent}[INFO] Action is MOVE for "${sourceItem.name}".`);
-                await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
-                console.log(`${indent}[SUCCESS] MOVE operation completed for "${sourceItem.name}".`);
-                return true;
-        }
-    } catch (err) {
-        console.error(`${indent}[FATAL] Move operation failed for "${sourceItem.name}":`, err);
-        throw err;
+            for (const child of children) {
+                // 递归调用 moveItem 来处理子项，目标是已存在的目标文件夹
+                const childMoved = await moveItem(child.id, child.type, existingItemInTarget.id, userId, options);
+                if (!childMoved) {
+                    allChildrenMoved = false; // 任何一个子项被跳过，则标记为 false
+                }
+            }
+            
+            // 只有当所有子项都被成功移走（源文件夹已空）时，才删除源文件夹
+            if (allChildrenMoved) {
+                await unifiedDelete(itemId, 'folder', userId);
+            }
+            
+            // **关键修正**: 只要启动了合并流程，就认为顶层操作已处理，返回 true
+            return true;
+
+        default: // 'move'
+            // 默认的移动操作
+            await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
+            return true;
     }
 }
 
@@ -799,54 +776,33 @@ function cancelShare(itemId, itemType, userId) {
         });
     });
 }
+// **重构**: 简化的冲突检测逻辑
 async function getConflictingItems(itemsToMove, destinationFolderId, userId) {
-    const fileConflictNames = new Set();
-    const folderConflictNames = new Set();
-    const checkedFolders = new Set();
+    const fileConflicts = new Set();
+    const folderConflicts = new Set();
 
-    async function findConflictsRecursive(currentItems, destId) {
-        if (!currentItems || currentItems.length === 0 || checkedFolders.has(destId)) {
-            return;
-        }
-        checkedFolders.add(destId);
+    // 1. 获取目标目录下的所有第一层子项
+    const destContents = await getChildrenOfFolder(destinationFolderId, userId);
+    const destMap = new Map(destContents.map(item => [item.name, item.type]));
 
-        const itemNames = currentItems.map(item => item.name);
-        if(itemNames.length === 0) return;
-        
-        const placeholders = itemNames.map(()=>'?').join(',');
-
-        const sql = `
-            SELECT name, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ? AND name IN (${placeholders})
-            UNION ALL
-            SELECT fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? AND fileName IN (${placeholders})
-        `;
-        const conflictsInDest = await new Promise((res, rej) => 
-            db.all(sql, [destId, userId, ...itemNames, destId, userId, ...itemNames], (err, rows) => err ? rej(err) : res(rows))
-        );
-        const conflictMap = new Map(conflictsInDest.map(c => [c.name, c.type]));
-
-        for (const item of currentItems) {
-            const conflictType = conflictMap.get(item.name);
-            if (conflictType) {
-                if (item.type === 'folder' && conflictType === 'folder') {
-                    folderConflictNames.add(item.name);
-                    const sourceChildren = await getChildrenOfFolder(item.id, userId);
-                    const destChildFolder = await findFolderByName(item.name, destId, userId);
-                    if (destChildFolder) {
-                        await findConflictsRecursive(sourceChildren, destChildFolder.id);
-                    }
-                } else {
-                    fileConflictNames.add(item.name);
-                }
+    // 2. 遍历所有准备移动的项目
+    for (const item of itemsToMove) {
+        const destType = destMap.get(item.name);
+        if (destType) {
+            // 如果在目标目录中找到了同名项目，则存在冲突
+            if (item.type === 'folder' && destType === 'folder') {
+                // 只有“文件夹 vs 文件夹”的冲突才算作文件夹冲突（可合并）
+                folderConflicts.add(item.name);
+            } else {
+                // 所有其他情况（文件 vs 文件, 文件 vs 文件夹等）都算作文件冲突（需覆盖/重命名）
+                fileConflicts.add(item.name);
             }
         }
     }
-
-    await findConflictsRecursive(itemsToMove, destinationFolderId);
     
     return {
-        fileConflicts: Array.from(fileConflictNames),
-        folderConflicts: Array.from(folderConflictNames)
+        fileConflicts: Array.from(fileConflicts),
+        folderConflicts: Array.from(folderConflicts)
     };
 }
 
