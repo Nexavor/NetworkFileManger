@@ -152,7 +152,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await axios.post('/api/check-existence', { files: filesToCheck, folderId: targetFolderId });
             existenceData = res.data.files;
         } catch (error) {
-            showNotification(error.response?.data?.message || '检查文件是否存在时出错。', 'error', !isDrag ? uploadNotificationArea : null);
+            showNotification(error.response?.data?.message || '检查文件是否存在时出错。', 'error', !isDrag ? null : uploadNotificationArea);
             return;
         }
     
@@ -713,7 +713,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             const allVisibleItems = [...currentFolderContents.folders, ...currentFolderContents.files];
             const allVisibleIds = allVisibleItems.map(item => String(item.id));
-            const isAllSelected = allVisibleItems.length > 0 && allVisibleIds.every(id => selectedItems.has(id));
+            const isAllSelected = allVisibleIds.length > 0 && allVisibleIds.every(id => selectedItems.has(id));
 
             if (isAllSelected) {
                 selectedItems.clear();
@@ -971,13 +971,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 const { fileConflicts, folderConflicts } = conflictCheckRes.data;
                 let fileOverwriteList = [];
                 let folderMergeList = [];
+                let finalItemsToMove = [...itemsToMoveWithDetails];
+                // *** 新增：用于追踪使用者选择跳过的项目 ***
+                const skippedFolderNames = new Set();
+                const skippedFileNames = new Set();
+
 
                 if (folderConflicts.length > 0) {
                     for (const folderName of folderConflicts) {
                         const action = await handleFolderConflict(folderName);
                         if (action === 'merge') {
                             folderMergeList.push(folderName);
-                        } else if (action === 'abort') {
+                        } else if (action === 'skip') {
+                            // 只记录被跳过的资料夹名称
+                            skippedFolderNames.add(folderName);
+                        } else { // abort
                             moveModal.style.display = 'none';
                             return;
                         }
@@ -992,10 +1000,34 @@ document.addEventListener('DOMContentLoaded', () => {
                         return;
                     }
                     fileOverwriteList = result.overwriteList;
+                    // *** 新增：找出哪些档案被跳过了 ***
+                    fileConflicts.forEach(name => {
+                        if (!fileOverwriteList.includes(name)) {
+                            skippedFileNames.add(name);
+                        }
+                    });
+                }
+    
+                // *** 核心修正：基于跳过清单来过滤最终移动的项目 ***
+                finalItemsToMove = finalItemsToMove.filter(item => {
+                    if (item.type === 'folder' && skippedFolderNames.has(item.name)) {
+                        return false;
+                    }
+                    if (item.type === 'file' && skippedFileNames.has(item.name)) {
+                        return false;
+                    }
+                    return true;
+                });
+    
+                if (finalItemsToMove.length === 0) {
+                    moveModal.style.display = 'none';
+                    showNotification('没有项目被移动。', 'success');
+                    loadFolderContents(currentFolderId);
+                    return;
                 }
     
                 await axios.post('/api/move', {
-                    items: itemsToMoveWithDetails,
+                    items: finalItemsToMove,
                     targetFolderId: moveTargetFolderId,
                     overwriteFileNames: fileOverwriteList,
                     mergeFolderNames: folderMergeList
@@ -1010,6 +1042,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+    
 
     if (shareBtn && shareModal) {
         const shareOptions = document.getElementById('shareOptions');

@@ -604,28 +604,37 @@ app.get('/api/folders', requireLogin, async (req, res) => {
     res.json(folders);
 });
 
+// --- BUG 2 修复：修改 /api/move 路由以提供更准确的回报 ---
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
         const { items, targetFolderId, overwriteFileNames, mergeFolderNames } = req.body;
         const userId = req.session.userId;
-        
-        const moveOptions = { 
-            overwriteFileNames: overwriteFileNames || [], 
-            mergeFolderNames: mergeFolderNames || []
-        };
 
         if (!items || !Array.isArray(items) || !targetFolderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
         
+        let skippedCount = 0;
         for (const item of items) {
             if (!item.id || !item.name || !item.type) {
                  return res.status(400).json({ success: false, message: `请求中包含无效的项目资料: ${JSON.stringify(item)}` });
             }
-            await data.moveItem(item, targetFolderId, userId, moveOptions);
+            const result = await data.moveItem(item, targetFolderId, userId, overwriteFileNames, mergeFolderNames);
+            if (result && result.skipped) {
+                skippedCount++;
+            }
         }
         
-        res.json({ success: true, message: "移动操作已完成。" });
+        let message = "移动成功";
+        if (skippedCount > 0) {
+            const total = items.length;
+            if (skippedCount === total) {
+                message = `所有 ${total} 个项目都因名称冲突而被跳过。`;
+            } else {
+                message = `移动完成，有 ${skippedCount} 个同名项目被跳过。`;
+            }
+        }
+        res.json({ success: true, message: message });
 
     } catch (error) { 
         console.error("移动操作失败:", error);
