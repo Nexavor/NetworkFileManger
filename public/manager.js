@@ -956,13 +956,16 @@ document.addEventListener('DOMContentLoaded', () => {
         return showNextConflict();
     }
 
+    // --- *** 关键修正区域 开始 *** ---
     if (confirmMoveBtn) {
         confirmMoveBtn.addEventListener('click', async () => {
             if (!moveTargetFolderId) return;
         
+            // 总是使用最开始选择的完整项目列表
             const itemsToMoveWithDetails = Array.from(selectedItems.values());
             
             try {
+                // 1. 检查所有潜在的冲突
                 const conflictCheckRes = await axios.post('/api/check-move-conflict', {
                     itemIds: itemsToMoveWithDetails.map(item => item.id),
                     targetFolderId: moveTargetFolderId
@@ -971,25 +974,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 const { fileConflicts, folderConflicts } = conflictCheckRes.data;
                 let fileOverwriteList = [];
                 let folderMergeList = [];
-                let finalItemsToMove = [...itemsToMoveWithDetails];
-                const skippedFolderNames = new Set();
-                const skippedFileNames = new Set();
-
-
+    
+                // 2. 处理资料夹冲突
                 if (folderConflicts.length > 0) {
                     for (const folderName of folderConflicts) {
                         const action = await handleFolderConflict(folderName);
                         if (action === 'merge') {
                             folderMergeList.push(folderName);
                         } else if (action === 'skip') {
-                            skippedFolderNames.add(folderName);
-                        } else {
+                            // 跳过操作由后端处理，前端只需告知后端哪些需要合并
+                        } else { // abort
                             moveModal.style.display = 'none';
                             return;
                         }
                     }
                 }
                 
+                // 3. 处理档案冲突
                 if (fileConflicts.length > 0) {
                     const result = await handleConflict(fileConflicts, '移动');
                     if (result.action === 'abort') {
@@ -998,32 +999,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         return;
                     }
                     fileOverwriteList = result.overwriteList;
-                    fileConflicts.forEach(name => {
-                        if (!fileOverwriteList.includes(name)) {
-                            skippedFileNames.add(name);
-                        }
-                    });
                 }
     
-                finalItemsToMove = finalItemsToMove.filter(item => {
-                    if (item.type === 'folder' && skippedFolderNames.has(item.name)) {
-                        return false;
-                    }
-                    if (item.type === 'file' && skippedFileNames.has(item.name)) {
-                        return false;
-                    }
-                    return true;
-                });
-    
-                if (finalItemsToMove.length === 0) {
+                // 4. 发送完整的请求到后端，让后端处理跳过逻辑
+                if (itemsToMoveWithDetails.length === 0) {
                     moveModal.style.display = 'none';
-                    showNotification('所有冲突项目均已跳过，没有文件被移动。', 'info');
-                    loadFolderContents(currentFolderId);
-                    return;
+                    return; // 如果没有选择任何项目，则不执行任何操作
                 }
     
                 const moveResponse = await axios.post('/api/move', {
-                    items: finalItemsToMove,
+                    items: itemsToMoveWithDetails, // **核心**：发送未经筛选的完整列表
                     targetFolderId: moveTargetFolderId,
                     overwriteFileNames: fileOverwriteList,
                     mergeFolderNames: folderMergeList
@@ -1031,18 +1016,16 @@ document.addEventListener('DOMContentLoaded', () => {
     
                 moveModal.style.display = 'none';
                 loadFolderContents(currentFolderId);
-                // --- *** 关键修正 开始 *** ---
                 // 使用后端返回的详细讯息
                 showNotification(moveResponse.data.message, 'success');
-                // --- *** 关键修正 结束 *** ---
     
             } catch (error) {
                 alert('操作失败：' + (error.response?.data?.message || '服务器错误'));
             }
         });
     }
+    // --- *** 关键修正区域 结束 *** ---
     
-
     if (shareBtn && shareModal) {
         const shareOptions = document.getElementById('shareOptions');
         const shareResult = document.getElementById('shareResult');
