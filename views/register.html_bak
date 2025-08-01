@@ -12,6 +12,7 @@
       --text-color: #333;
       --input-border-color: #ccc;
       --button-hover-color: #218838;
+      --error-color: #dc3545;
     }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -85,12 +86,18 @@
     .login-link a:hover {
         text-decoration: underline;
     }
+    .error-message {
+        color: var(--error-color);
+        font-size: 12px;
+        margin-top: 5px;
+        display: none;
+    }
   </style>
 </head>
 <body>
   <div class="login-container">
     <h2>注册新帐号</h2>
-    <form action="/register" method="post">
+    <form id="registerForm" action="/register" method="post">
       <div class="form-group">
         <label for="username">用户名</label>
         <input id="username" name="username" placeholder="请输入用户名" required>
@@ -99,11 +106,46 @@
         <label for="password">密码</label>
         <input id="password" name="password" type="password" placeholder="请输入密码" required>
       </div>
+      <div class="form-group">
+        <label for="confirm_password">确认密码</label>
+        <input id="confirm_password" name="confirm_password" type="password" placeholder="请再次输入密码" required>
+        <div id="passwordError" class="error-message">两次输入的密码不匹配</div>
+      </div>
       <button type="submit">注册</button>
     </form>
     <div class="login-link">
         已有帐号？ <a href="/login">点此登入</a>
     </div>
   </div>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const form = document.getElementById('registerForm');
+      const password = document.getElementById('password');
+      const confirmPassword = document.getElementById('confirm_password');
+      const passwordError = document.getElementById('passwordError');
+
+      form.addEventListener('submit', function(event) {
+        if (password.value !== confirmPassword.value) {
+          event.preventDefault(); // 阻止表单提交
+          passwordError.style.display = 'block';
+          confirmPassword.style.borderColor = 'var(--error-color)';
+        }
+      });
+
+      // 当使用者开始重新输入时，隐藏错误讯息
+      confirmPassword.addEventListener('input', function() {
+        if (passwordError.style.display === 'block') {
+          passwordError.style.display = 'none';
+          confirmPassword.style.borderColor = 'var(--input-border-color)';
+        }
+      });
+      password.addEventListener('input', function() {
+         if (password.value === confirmPassword.value) {
+           passwordError.style.display = 'none';
+           confirmPassword.style.borderColor = 'var(--input-border-color)';
+         }
+      });
+    });
+  </script>
 </body>
 </html>
