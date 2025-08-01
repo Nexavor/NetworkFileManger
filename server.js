@@ -373,10 +373,9 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                         await data.deleteFilesByIds([existingFile.message_id], userId);
                     }
                 } else {
-                     // --- BUG 1 修复：使用 checkFullConflict 替代 findFileInFolder ---
                      const conflict = await data.checkFullConflict(fileName, targetFolderId, userId);
                      if (conflict) {
-                         console.log(`Skipping file "${relativePath}" because a conflict exists and was not marked for overwrite.`);
+                         console.log(`Skipping file "${relativePath}" because it exists and was not marked for overwrite.`);
                          continue; // 跳过此文件
                      }
                 }
@@ -604,8 +603,7 @@ app.get('/api/folders', requireLogin, async (req, res) => {
     res.json(folders);
 });
 
-// *** 核心修正 ***
-// 移动 API 端点，现在会处理覆盖和合并的指令
+// --- BUG 2 修复：修改 /api/move 路由以提供更准确的回报 ---
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
         const { items, targetFolderId, overwriteFileNames, mergeFolderNames } = req.body;
@@ -615,14 +613,28 @@ app.post('/api/move', requireLogin, async (req, res) => {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
         
+        let skippedCount = 0;
         for (const item of items) {
             if (!item.id || !item.name || !item.type) {
                  return res.status(400).json({ success: false, message: `请求中包含无效的项目资料: ${JSON.stringify(item)}` });
             }
-            await data.moveItem(item, targetFolderId, userId, overwriteFileNames, mergeFolderNames);
+            const result = await data.moveItem(item, targetFolderId, userId, overwriteFileNames, mergeFolderNames);
+            if (result && result.skipped) {
+                skippedCount++;
+            }
         }
         
-        res.json({ success: true, message: "移动成功" });
+        let message = "移动成功";
+        if (skippedCount > 0) {
+            const total = items.length;
+            if (skippedCount === total) {
+                message = `所有 ${total} 个项目都因名称冲突而被跳过。`;
+            } else {
+                message = `移动完成，有 ${skippedCount} 个同名项目被跳过。`;
+            }
+        }
+        res.json({ success: true, message: message });
+
     } catch (error) { 
         console.error("移动操作失败:", error);
         res.status(500).json({ success: false, message: `移动失败：${error.message}` }); 
