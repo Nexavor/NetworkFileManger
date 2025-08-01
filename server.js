@@ -404,7 +404,9 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
             if (filesToUpdate.length > 0) {
                 const originalFile = filesToUpdate[0];
                 await data.unifiedDelete(originalFile.id, 'file', userId);
-                result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, originalFile.parent_id);
+                // --- *** 关键修正 开始 *** ---
+                result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, originalFile.folder_id);
+                // --- *** 关键修正 结束 *** ---
             } else {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
             }
