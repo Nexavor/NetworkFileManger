@@ -15,24 +15,24 @@ async function setup() {
 }
 setup();
 
-// **重构：上傳邏輯**
-// 現在會根據 folderId 建立完整的目錄結構
+// **重构：上传逻辑**
+// 现在会根据 folderId 建立完整的目录结构
 async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
     const userDir = path.join(UPLOAD_DIR, String(userId));
     
-    // 獲取目標資料夾的完整相對路徑
+    // 获取目标资料夹的完整相对路径
     const folderPathParts = await data.getFolderPath(folderId, userId);
-    // 從路徑陣列建立相對於 userDir 的路徑 (忽略根目录 '/')
+    // 从路径阵列建立相对于 userDir 的路径 (忽略根目录 '/')
     const relativeFolderPath = path.join(...folderPathParts.slice(1).map(p => p.name)); 
     const finalFolderPath = path.join(userDir, relativeFolderPath);
 
-    // 建立目標目錄
+    // 建立目标目录
     await fs.mkdir(finalFolderPath, { recursive: true });
 
     const finalFilePath = path.join(finalFolderPath, fileName);
-    const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/'); // 儲存相對路徑
+    const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/'); // 储存相对路径
 
-    // 從暫存位置移動檔案到最終位置
+    // 从暂存位置移动档案到最终位置
     await fs.rename(tempFilePath, finalFilePath);
     
     const stats = await fs.stat(finalFilePath);
@@ -56,7 +56,7 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
 async function remove(files, folders, userId) {
     const results = { success: true, errors: [] };
     const userDir = path.join(UPLOAD_DIR, String(userId));
-    const parentDirs = new Set(); // 用於後續清理
+    const parentDirs = new Set(); // 用于后续清理
 
     // 删除档案
     for (const file of files) {
@@ -99,14 +99,21 @@ async function remove(files, folders, userId) {
     return results;
 }
 
-// **新增：递回清理空目录的辅助函数**
+// **修正：递回清理空目录的辅助函数**
 async function removeEmptyDirsRecursive(directoryPath, userBaseDir) {
     try {
+        // **关键修正**: 在尝试读取目录前，先检查它是否存在。
+        // 这可以防止因其他清理操作已删除该目录而产生的错误日志。
+        if (!fsSync.existsSync(directoryPath)) {
+            return;
+        }
+
         // 安全检查，确保不会删除到使用者目录之外
         if (!directoryPath.startsWith(userBaseDir) || directoryPath === userBaseDir) return;
 
         let currentPath = directoryPath;
-        while (currentPath !== userBaseDir) {
+        // 循环向上清理，每次循环也检查路径是否存在，更加保险
+        while (currentPath !== userBaseDir && fsSync.existsSync(currentPath)) {
             const files = await fs.readdir(currentPath);
             if (files.length === 0) {
                 await fs.rmdir(currentPath);
@@ -116,11 +123,11 @@ async function removeEmptyDirsRecursive(directoryPath, userBaseDir) {
             }
         }
     } catch (error) {
-        // 忽略错误，例如目录不存在或权限问题
-        console.warn(`清理空目录时发生错误: ${directoryPath}`, error.message);
+        // 初始的存在性检查应该能避免大多数 ENOENT 错误，
+        // 但保留 catch 以处理其他潜在的文件系统问题（如权限错误）。
+        console.warn(`清理空目录时发生非预期的错误: ${directoryPath}`, error.message);
     }
 }
-
 
 async function getUrl(file_id, userId) {
     // URL 保持不变，但 server.js 中的路由将处理这个相对路径
@@ -138,6 +145,5 @@ function stream(file_id, userId) {
     }
     throw new Error('本地档案不存在');
 }
-
 
 module.exports = { upload, remove, getUrl, stream, type: 'local' };
