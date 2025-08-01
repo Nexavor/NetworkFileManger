@@ -35,6 +35,38 @@ function resetClient() {
     client = null;
 }
 
+// *** BUG修复 新增函数 ***
+// 递归删除空目录的辅助函数
+async function removeEmptyDirs(directoryPath) {
+    const client = getClient();
+    try {
+        // 保护措施：确保不会删除根目录或根目录之外的路径
+        if (!directoryPath || directoryPath === "/" || directoryPath === "") return;
+
+        let currentPath = directoryPath;
+        while (currentPath && currentPath !== "/") {
+            const contents = await client.getDirectoryContents(currentPath);
+            if (contents.length === 0) {
+                await client.deleteFile(currentPath);
+                // 移动到上一层目录继续检查
+                currentPath = path.posix.dirname(currentPath);
+            } else {
+                // 如果目录不为空，则停止循环
+                break;
+            }
+        }
+    } catch (error) {
+        // 忽略 "Not Found" 错误，因为上层目录可能在之前的迭代中已被删除
+        if (error.response && error.response.status === 404) {
+            // 继续尝试清理上一层
+            await removeEmptyDirs(path.posix.dirname(directoryPath));
+        } else {
+             console.warn(`清理 WebDAV 空目录失败: ${directoryPath}`, error.message);
+        }
+    }
+}
+
+
 async function getFolderPath(folderId, userId) {
     const userRoot = await new Promise((resolve, reject) => {
         db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [userId], (err, row) => {
@@ -95,11 +127,14 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
 async function remove(files, folders, userId) {
     const client = getClient();
     const results = { success: true, errors: [] };
+    const parentDirs = new Set(); // 用于后续清理空目录
 
     // 1. 删除所有明确指定的档案
     for (const file of files) {
         try {
             const filePath = path.posix.join('/', file.file_id);
+            // *** BUG修复 新增 ***
+            parentDirs.add(path.posix.dirname(filePath));
             await client.deleteFile(filePath);
         } catch (error) {
             // 忽略 "Not Found" 错误，因为档案可能已被删除
@@ -113,32 +148,27 @@ async function remove(files, folders, userId) {
     }
 
     // 2. 递归删除所有指定的资料夹
-    // 依然按路径深度降序排序，以确保先处理子资料夹
     const sortedFolders = folders
         .map(f => ({ ...f, path: path.posix.join('/', f.path) }))
         .sort((a, b) => b.path.length - a.path.length);
 
     for (const folder of sortedFolders) {
-        // 根目录不能被删除
         if (folder.path === '/') continue;
         try {
-            // 尝试直接删除。如果伺服器支援且资料夹为空，会成功
+            // *** BUG修复 新增 ***
+            parentDirs.add(path.posix.dirname(folder.path));
             await client.deleteFile(folder.path);
         } catch (error) {
-            // 如果因为资料夹不为空而失败 (常见状态码 409 Conflict)，则尝试清空内容后再删除
             if (error.response && (error.response.status === 409 || error.response.status === 403)) {
                 try {
                     console.warn(`文件夹 ${folder.path} 不为空或权限问题，尝试强制清空内容...`);
                     const contents = await client.getDirectoryContents(folder.path, { deep: true });
-                    // 从最深层开始删除
                     const sortedContents = contents.sort((a, b) => b.filename.length - a.filename.length);
                     
                     for (const item of sortedContents) {
-                         // 跳过父目录本身
                         if (item.filename === folder.path || item.filename === folder.path + '/') continue;
                         await client.deleteFile(item.filename);
                     }
-                    // 再次尝试删除现在应该为空的资料夹
                     await client.deleteFile(folder.path);
                 } catch (deepError) {
                     const errorMessage = `清空并删除 WebDAV 资料夹 [${folder.path}] 失败: ${deepError.message}`;
@@ -147,13 +177,18 @@ async function remove(files, folders, userId) {
                     results.success = false;
                 }
             } else if (!(error.response && error.response.status === 404)) {
-                // 处理其他非 "Not Found" 的错误
                 const errorMessage = `删除 WebDAV 资料夹 [${folder.path}] 失败: ${error.message}`;
                 console.error(errorMessage);
                 results.errors.push(errorMessage);
                 results.success = false;
             }
         }
+    }
+    
+    // *** BUG修复 新增 ***
+    // 3. 清理所有可能变为空的父目录
+    for (const dir of parentDirs) {
+        await removeEmptyDirs(dir);
     }
 
     return results;
@@ -176,7 +211,6 @@ async function getUrl(file_id, userId) {
 }
 
 // *** 核心修正 ***
-// move 函数现在接受 options 并处理 overwrite 旗标
 async function move(oldPath, newPath, options = {}) {
     const client = getClient();
     try {
@@ -190,8 +224,11 @@ async function move(oldPath, newPath, options = {}) {
                 }
             }
         }
-        // 向下层函式库传递 overwrite 选项
         await client.moveFile(oldPath, newPath, { overwrite: !!options.overwrite });
+        
+        // *** BUG修复：移动后清理源目录 ***
+        await removeEmptyDirs(path.posix.dirname(oldPath));
+        
         return { success: true };
     } catch (error) {
         console.error(`WebDAV 移动失败 从 ${oldPath} 到 ${newPath}:`, error);
@@ -205,7 +242,6 @@ async function exists(filePath) {
     try {
         return await client.exists(filePath);
     } catch (error) {
-        // 如果 client.exists 本身出错（例如权限问题），我们假设它不存在以避免阻断操作
         console.warn(`WebDAV exists check failed for ${filePath}:`, error.message);
         return false;
     }
