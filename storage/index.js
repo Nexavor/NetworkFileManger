@@ -21,8 +21,8 @@ function readConfig() {
     } catch (error) {
         console.error("读取设定档失败:", error);
     }
-    // 预设值
-    return { storageMode: 'telegram', webdav: {} }; 
+    // --- *** 关键修正：将预设值从 'telegram' 改为 'local' *** ---
+    return { storageMode: 'local', webdav: {} }; 
 }
 
 function writeConfig(config) {
