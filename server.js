@@ -404,7 +404,6 @@ app.post('/upload', requireLogin, async (req, res, next) => {
     }
 });
 
-// *** 文本文件建立/编辑功能修复 ***
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
     const userId = req.session.userId;
@@ -414,7 +413,6 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         return res.status(400).json({ success: false, message: '档名无效或不是 .txt 档案' });
     }
 
-    // 建立一个临时文件来储存内容
     const tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.txt`);
 
     try {
@@ -424,11 +422,8 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         if (mode === 'edit' && fileId) {
              const filesToDelete = await data.getFilesByIds([fileId], userId);
             if (filesToDelete.length > 0) {
-                // 先删除旧的实体档案
                 await storage.remove(filesToDelete, [], userId);
-                // 再从资料库删除旧记录
                 await data.deleteFilesByIds([fileId], userId);
-                // 最后上传新文件，并获取新的 fileId
                 result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, filesToDelete[0].folder_id);
             } else {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
@@ -442,8 +437,8 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         } else {
             return res.status(400).json({ success: false, message: '请求参数无效' });
         }
-        // *** 修复：回传新的 message_id ***
-        res.json({ success: true, fileId: result.data.result.message_id });
+        // *** 关键修正：直接从 result 中取得 fileId ***
+        res.json({ success: true, fileId: result.fileId });
     } catch (error) {
         console.error("Text file error:", error);
         res.status(500).json({ success: false, message: '伺服器内部错误' });
@@ -696,7 +691,6 @@ async function unifiedDeleteHandler(req, res) {
 app.post('/delete-multiple', requireLogin, unifiedDeleteHandler);
 
 
-// *** 重命名功能修复：确保本地文件移动后更新资料库中的绝对路径 ***
 app.post('/rename', requireLogin, async (req, res) => {
     try {
         const { id, newName, type } = req.body;
@@ -719,12 +713,11 @@ app.post('/rename', requireLogin, async (req, res) => {
     }
 });
 
-// *** 缩图功能修复 ***
 app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = parseInt(req.params.message_id, 10);
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
-
+        
         if (!fileInfo) {
              return res.status(404).send('找不到档案资讯');
         }
@@ -735,15 +728,12 @@ app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
             if (link) return res.redirect(link);
         }
         
-        // *** 修复：为本地文件提供缩图/预览服务 ***
         if (fileInfo.storage_type === 'local' && fileInfo.file_id && fs.existsSync(fileInfo.file_id)) {
-            // 对于图片和影片，可以直接发送原档作为缩图
              if (fileInfo.mimetype && (fileInfo.mimetype.startsWith('image/') || fileInfo.mimetype.startsWith('video/'))) {
                 return res.sendFile(fileInfo.file_id);
              }
         }
         
-        // 如果没有缩图，则回传一个 1x1 的透明 GIF 作为占位符
         const placeholder = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
         res.writeHead(200, { 'Content-Type': 'image/gif', 'Content-Length': placeholder.length });
         res.end(placeholder);
@@ -755,7 +745,6 @@ app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
 });
 
 
-// *** 下载/预览代理功能修复 ***
 app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = parseInt(req.params.message_id, 10);
@@ -765,7 +754,6 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
             return res.status(404).send('文件信息未找到');
         }
         
-        // 为串流影片设定 Accept-Ranges
         if (req.headers.range) { 
             res.setHeader('Accept-Ranges', 'bytes');
         } else {
@@ -784,10 +772,7 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
                 response.data.pipe(res);
             } else { res.status(404).send('无法获取文件链接'); }
         } else if (fileInfo.storage_type === 'local') {
-            // *** 修复：使用资料库中的绝对路径提供档案 ***
             if (fs.existsSync(fileInfo.file_id)) {
-                // 对于下载请求，使用 res.download
-                // 对于预览（如 <video> or <img> src），需要一个档案流
                 const stat = await fsp.stat(fileInfo.file_id);
                 const fileSize = stat.size;
                 const range = req.headers.range;
@@ -825,7 +810,6 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
 });
 
 
-// *** 文本文件内容获取修复 ***
 app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = parseInt(req.params.message_id, 10);
@@ -845,7 +829,6 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
                 res.send(response.data);
             } else { res.status(404).send('无法获取文件链接'); }
         } else if (fileInfo.storage_type === 'local') {
-            // *** 修复：使用资料库中的绝对路径读取档案 ***
             if (fs.existsSync(fileInfo.file_id)) {
                 const content = await fsp.readFile(fileInfo.file_id, 'utf-8');
                 res.send(content);
