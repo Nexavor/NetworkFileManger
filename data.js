@@ -409,7 +409,8 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
 
     // 物理移动 (Local 和 WebDAV)
     if (storage.type === 'local' || storage.type === 'webdav') {
-        const client = storage.type === 'webdav' ? require('./storage/webdav').getClient() : null;
+        // **关键修正：通过 storage 对象获取 client**
+        const client = storage.type === 'webdav' ? storage.getClient() : null;
         
         // 1. 获取目标文件夹的完整路径
         const targetPathParts = await getFolderPath(targetFolderId, userId);
@@ -663,7 +664,7 @@ async function renameFile(messageId, newFileName, userId) {
                 const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
                 await fs.rename(oldFullPath, newFullPath);
             } else if (storage.type === 'webdav') {
-                const client = require('./storage/webdav').getClient();
+                const client = storage.getClient(); // **关键修正**
                 await client.moveFile(oldRelativePath, newRelativePath);
             }
         } catch(err) {
@@ -710,7 +711,7 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
                  await fs.mkdir(path.dirname(newFullPath), { recursive: true });
                  await fs.rename(oldFullPath, newFullPath);
             } else if (storage.type === 'webdav') {
-                const client = require('./storage/webdav').getClient();
+                const client = storage.getClient(); // **关键修正**
                 await client.moveFile(oldRelativePath, newRelativePath);
             }
         } catch(err) {
@@ -729,6 +730,7 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
         db.run(sql, [newFileName, targetFolderId, messageId, userId], (err) => err ? reject(err) : resolve({ success: true }));
     });
 }
+
 
 // *** 关键修正：重构 renameFolder 以处理 WebDAV ***
 async function renameFolder(folderId, newFolderName, userId) {
@@ -750,7 +752,7 @@ async function renameFolder(folderId, newFolderName, userId) {
                     await fs.rename(oldAbsPath, newAbsPath);
                 }
             } else if (storage.type === 'webdav') {
-                const client = require('./storage/webdav').getClient();
+                const client = storage.getClient(); // **关键修正**
                 await client.moveFile(oldFullPath, newFullPath);
             }
 
