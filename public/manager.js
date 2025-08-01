@@ -1026,7 +1026,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
     
-                await axios.post('/api/move', {
+                const moveResponse = await axios.post('/api/move', {
                     items: finalItemsToMove,
                     targetFolderId: moveTargetFolderId,
                     overwriteFileNames: fileOverwriteList,
@@ -1035,7 +1035,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
                 moveModal.style.display = 'none';
                 loadFolderContents(currentFolderId);
-                showNotification('项目移动成功！', 'success');
+                showNotification(moveResponse.data.message, 'success');
     
             } catch (error) {
                 alert('操作失败：' + (error.response?.data?.message || '服务器错误'));
