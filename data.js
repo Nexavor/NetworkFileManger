@@ -109,9 +109,9 @@ function getItemsByIds(itemIds, userId) {
         if (!itemIds || itemIds.length === 0) return resolve([]);
         const placeholders = itemIds.map(() => '?').join(',');
         const sql = `
-            SELECT id, name, 'folder' as type, parent_id, user_id FROM folders WHERE id IN (${placeholders}) AND user_id = ?
+            SELECT id, name, 'folder' as type, parent_id FROM folders WHERE id IN (${placeholders}) AND user_id = ?
             UNION ALL
-            SELECT message_id as id, fileName as name, 'file' as type, folder_id as parent_id, user_id, file_id FROM files WHERE message_id IN (${placeholders}) AND user_id = ?
+            SELECT message_id as id, fileName as name, 'file' as type, folder_id as parent_id FROM files WHERE message_id IN (${placeholders}) AND user_id = ?
         `;
         db.all(sql, [...itemIds, userId, ...itemIds, userId], (err, rows) => {
             if (err) return reject(err);
@@ -120,14 +120,13 @@ function getItemsByIds(itemIds, userId) {
     });
 }
 
-
 function getChildrenOfFolder(folderId, userId) {
     return new Promise((resolve, reject) => {
         const sql = `
             SELECT id, name, 'folder' as type, parent_id
             FROM folders WHERE parent_id = ? AND user_id = ?
             UNION ALL
-            SELECT message_id as id, fileName as name, 'file' as type, folder_id as parent_id, file_id
+            SELECT message_id as id, fileName as name, 'file' as type, folder_id as parent_id 
             FROM files WHERE folder_id = ? AND user_id = ?
         `;
         db.all(sql, [folderId, userId, folderId, userId], (err, rows) => {
@@ -280,16 +279,8 @@ function getAllFolders(userId) {
 async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], mergeFolderNames = []) {
     const storage = require('./storage').getStorage();
     const dbRun = (sql, params) => new Promise((res, rej) => db.run(sql, params, function(e) { e ? rej(e) : res(this); }));
-    
-    // 确保 item 包含 parent_id 或 folder_id
     const sourceParentId = item.parent_id ?? item.folder_id;
-    if (sourceParentId === undefined || sourceParentId === null) {
-        // 如果没有，就从资料库中取得
-        const fullItem = (await getItemsByIds([item.id], userId))[0];
-        item = { ...fullItem, ...item }; // 合并，确保有最新的 name 和 type
-        item.parent_id = fullItem.parent_id; // getItemsByIds 会将 file 的 folder_id 命名为 parent_id
-    }
-    
+
     if (item.type === 'folder') {
         const numericTargetFolderId = Number(targetFolderId);
         const numericItemId = Number(item.id);
@@ -309,8 +300,7 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
         let allChildrenMovedSuccessfully = true;
 
         for (const child of sourceChildren) {
-             const fullChild = (await getItemsByIds([child.id], userId))[0];
-             const moveResult = await moveItem(fullChild, targetFolder.id, userId, overwriteFileNames, mergeFolderNames);
+            const moveResult = await moveItem(child, targetFolder.id, userId, overwriteFileNames, mergeFolderNames);
             if (moveResult && moveResult.skipped) {
                 allChildrenMovedSuccessfully = false;
             }
@@ -339,23 +329,31 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
         }
     }
     
-    // 只有 WebDAV 模式需要处理实体档案移动和 file_id 更新
-    if (storage.type === 'webdav') {
-        if (item.parent_id === undefined || item.parent_id === null) throw new Error(`无法确定项目 "${item.name}" 的来源资料夹。`);
-        const sourcePathArr = await getFolderPath(item.parent_id, userId);
+    if (storage.type !== 'telegram') {
+        if (sourceParentId === undefined || sourceParentId === null) throw new Error(`无法确定项目 "${item.name}" 的来源资料夹。`);
+        const sourcePathArr = await getFolderPath(sourceParentId, userId);
         const sourceParentPath = sourcePathArr.length > 1 ? path.posix.join(...sourcePathArr.slice(1).map(p => p.name)) : '';
         const targetPathArr = await getFolderPath(targetFolderId, userId);
         const targetParentPath = targetPathArr.length > 1 ? path.posix.join(...targetPathArr.slice(1).map(p => p.name)) : '';
 
-        let oldPath = path.posix.join('/', sourceParentPath, item.name);
-        let newPath = path.posix.join('/', targetParentPath, item.name);
+        let oldPath, newPath, newFileIdForDb;
+        if (storage.type === 'local') {
+            const userUploadDir = path.join(__dirname, '..', 'data', 'uploads', String(userId));
+            oldPath = path.join(userUploadDir, sourceParentPath, item.name);
+            newPath = path.join(userUploadDir, targetParentPath, item.name);
+            newFileIdForDb = newPath;
+        } else { // webdav
+            oldPath = path.posix.join('/', sourceParentPath, item.name);
+            newPath = path.posix.join('/', targetParentPath, item.name);
+            newFileIdForDb = newPath;
+        }
 
         const moveResult = await storage.move(oldPath, newPath, { overwrite: isFileOverwrite });
         if (!moveResult.success) throw new Error(`移动实体档案/资料夹 "${item.name}" 时发生错误。`);
         
         if (item.type === 'file') {
-            await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [newPath, item.id, userId]);
-        } else { // folder
+            await dbRun("UPDATE files SET file_id = ? WHERE message_id = ? AND user_id = ?", [newFileIdForDb, item.id, userId]);
+        } else {
             const allDescendantFiles = await getFilesRecursive(item.id, userId, item.name);
             for (const file of allDescendantFiles) {
                 const relativePathInsideMovedFolder = file.path.substring(item.name.length);
@@ -365,10 +363,9 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
         }
     }
     
-    // 所有储存模式都需要更新资料库中的父子关系
     if (item.type === 'file') {
         await dbRun("UPDATE files SET folder_id = ? WHERE message_id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
-    } else { // folder
+    } else {
         await dbRun("UPDATE folders SET parent_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
     }
 
