@@ -145,6 +145,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // 总是上传所有由使用者选择的文件
         const fileObjects = Array.from(files).filter(f => f.name);
         const filesToCheck = fileObjects.map(f => ({
             relativePath: f.webkitRelativePath || f.name
@@ -155,56 +156,30 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await axios.post('/api/check-existence', { files: filesToCheck, folderId: targetFolderId });
             existenceData = res.data.files;
         } catch (error) {
-            showNotification(error.response?.data?.message || '检查文件是否存在时出错。', 'error', !isDrag ? null : uploadNotificationArea);
+            showNotification(error.response?.data?.message || '检查文件是否存在时出错。', 'error', !isDrag ? uploadNotificationArea : null);
             return;
         }
     
-        let filesToUpload = [];
-        let pathsToOverwrite = [];
-        const conflicts = [];
-        const nonConflicts = [];
-    
-        for (const file of fileObjects) {
-            const relativePath = file.webkitRelativePath || f.name;
-            const existing = existenceData.find(f => f.relativePath === relativePath && f.exists);
-            if (existing) {
-                conflicts.push(file);
-            } else {
-                nonConflicts.push(file);
-            }
-        }
-        
-        filesToUpload.push(...nonConflicts);
+        const resolutions = {};
+        const conflicts = existenceData.filter(f => f.exists).map(f => f.relativePath);
     
         if (conflicts.length > 0) {
-            const conflictNames = conflicts.map(f => f.webkitRelativePath || f.name);
-            const { aborted, resolutions } = await handleConflict(conflictNames, '档案');
-            if (aborted) {
-                 if (filesToUpload.length === 0) {
-                    showNotification('上传操作已取消。', 'info', !isDrag ? uploadNotificationArea : null);
-                    return;
-                }
-            } else {
-                pathsToOverwrite = Object.entries(resolutions)
-                                        .filter(([, action]) => action === 'overwrite')
-                                        .map(([name]) => name);
-                const filesToMaybeUpload = conflicts.filter(f => pathsToOverwrite.includes(f.webkitRelativePath || f.name));
-                filesToUpload.push(...filesToMaybeUpload);
+            const conflictResult = await handleConflict(conflicts, '档案');
+            if (conflictResult.aborted) {
+                showNotification('上传操作已取消。', 'info', !isDrag ? uploadNotificationArea : null);
+                return;
             }
-        }
-    
-        if (filesToUpload.length === 0) {
-            showNotification('没有文件被上传。', 'success', !isDrag ? uploadNotificationArea : null);
-            return;
+            Object.assign(resolutions, conflictResult.resolutions);
         }
     
         const formData = new FormData();
-        filesToUpload.forEach(file => {
+        fileObjects.forEach(file => {
             formData.append('files', file);
             formData.append('relativePaths', file.webkitRelativePath || file.name);
         });
+        
         formData.append('folderId', targetFolderId);
-        formData.append('overwritePaths', JSON.stringify(pathsToOverwrite));
+        formData.append('resolutions', JSON.stringify(resolutions)); // 将解决方案发送给服务器
     
         const captionInput = document.getElementById('uploadCaption');
         if (captionInput && captionInput.value && !isDrag) {
