@@ -713,7 +713,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             const allVisibleItems = [...currentFolderContents.folders, ...currentFolderContents.files];
             const allVisibleIds = allVisibleItems.map(item => String(item.id));
-            const isAllSelected = allVisibleIds.length > 0 && allVisibleIds.every(id => selectedItems.has(id));
+            const isAllSelected = allVisibleItems.length > 0 && allVisibleIds.every(id => selectedItems.has(id));
 
             if (isAllSelected) {
                 selectedItems.clear();
@@ -1030,7 +1030,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     items: finalItemsToMove,
                     targetFolderId: moveTargetFolderId,
                     overwriteFileNames: fileOverwriteList,
-                    mergeFolderNames: folderMergeList
+                    mergeFolderNames: folderMergeList,
+                    skippedFileNames: Array.from(skippedFileNames),
+                    skippedFolderNames: Array.from(skippedFolderNames)
                 });
     
                 moveModal.style.display = 'none';
