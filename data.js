@@ -109,9 +109,9 @@ function getItemsByIds(itemIds, userId) {
         if (!itemIds || itemIds.length === 0) return resolve([]);
         const placeholders = itemIds.map(() => '?').join(',');
         const sql = `
-            SELECT id, name, 'folder' as type, parent_id FROM folders WHERE id IN (${placeholders}) AND user_id = ?
+            SELECT id, name, 'folder' as type FROM folders WHERE id IN (${placeholders}) AND user_id = ?
             UNION ALL
-            SELECT message_id as id, fileName as name, 'file' as type, folder_id as parent_id FROM files WHERE message_id IN (${placeholders}) AND user_id = ?
+            SELECT message_id as id, fileName as name, 'file' as type FROM files WHERE message_id IN (${placeholders}) AND user_id = ?
         `;
         db.all(sql, [...itemIds, userId, ...itemIds, userId], (err, rows) => {
             if (err) return reject(err);
@@ -123,11 +123,9 @@ function getItemsByIds(itemIds, userId) {
 function getChildrenOfFolder(folderId, userId) {
     return new Promise((resolve, reject) => {
         const sql = `
-            SELECT id, name, 'folder' as type, parent_id
-            FROM folders WHERE parent_id = ? AND user_id = ?
+            SELECT id, name, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ?
             UNION ALL
-            SELECT message_id as id, fileName as name, 'file' as type, folder_id as parent_id 
-            FROM files WHERE folder_id = ? AND user_id = ?
+            SELECT message_id as id, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ?
         `;
         db.all(sql, [folderId, userId, folderId, userId], (err, rows) => {
             if (err) return reject(err);
@@ -184,13 +182,13 @@ async function getFilesRecursive(folderId, userId, currentPath = '') {
     const sqlFiles = "SELECT * FROM files WHERE folder_id = ? AND user_id = ?";
     const files = await new Promise((res, rej) => db.all(sqlFiles, [folderId, userId], (err, rows) => err ? rej(err) : res(rows)));
     for (const file of files) {
-        allFiles.push({ ...file, path: path.posix.join(currentPath, file.fileName) });
+        allFiles.push({ ...file, path: path.join(currentPath, file.fileName) });
     }
 
     const sqlFolders = "SELECT id, name FROM folders WHERE parent_id = ? AND user_id = ?";
     const subFolders = await new Promise((res, rej) => db.all(sqlFolders, [folderId, userId], (err, rows) => err ? rej(err) : res(rows)));
     for (const subFolder of subFolders) {
-        const nestedFiles = await getFilesRecursive(subFolder.id, userId, path.posix.join(currentPath, subFolder.name));
+        const nestedFiles = await getFilesRecursive(subFolder.id, userId, path.join(currentPath, subFolder.name));
         allFiles.push(...nestedFiles);
     }
     return allFiles;
@@ -276,95 +274,89 @@ function getAllFolders(userId) {
     });
 }
 
-// --- *** 关键修正区域 开始 *** ---
-async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], mergeFolderNames = []) {
-    const storage = require('./storage').getStorage();
-    const dbRun = (sql, params) => new Promise((res, rej) => db.run(sql, params, function(e) { e ? rej(e) : res(this); }));
+async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
+    const { overwriteList = [], mergeList = [] } = options;
 
-    // --- 自我移动或移入子目录的验证 ---
-    if (item.type === 'folder') {
-        const numericTargetFolderId = Number(targetFolderId);
-        const numericItemId = Number(item.id);
-        if (numericItemId === numericTargetFolderId) {
-            return { success: true, skipped: true, message: '无法将资料夹移动到其自身内部。' };
-        }
-        const descendants = await getAllDescendantFolderIds(numericItemId, userId);
-        if (descendants.map(Number).includes(numericTargetFolderId)) {
-            return { success: true, skipped: true, message: '无法将资料夹移动到其子目录中。' };
-        }
-    }
+    if (itemType === 'folder') {
+        const folderToMove = (await getItemsByIds([itemId], userId))[0];
+        if (!folderToMove) throw new Error(`找不到来源资料夹 ID: ${itemId}`);
 
-    const conflict = await checkFullConflict(item.name, targetFolderId, userId);
+        const existingFolder = await findFolderByName(folderToMove.name, targetFolderId, userId);
 
-    // --- 档案处理逻辑 ---
-    if (item.type === 'file') {
-        if (conflict) {
-            if (overwriteFileNames.includes(item.name)) {
-                // 执行覆盖
-                const existingFile = await findFileInFolder(item.name, targetFolderId, userId);
-                if (existingFile) {
-                    const filesToDelete = await getFilesByIds([existingFile.message_id], userId);
-                    if (filesToDelete.length > 0) {
-                       await storage.remove(filesToDelete, [], userId); 
-                    }
-                    await deleteFilesByIds([existingFile.message_id], userId);
-                }
-            } else {
-                // 跳过
-                return { success: true, skipped: true };
-            }
-        }
-        // 执行移动
-        await dbRun("UPDATE files SET folder_id = ? WHERE message_id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
-        return { success: true, skipped: false };
-    }
-
-    // --- 资料夹处理逻辑 ---
-    if (item.type === 'folder') {
-        let destinationFolderId;
-        let skippedAllChildren = true;
-
-        if (conflict) { // 目标位置存在同名资料夹
-            if (mergeFolderNames.includes(item.name)) {
+        if (existingFolder) {
+            if (mergeList.includes(folderToMove.name)) {
                 // 合并逻辑
-                const targetFolder = await findFolderByName(item.name, targetFolderId, userId);
-                destinationFolderId = targetFolder.id;
-            } else {
-                // 跳过整个资料夹
-                return { success: true, skipped: true };
+                const children = await getChildrenOfFolder(itemId, userId);
+                for (const child of children) {
+                    await moveItem(child.id, child.type, existingFolder.id, userId, options);
+                }
+                const remainingChildren = await getChildrenOfFolder(itemId, userId);
+                if (remainingChildren.length === 0) {
+                    await deleteSingleFolder(itemId, userId);
+                }
             }
         } else {
-            // 目标位置不存在同名资料夹，直接移动
-            await dbRun("UPDATE folders SET parent_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
-            return { success: true, skipped: false };
+            // 没有冲突，直接移动
+            await moveItems([], [itemId], targetFolderId, userId);
         }
-
-        // --- 执行合并 ---
-        const children = await getChildrenOfFolder(item.id, userId);
-        if(children.length === 0){ // 如果是空资料夹，直接删除
-             await deleteSingleFolder(item.id, userId);
-             return { success: true, skipped: false };
-        }
-
-        for (const child of children) {
-            // 递归调用，将子项目移入目标合并资料夹
-            const result = await moveItem(child, destinationFolderId, userId, overwriteFileNames, mergeFolderNames);
-            if (result && !result.skipped) {
-                skippedAllChildren = false;
-            }
-        }
-
-        // 如果所有子项目都被成功移动（或因冲突而被正确处理），则删除原始的空父资料夹
-        const remainingChildren = await getChildrenOfFolder(item.id, userId);
-        if (remainingChildren.length === 0) {
-            await deleteSingleFolder(item.id, userId);
-        }
+    } else { // file
+        const fileToMove = (await getFilesByIds([itemId], userId))[0];
+        if (!fileToMove) throw new Error(`找不到来源档案 ID: ${itemId}`);
         
-        return { success: true, skipped: skippedAllChildren };
+        const conflict = await findFileInFolder(fileToMove.fileName, targetFolderId, userId);
+        
+        if (conflict && overwriteList.includes(fileToMove.fileName)) {
+            const storage = require('./storage').getStorage();
+            const filesToDelete = await getFilesByIds([conflict.message_id], userId);
+            // **最终修复：确保在移动前，先删除物理文件，再删除数据库记录**
+            if (filesToDelete.length > 0) {
+                await storage.remove(filesToDelete, [], userId);
+            }
+            await deleteFilesByIds([conflict.message_id], userId);
+
+            await moveItems([itemId], [], targetFolderId, userId);
+        } else if (!conflict) {
+            await moveItems([itemId], [], targetFolderId, userId);
+        }
     }
 }
-// --- *** 关键修正区域 结束 *** ---
 
+function moveItems(fileIds, folderIds, targetFolderId, userId) {
+    return new Promise((resolve, reject) => {
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION;");
+
+            const promises = [];
+
+            if (fileIds && fileIds.length > 0) {
+                const filePlaceholders = fileIds.map(() => '?').join(',');
+                const moveFilesSql = `UPDATE files SET folder_id = ? WHERE message_id IN (${filePlaceholders}) AND user_id = ?`;
+                promises.push(new Promise((res, rej) => {
+                    db.run(moveFilesSql, [targetFolderId, ...fileIds, userId], (err) => err ? rej(err) : res());
+                }));
+            }
+
+            if (folderIds && folderIds.length > 0) {
+                const folderPlaceholders = folderIds.map(() => '?').join(',');
+                const moveFoldersSql = `UPDATE folders SET parent_id = ? WHERE id IN (${folderPlaceholders}) AND user_id = ?`;
+                 promises.push(new Promise((res, rej) => {
+                    db.run(moveFoldersSql, [targetFolderId, ...folderIds, userId], (err) => err ? rej(err) : res());
+                }));
+            }
+
+            Promise.all(promises)
+                .then(() => {
+                    db.run("COMMIT;", (err) => {
+                        if (err) reject(err);
+                        else resolve({ success: true });
+                    });
+                })
+                .catch((err) => {
+                    db.run("ROLLBACK;", () => reject(err));
+                });
+        });
+    });
+}
 
 function deleteSingleFolder(folderId, userId) {
     return new Promise((resolve, reject) => {
@@ -779,6 +771,7 @@ module.exports = {
     getFilesByIds,
     getItemsByIds,
     getChildrenOfFolder,
+    moveItems,
     moveItem,
     getFileByShareToken,
     getFolderByShareToken,

@@ -138,7 +138,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const oversizedFiles = Array.from(files).filter(file => file.size > MAX_TELEGRAM_SIZE);
         if (oversizedFiles.length > 0) {
             const fileNames = oversizedFiles.map(f => `"${f.name}"`).join(', ');
-            showNotification(`文件 ${fileNames} 过大，超过 ${formatBytes(MAX_TELEGRAM_SIZE)} 的限制。`, 'error', !isDrag ? null : uploadNotificationArea);
+            showNotification(`文件 ${fileNames} 过大，超过 ${formatBytes(MAX_TELEGRAM_SIZE)} 的限制。`, 'error', !isDrag ? uploadNotificationArea : null);
             return;
         }
 
@@ -218,7 +218,11 @@ document.addEventListener('DOMContentLoaded', () => {
             currentFolderContents = res.data.contents;
             // 清理已不存在的选择项
             const currentIds = new Set([...res.data.contents.folders.map(f => String(f.id)), ...res.data.contents.files.map(f => String(f.id))]);
-            selectedItems.clear();
+            selectedItems.forEach((_, key) => {
+                if (!currentIds.has(key)) {
+                    selectedItems.delete(key);
+                }
+            });
             renderBreadcrumb(res.data.path);
             renderItems(currentFolderContents.folders, currentFolderContents.files);
             updateActionBar();
@@ -602,23 +606,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const type = target.dataset.type;
         const name = target.dataset.name;
 
-        // 查找完整的项目信息
-        const fullItem = (type === 'folder' 
-            ? currentFolderContents.folders.find(i => String(i.id) === id) 
-            : currentFolderContents.files.find(i => String(i.id) === id)) || { type, name };
-
-
         if (isMultiSelectMode) {
             if (selectedItems.has(id)) {
                 selectedItems.delete(id);
             } else {
-                selectedItems.set(id, fullItem);
+                selectedItems.set(id, { type, name });
             }
         } else {
             const isSelected = selectedItems.has(id);
             selectedItems.clear();
             if (!isSelected) {
-                selectedItems.set(id, fullItem);
+                selectedItems.set(id, { type, name });
             }
         }
         rerenderSelection();
@@ -710,17 +708,13 @@ document.addEventListener('DOMContentLoaded', () => {
         selectAllBtn.addEventListener('click', () => {
             isMultiSelectMode = true;
             if (multiSelectBtn) multiSelectBtn.classList.add('active');
-            
             const allVisibleItems = [...currentFolderContents.folders, ...currentFolderContents.files];
             const allVisibleIds = allVisibleItems.map(item => String(item.id));
             const isAllSelected = allVisibleIds.length > 0 && allVisibleIds.every(id => selectedItems.has(id));
-
             if (isAllSelected) {
                 selectedItems.clear();
             } else {
-                allVisibleItems.forEach(item => {
-                    selectedItems.set(String(item.id), item);
-                });
+                allVisibleItems.forEach(item => selectedItems.set(String(item.id), { type: item.type, name: item.name }));
             }
             rerenderSelection();
             updateActionBar();
@@ -835,7 +829,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 else foldersToDelete.push(parseInt(id));
             });
             try {
-                await axios.post('/delete-multiple', { messageIds: filesToDelete, folderIds: foldersToDelete });
+                if (filesToDelete.length > 0) await axios.post('/delete-multiple', { messageIds: filesToDelete });
+                for (const folderId of foldersToDelete) await axios.post('/api/folder/delete', { folderId });
                 loadFolderContents(currentFolderId);
             } catch (error) { alert('删除失败，请重试。'); }
         });
@@ -955,22 +950,25 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         return showNextConflict();
     }
-    
+
     if (confirmMoveBtn) {
         confirmMoveBtn.addEventListener('click', async () => {
             if (!moveTargetFolderId) return;
-        
-            const itemsToMoveWithDetails = Array.from(selectedItems.values());
+    
+            const itemIds = Array.from(selectedItems.keys()).map(id => parseInt(id, 10));
             
             try {
                 const conflictCheckRes = await axios.post('/api/check-move-conflict', {
-                    itemIds: itemsToMoveWithDetails.map(item => item.id),
+                    itemIds: itemIds,
                     targetFolderId: moveTargetFolderId
                 });
-                
+    
                 const { fileConflicts, folderConflicts } = conflictCheckRes.data;
+                
                 let fileOverwriteList = [];
                 let folderMergeList = [];
+                const itemsToMove = Array.from(selectedItems.values());
+                let finalItemIds = [...itemIds];
     
                 if (folderConflicts.length > 0) {
                     for (const folderName of folderConflicts) {
@@ -978,7 +976,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (action === 'merge') {
                             folderMergeList.push(folderName);
                         } else if (action === 'skip') {
-                            // Skip is handled by backend by default if not in merge list
+                            const folderToSkip = itemsToMove.find(item => item.name === folderName && item.type === 'folder');
+                            const idToSkip = Array.from(selectedItems.keys())[itemsToMove.indexOf(folderToSkip)];
+                            finalItemIds = finalItemIds.filter(id => id !== parseInt(idToSkip));
                         } else { // abort
                             moveModal.style.display = 'none';
                             return;
@@ -988,7 +988,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 if (fileConflicts.length > 0) {
                     const result = await handleConflict(fileConflicts, '移动');
-                    if (result.action === 'abort') {
+                     if (result.action === 'abort') {
                         showNotification('移动操作已取消。', 'info');
                         moveModal.style.display = 'none';
                         return;
@@ -996,21 +996,35 @@ document.addEventListener('DOMContentLoaded', () => {
                     fileOverwriteList = result.overwriteList;
                 }
     
-                if (itemsToMoveWithDetails.length === 0) {
+                const finalFileItemsToMove = itemsToMove.filter(item => finalItemIds.includes(parseInt(Array.from(selectedItems.keys())[itemsToMove.indexOf(item)])));
+    
+                finalItemIds = finalFileItemsToMove
+                    .filter(item => {
+                        if (item.type === 'file' && fileConflicts.includes(item.name) && !fileOverwriteList.includes(item.name)) {
+                            return false;
+                        }
+                        return true;
+                    })
+                    .map(item => Array.from(selectedItems.keys())[itemsToMove.indexOf(item)])
+                    .map(id => parseInt(id));
+    
+                if (finalItemIds.length === 0) {
                     moveModal.style.display = 'none';
+                    showNotification('没有项目被移动。', 'success');
+                    loadFolderContents(currentFolderId);
                     return;
                 }
     
-                const moveResponse = await axios.post('/api/move', {
-                    items: itemsToMoveWithDetails,
+                await axios.post('/api/move', {
+                    itemIds: finalItemIds,
                     targetFolderId: moveTargetFolderId,
-                    overwriteFileNames: fileOverwriteList,
-                    mergeFolderNames: folderMergeList
+                    overwriteList: fileOverwriteList,
+                    mergeList: folderMergeList
                 });
     
                 moveModal.style.display = 'none';
                 loadFolderContents(currentFolderId);
-                showNotification(moveResponse.data.message, 'success');
+                showNotification('项目移动成功！', 'success');
     
             } catch (error) {
                 alert('操作失败：' + (error.response?.data?.message || '服务器错误'));
@@ -1018,6 +1032,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     
+
     if (shareBtn && shareModal) {
         const shareOptions = document.getElementById('shareOptions');
         const shareResult = document.getElementById('shareResult');

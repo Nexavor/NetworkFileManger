@@ -367,13 +367,14 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                     const existingFile = await data.findFileInFolder(fileName, targetFolderId, userId);
                     if (existingFile) {
                         const filesToDelete = await data.getFilesByIds([existingFile.message_id], userId);
+                        // **修复：先物理删除，再数据库删除**
                         if (filesToDelete.length > 0) {
                            await storage.remove(filesToDelete, [], userId); 
                         }
                         await data.deleteFilesByIds([existingFile.message_id], userId);
                     }
                 } else {
-                     const conflict = await data.checkFullConflict(fileName, targetFolderId, userId);
+                     const conflict = await data.findFileInFolder(fileName, targetFolderId, userId);
                      if (conflict) {
                          console.log(`Skipping file "${relativePath}" because it exists and was not marked for overwrite.`);
                          continue; // 跳过此文件
@@ -422,8 +423,10 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         if (mode === 'edit' && fileId) {
              const filesToDelete = await data.getFilesByIds([fileId], userId);
             if (filesToDelete.length > 0) {
+                // **修复：同样修复编辑逻辑**
                 await storage.remove(filesToDelete, [], userId);
                 await data.deleteFilesByIds([fileId], userId);
+
                 result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, filesToDelete[0].folder_id);
             } else {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
@@ -437,7 +440,6 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         } else {
             return res.status(400).json({ success: false, message: '请求参数无效' });
         }
-        // *** 关键修正：直接从 result 中取得 fileId ***
         res.json({ success: true, fileId: result.fileId });
     } catch (error) {
         console.error("Text file error:", error);
@@ -604,41 +606,24 @@ app.get('/api/folders', requireLogin, async (req, res) => {
     res.json(folders);
 });
 
-// --- BUG 2 修复：修改 /api/move 路由以提供更准确的回报 ---
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
-        const { items, targetFolderId, overwriteFileNames, mergeFolderNames } = req.body;
+        const { itemIds, targetFolderId, overwriteList = [], mergeList = [] } = req.body;
         const userId = req.session.userId;
-
-        if (!items || !Array.isArray(items) || !targetFolderId) {
+        if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0 || !targetFolderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
         
-        let skippedCount = 0;
+        const items = await data.getItemsByIds(itemIds, userId);
+        
         for (const item of items) {
-            if (!item.id || !item.name || !item.type) {
-                 return res.status(400).json({ success: false, message: `请求中包含无效的项目资料: ${JSON.stringify(item)}` });
-            }
-            const result = await data.moveItem(item, targetFolderId, userId, overwriteFileNames, mergeFolderNames);
-            if (result && result.skipped) {
-                skippedCount++;
-            }
+            await data.moveItem(item.id, item.type, targetFolderId, userId, { overwriteList, mergeList });
         }
         
-        let message = "移动成功";
-        if (skippedCount > 0) {
-            const total = items.length;
-            if (skippedCount === total) {
-                message = `所有 ${total} 个项目都因名称冲突而被跳过。`;
-            } else {
-                message = `移动完成，有 ${skippedCount} 个同名项目被跳过。`;
-            }
-        }
-        res.json({ success: true, message: message });
-
+        res.json({ success: true, message: "移动成功" });
     } catch (error) { 
-        console.error("移动操作失败:", error);
-        res.status(500).json({ success: false, message: `移动失败：${error.message}` }); 
+        console.error("Move error:", error);
+        res.status(500).json({ success: false, message: '移动失败：' + error.message }); 
     }
 });
 
@@ -656,6 +641,7 @@ async function unifiedDeleteHandler(req, res) {
         let filesForStorage = [];
         let foldersForStorage = [];
         
+        // 1. 收集所有要删除的项目信息
         if (folderIds.length > 0) {
             for (const folderId of folderIds) {
                 const deletionData = await data.getFolderDeletionData(folderId, userId);
@@ -669,13 +655,14 @@ async function unifiedDeleteHandler(req, res) {
             filesForStorage.push(...directFiles);
         }
         
+        // 2. 执行物理删除
         const storageResult = await storage.remove(filesForStorage, foldersForStorage, userId);
         
         if (!storageResult.success) {
-            console.warn("一个或多个实体档案在储存端删除失败:", storageResult.errors);
-            throw new Error(`实体档案删除失败，资料库记录未变更。详细原因: ${JSON.stringify(storageResult.errors)}`);
+            console.warn("部分档案在储存端删除失败:", storageResult.errors);
         }
 
+        // 3. 执行数据库删除
         const allFileIdsToDelete = filesForStorage.map(f => f.message_id);
         const allFolderIdsToDelete = foldersForStorage.map(f => f.id);
         await data.executeDeletion(allFileIdsToDelete, allFolderIdsToDelete, userId);
@@ -687,6 +674,14 @@ async function unifiedDeleteHandler(req, res) {
         res.status(500).json({ success: false, message: '删除过程中发生错误: ' + error.message });
     }
 }
+
+
+app.post('/api/folder/delete', requireLogin, (req, res) => {
+    const { folderId } = req.body;
+    req.body.folderIds = [folderId];
+    req.body.messageIds = [];
+    unifiedDeleteHandler(req, res);
+});
 
 app.post('/delete-multiple', requireLogin, unifiedDeleteHandler);
 
@@ -717,33 +712,19 @@ app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = parseInt(req.params.message_id, 10);
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
-        
-        if (!fileInfo) {
-             return res.status(404).send('找不到档案资讯');
-        }
 
-        if (fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
+        if (fileInfo && fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
             const storage = storageManager.getStorage();
             const link = await storage.getUrl(fileInfo.thumb_file_id);
             if (link) return res.redirect(link);
-        }
-        
-        if (fileInfo.storage_type === 'local' && fileInfo.file_id && fs.existsSync(fileInfo.file_id)) {
-             if (fileInfo.mimetype && (fileInfo.mimetype.startsWith('image/') || fileInfo.mimetype.startsWith('video/'))) {
-                return res.sendFile(fileInfo.file_id);
-             }
         }
         
         const placeholder = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
         res.writeHead(200, { 'Content-Type': 'image/gif', 'Content-Length': placeholder.length });
         res.end(placeholder);
 
-    } catch (error) { 
-        console.error("缩图错误:", error);
-        res.status(500).send('获取缩图失败'); 
-    }
+    } catch (error) { res.status(500).send('获取缩图失败'); }
 });
-
 
 app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
     try {
@@ -753,6 +734,8 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
         if (!fileInfo || !fileInfo.file_id) {
             return res.status(404).send('文件信息未找到');
         }
+
+        const storage = storageManager.getStorage();
         
         if (req.headers.range) { 
             res.setHeader('Accept-Ranges', 'bytes');
@@ -760,10 +743,13 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
             res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
         }
         
-        if (fileInfo.mimetype) res.setHeader('Content-Type', fileInfo.mimetype);
-        if (fileInfo.size) res.setHeader('Content-Length', fileInfo.size);
+        if (fileInfo.mimetype) {
+            res.setHeader('Content-Type', fileInfo.mimetype);
+        }
+        if (fileInfo.size) {
+            res.setHeader('Content-Length', fileInfo.size);
+        }
 
-        const storage = storageManager.getStorage();
 
         if (fileInfo.storage_type === 'telegram') {
             const link = await storage.getUrl(fileInfo.file_id);
@@ -773,28 +759,7 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
             } else { res.status(404).send('无法获取文件链接'); }
         } else if (fileInfo.storage_type === 'local') {
             if (fs.existsSync(fileInfo.file_id)) {
-                const stat = await fsp.stat(fileInfo.file_id);
-                const fileSize = stat.size;
-                const range = req.headers.range;
-
-                if (range) {
-                    const parts = range.replace(/bytes=/, "").split("-");
-                    const start = parseInt(parts[0], 10);
-                    const end = parts[1] ? parseInt(parts[1], 10) : fileSize-1;
-                    const chunksize = (end-start)+1;
-                    const file = fs.createReadStream(fileInfo.file_id, {start, end});
-                    const head = {
-                        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-                        'Accept-Ranges': 'bytes',
-                        'Content-Length': chunksize,
-                        'Content-Type': fileInfo.mimetype,
-                    };
-                    res.writeHead(206, head);
-                    file.pipe(res);
-                } else {
-                     res.setHeader('Content-Length', fileSize);
-                     fs.createReadStream(fileInfo.file_id).pipe(res);
-                }
+                res.download(fileInfo.file_id, fileInfo.fileName);
             } else {
                 res.status(404).send('本地档案不存在');
             }
@@ -803,12 +768,8 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
             handleStream(stream, res);
         }
 
-    } catch (error) { 
-        console.error("下载代理失败:", error);
-        res.status(500).send('下载代理失败'); 
-    }
+    } catch (error) { res.status(500).send('下载代理失败'); }
 });
-
 
 app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     try {
