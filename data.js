@@ -1,6 +1,9 @@
 const db = require('./database.js');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs').promises;
+
+const UPLOAD_DIR = path.join(__dirname, 'data', 'uploads');
 
 // --- 使用者管理 (维持不变) ---
 function createUser(username, hashedPassword) {
@@ -62,7 +65,18 @@ function listAllUsers() {
 }
 
 
-function deleteUser(userId) {
+async function deleteUser(userId) {
+    // **新增：删除本地储存的使用者目录**
+    const userUploadDir = path.join(UPLOAD_DIR, String(userId));
+    try {
+        await fs.rm(userUploadDir, { recursive: true, force: true });
+        console.log(`已删除使用者 ${userId} 的本地档案目录。`);
+    } catch (error) {
+        if (error.code !== 'ENOENT') { // 忽略目录不存在的错误
+            console.error(`删除使用者 ${userId} 的本地目录失败:`, error);
+        }
+    }
+    
     return new Promise((resolve, reject) => {
         const sql = `DELETE FROM users WHERE id = ? AND is_admin = 0`;
         db.run(sql, [userId], function(err) {
@@ -273,7 +287,6 @@ function getAllFolders(userId) {
         });
     });
 }
-
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     const { overwriteList = [], mergeList = [], resolutions = {} } = options;
 
@@ -282,90 +295,110 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
     
     // 从 resolutions Map 中获取针对此特定项目的操作
     const resolutionAction = resolutions[sourceItem.name];
+    
+    // 如果是本地储存，需要获取完整路径以进行档案系统操作
+    let oldFullPath, newFullPath;
+    const isLocal = (await getFilesByIds([itemId], userId))[0]?.storage_type === 'local' || itemType === 'folder';
+
+    if (isLocal) {
+        const oldPathParts = await getFolderPath(sourceItem.folder_id || sourceItem.parent_id, userId);
+        const newPathParts = await getFolderPath(targetFolderId, userId);
+        const oldRelativePath = path.join(...oldPathParts.slice(1).map(p => p.name), sourceItem.name);
+        let newRelativePath = path.join(...newPathParts.slice(1).map(p => p.name), sourceItem.name);
+        
+        if (resolutionAction === 'rename') {
+             const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
+             newRelativePath = path.join(...newPathParts.slice(1).map(p => p.name), newName);
+        }
+        
+        oldFullPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath);
+        newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
+    }
+
 
     if (itemType === 'folder') {
         const existingItem = await findItemInFolder(sourceItem.name, targetFolderId, userId);
         
         if (resolutionAction === 'rename') {
-            const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, true);
-            await renameFolder(itemId, newName, userId);
-            await moveItems([], [itemId], targetFolderId, userId);
+            const newName = path.basename(newFullPath);
+            await renameFolder(itemId, newName, userId); // 只改名，不移动
+            await moveItem(itemId, 'folder', targetFolderId, userId, options); // 再次呼叫以移动
             return true;
         }
         
         if (existingItem) { // 存在同名项目
             if (existingItem.type === 'folder' && mergeList.includes(sourceItem.name)) {
-                // 合并逻辑
                 const children = await getChildrenOfFolder(itemId, userId);
                 for (const child of children) {
                     await moveItem(child.id, child.type, existingItem.id, userId, options);
                 }
                 const remainingChildren = await getChildrenOfFolder(itemId, userId);
                 if (remainingChildren.length === 0) {
-                    await deleteSingleFolder(itemId, userId);
+                     await unifiedDelete(itemId, 'folder', userId);
                 }
                 return true;
             } else if (overwriteList.includes(sourceItem.name)) {
-                 // 覆盖逻辑（删除目标档案/资料夹，然后移动）
                  await unifiedDelete(existingItem.id, existingItem.type, userId);
                  await moveItems([], [itemId], targetFolderId, userId);
+                 if (isLocal) await fs.rename(oldFullPath, newFullPath);
                  return true;
             } else {
-                // 跳过
                 return false;
             }
         } else {
             // 没有冲突，直接移动
             await moveItems([], [itemId], targetFolderId, userId);
+            if (isLocal) {
+                await fs.mkdir(path.dirname(newFullPath), { recursive: true });
+                await fs.rename(oldFullPath, newFullPath);
+            }
             return true;
         }
     } else { // file
         const existingItem = await findItemInFolder(sourceItem.name, targetFolderId, userId);
         
         if (resolutionAction === 'rename') {
-            const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, false);
-            await renameFile(itemId, newName, userId);
+            const newName = path.basename(newFullPath);
+            await renameFile(itemId, newName, userId, newFullPath);
             await moveItems([itemId], [], targetFolderId, userId);
             return true;
         }
 
         if (existingItem && overwriteList.includes(sourceItem.name)) {
-            // **修正：先进行物理删除，再更新资料库**
             await unifiedDelete(existingItem.id, existingItem.type, userId);
             await moveItems([itemId], [], targetFolderId, userId);
+            if (isLocal) await fs.rename(oldFullPath, newFullPath);
             return true;
         } else if (!existingItem) {
             await moveItems([itemId], [], targetFolderId, userId);
+            if (isLocal) {
+                await fs.mkdir(path.dirname(newFullPath), { recursive: true });
+                await fs.rename(oldFullPath, newFullPath);
+            }
             return true;
         } else {
-             // 存在冲突且不在覆盖列表中，则跳过
             return false;
         }
     }
 }
 
 async function unifiedDelete(itemId, itemType, userId) {
-    const messageIds = itemType === 'file' ? [itemId] : [];
-    const folderIds = itemType === 'folder' ? [itemId] : [];
-    
     const storage = require('./storage').getStorage();
     let filesForStorage = [];
     let foldersForStorage = [];
     
-    if (folderIds.length > 0) {
-        const deletionData = await getFolderDeletionData(folderIds[0], userId);
+    if (itemType === 'folder') {
+        const deletionData = await getFolderDeletionData(itemId, userId);
         filesForStorage.push(...deletionData.files);
         foldersForStorage.push(...deletionData.folders);
-    }
-    
-    if (messageIds.length > 0) {
-        const directFiles = await getFilesByIds(messageIds, userId);
+    } else {
+        const directFiles = await getFilesByIds([itemId], userId);
         filesForStorage.push(...directFiles);
     }
     
     const storageResult = await storage.remove(filesForStorage, foldersForStorage, userId);
     if (!storageResult.success) {
-        console.warn("统一删除操作中，部分档案在储存端删除失败:", storageResult.errors);
+        console.warn("统一删除操作中，部分项目在储存端删除失败:", storageResult.errors);
     }
 
     await executeDeletion(filesForStorage.map(f => f.message_id), foldersForStorage.map(f => f.id), userId);
@@ -449,7 +482,7 @@ async function getFolderDeletionData(folderId, userId) {
             pathParts.unshift(current.name);
             current = folderMap.get(current.parent_id);
         }
-        return '/' + pathParts.join('/');
+        return path.join(...pathParts);
     }
 
     const foldersToDeleteWithPaths = foldersToDeleteIds.map(id => ({
@@ -563,7 +596,37 @@ function findFileInSharedFolder(fileId, folderToken) {
     });
 }
 
-function renameFile(messageId, newFileName, userId) {
+async function renameFile(messageId, newFileName, userId, newLocalPath = null) {
+    const file = (await getFilesByIds([messageId], userId))[0];
+    if (!file) return { success: false, message: '文件未找到。' };
+
+    if (file.storage_type === 'local' && !newLocalPath) {
+        const oldPathParts = path.parse(file.file_id);
+        const newRelativePath = path.join(oldPathParts.dir, newFileName).replace(/\\/g, '/');
+        const oldFullPath = path.join(UPLOAD_DIR, String(userId), file.file_id);
+        newLocalPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
+        await fs.rename(oldFullPath, newLocalPath);
+        
+        const sql = `UPDATE files SET fileName = ?, file_id = ? WHERE message_id = ? AND user_id = ?`;
+        return new Promise((resolve, reject) => {
+            db.run(sql, [newFileName, newRelativePath, messageId, userId], function(err) {
+                 if (err) reject(err);
+                 else resolve({ success: true });
+            });
+        });
+    } else if (file.storage_type === 'local' && newLocalPath) {
+        // This case is handled by moveItem
+        const newRelativePath = newLocalPath.substring(path.join(UPLOAD_DIR, String(userId)).length + 1).replace(/\\/g, '/');
+        const oldFullPath = path.join(UPLOAD_DIR, String(userId), file.file_id);
+        await fs.rename(oldFullPath, newLocalPath);
+        
+        const sql = `UPDATE files SET fileName = ?, file_id = ? WHERE message_id = ? AND user_id = ?`;
+        return new Promise((resolve, reject) => {
+            db.run(sql, [newFileName, newRelativePath, messageId, userId], (err) => err ? reject(err) : resolve({ success: true }));
+        });
+    }
+
+    // Default for non-local storage
     const sql = `UPDATE files SET fileName = ? WHERE message_id = ? AND user_id = ?`;
     return new Promise((resolve, reject) => {
         db.run(sql, [newFileName, messageId, userId], function(err) {
@@ -574,7 +637,23 @@ function renameFile(messageId, newFileName, userId) {
     });
 }
 
-function renameFolder(folderId, newFolderName, userId) {
+
+async function renameFolder(folderId, newFolderName, userId) {
+    const folder = await new Promise((res, rej) => db.get("SELECT * FROM folders WHERE id=?", [folderId], (e,r)=>e?rej(e):res(r)));
+    if (!folder) return { success: false, message: '资料夹未找到。'};
+    
+    const parentPathParts = await getFolderPath(folder.parent_id, userId);
+    const parentRelativePath = path.join(...parentPathParts.slice(1).map(p => p.name));
+    
+    const oldFullPath = path.join(UPLOAD_DIR, String(userId), parentRelativePath, folder.name);
+    const newFullPath = path.join(UPLOAD_DIR, String(userId), parentRelativePath, newFolderName);
+    
+    try {
+        await fs.rename(oldFullPath, newFullPath);
+    } catch(e) {
+        if (e.code !== 'ENOENT') console.error(`本地资料夹重新命名失败: ${e.message}`);
+    }
+
     const sql = `UPDATE folders SET name = ? WHERE id = ? AND user_id = ?`;
     return new Promise((resolve, reject) => {
         db.run(sql, [newFolderName, folderId, userId], function(err) {
@@ -662,44 +741,55 @@ function cancelShare(itemId, itemType, userId) {
         });
     });
 }
+async function getConflictingItems(itemsToMove, destinationFolderId, userId) {
+    const fileConflictNames = new Set();
+    const folderConflictNames = new Set();
+    const checkedFolders = new Set();
 
-async function getConflictingItems(itemNames, targetFolderId, userId) {
-    if (!itemNames || itemNames.length === 0) {
-        return [];
+    async function findConflictsRecursive(currentItems, destId) {
+        if (!currentItems || currentItems.length === 0 || checkedFolders.has(destId)) {
+            return;
+        }
+        checkedFolders.add(destId);
+
+        const itemNames = currentItems.map(item => item.name);
+        if(itemNames.length === 0) return;
+        
+        const placeholders = itemNames.map(()=>'?').join(',');
+
+        const sql = `
+            SELECT name, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ? AND name IN (${placeholders})
+            UNION ALL
+            SELECT fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? AND fileName IN (${placeholders})
+        `;
+        const conflictsInDest = await new Promise((res, rej) => 
+            db.all(sql, [destId, userId, ...itemNames, destId, userId, ...itemNames], (err, rows) => err ? rej(err) : res(rows))
+        );
+        const conflictMap = new Map(conflictsInDest.map(c => [c.name, c.type]));
+
+        for (const item of currentItems) {
+            const conflictType = conflictMap.get(item.name);
+            if (conflictType) {
+                if (item.type === 'folder' && conflictType === 'folder') {
+                    folderConflictNames.add(item.name);
+                    const sourceChildren = await getChildrenOfFolder(item.id, userId);
+                    const destChildFolder = await findFolderByName(item.name, destId, userId);
+                    if (destChildFolder) {
+                        await findConflictsRecursive(sourceChildren, destChildFolder.id);
+                    }
+                } else {
+                    fileConflictNames.add(item.name);
+                }
+            }
+        }
     }
-    const uniqueNames = [...new Set(itemNames)];
-    const placeholders = uniqueNames.map(() => '?').join(',');
 
-    const sqlFiles = `
-        SELECT fileName as name, 'file' as type FROM files
-        WHERE folder_id = ? AND user_id = ? AND fileName IN (${placeholders})
-    `;
-    const sqlFolders = `
-        SELECT name, 'folder' as type FROM folders
-        WHERE parent_id = ? AND user_id = ? AND name IN (${placeholders})
-    `;
-
-    const fileConflictsPromise = new Promise((resolve, reject) => {
-        db.all(sqlFiles, [targetFolderId, userId, ...uniqueNames], (err, rows) => {
-            if (err) return reject(err);
-            resolve(rows);
-        });
-    });
-
-    const folderConflictsPromise = new Promise((resolve, reject) => {
-        db.all(sqlFolders, [targetFolderId, userId, ...uniqueNames], (err, rows) => {
-            if (err) return reject(err);
-            resolve(rows);
-        });
-    });
-
-    try {
-        const [fileConflicts, folderConflicts] = await Promise.all([fileConflictsPromise, folderConflictsPromise]);
-        return [...fileConflicts, ...folderConflicts];
-    } catch (error) {
-        console.error("Error in getConflictingItems:", error);
-        throw error;
-    }
+    await findConflictsRecursive(itemsToMove, destinationFolderId);
+    
+    return {
+        fileConflicts: Array.from(fileConflictNames),
+        folderConflicts: Array.from(folderConflictNames)
+    };
 }
 
 
@@ -728,7 +818,6 @@ function findFileInFolder(fileName, folderId, userId) {
         });
     });
 }
-// *** 新增：寻找目标资料夹中任何类型的同名项目 ***
 function findItemInFolder(name, folderId, userId) {
     return new Promise((resolve, reject) => {
         const sql = `
@@ -742,8 +831,6 @@ function findItemInFolder(name, folderId, userId) {
         });
     });
 }
-
-// *** 新增：寻找一个可用的新档名 ***
 async function findAvailableName(originalName, folderId, userId, isFolder) {
     let newName = originalName;
     let counter = 1;
@@ -872,5 +959,5 @@ module.exports = {
     getRootFolder,
     unifiedDelete,
     findItemInFolder,
-    findAvailableName
+    findAvailableName,
 };
