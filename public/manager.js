@@ -165,7 +165,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const nonConflicts = [];
     
         for (const file of fileObjects) {
-            const relativePath = file.webkitRelativePath || file.name;
+            const relativePath = file.webkitRelativePath || f.name;
             const existing = existenceData.find(f => f.relativePath === relativePath && f.exists);
             if (existing) {
                 conflicts.push(file);
@@ -282,8 +282,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const allItems = [...folders, ...files];
         
         if (allItems.length === 0) {
-            if (currentView === 'grid') parentGrid.innerHTML = isSearchMode ? '<p>找不到符合条件的文件。</p>' : '<p>这个资料夹是空的。</p>';
-            else parentList.innerHTML = isSearchMode ? '<div class="list-item"><p>找不到符合条件的文件。</p></div>' : '<div class="list-item"><p>这个资料夹是空的。</p></div>';
+            if (currentView === 'grid') parentGrid.innerHTML = isSearchMode ? '<p>找不到符合条件的文件。</p>' : '<p>这个资料夾是空的。</p>';
+            else parentList.innerHTML = isSearchMode ? '<div class="list-item"><p>找不到符合条件的文件。</p></div>' : '<div class="list-item"><p>这个资料夾是空的。</p></div>';
             return;
         }
 
@@ -416,7 +416,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             foldersLoaded = true;
         } catch (error) {
-            console.error('加载资料夹列表失败', error);
+            console.error('加载资料夾列表失败', error);
         }
     };
     
@@ -953,44 +953,92 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     
-    // *** CRITICAL FIX: Refactored move confirmation logic ***
+    // *** 关键修正：重构移动确认逻辑以处理嵌套冲突 ***
     if (confirmMoveBtn) {
         confirmMoveBtn.addEventListener('click', async () => {
             if (!moveTargetFolderId) return;
     
-            const itemIds = Array.from(selectedItems.keys()).map(id => parseInt(id, 10));
-            
-            try {
-                const conflictCheckRes = await axios.post('/api/check-move-conflict', { itemIds, targetFolderId: moveTargetFolderId });
-                const { fileConflicts, folderConflicts } = conflictCheckRes.data;
-                const resolutions = {};
+            const resolutions = {};
+            let isAborted = false;
     
-                if (folderConflicts.length > 0) {
-                    for (const folderName of folderConflicts) {
-                        const action = await handleFolderConflict(folderName); // Returns 'merge', 'skip', or 'abort'
-                        if (action === 'abort') {
-                            moveModal.style.display = 'none';
-                            showNotification('移动操作已取消。', 'info');
-                            return;
-                        }
-                        resolutions[folderName] = action; // Will be 'merge' or 'skip'
-                    }
-                }
-                
-                if (fileConflicts.length > 0) {
-                    const result = await handleConflict(fileConflicts, '档案');
-                     if (result.aborted) {
-                        moveModal.style.display = 'none';
-                        showNotification('移动操作已取消。', 'info');
+            // 递归函数，用于检查并解决各层级的冲突
+            async function resolveConflictsRecursively(itemsToMove, currentTargetFolderId, pathPrefix = '') {
+                if (isAborted) return;
+    
+                // 1. 获取当前层级的冲突
+                const conflictCheckRes = await axios.post('/api/check-move-conflict', {
+                    itemIds: itemsToMove.map(item => item.id),
+                    targetFolderId: currentTargetFolderId
+                });
+                const { fileConflicts, folderConflicts } = conflictCheckRes.data;
+    
+                // 为了能递归检查，需获取目标资料夹中子资料夹的 ID
+                const destFolderContentsRes = await axios.get(`/api/folder/${currentTargetFolderId}`);
+                const destFolderMap = new Map(destFolderContentsRes.data.contents.folders.map(f => [f.name, f.id]));
+    
+                // 2. 优先处理资料夹冲突
+                for (const folderName of folderConflicts) {
+                    const fullPath = pathPrefix ? `${pathPrefix}/${folderName}` : folderName;
+                    const action = await handleFolderConflict(fullPath);
+    
+                    if (action === 'abort') {
+                        isAborted = true;
                         return;
                     }
-                    Object.assign(resolutions, result.resolutions);
+                    resolutions[fullPath] = action;
+    
+                    // 如果使用者选择合并，则递归检查该资料夹内部的冲突
+                    if (action === 'merge') {
+                        const sourceFolder = itemsToMove.find(item => item.name === folderName && item.type === 'folder');
+                        const destSubFolderId = destFolderMap.get(folderName);
+                        if (sourceFolder && destSubFolderId) {
+                            const sourceSubFolderContentsRes = await axios.get(`/api/folder/${sourceFolder.id}`);
+                            const subItemsToMove = [...sourceSubFolderContentsRes.data.contents.folders, ...sourceSubFolderContentsRes.data.contents.files].map(item => ({
+                                id: item.id,
+                                name: item.name,
+                                type: item.type
+                            }));
+                            
+                            if(subItemsToMove.length > 0) {
+                               await resolveConflictsRecursively(subItemsToMove, destSubFolderId, fullPath);
+                            }
+                            if (isAborted) return;
+                        }
+                    }
                 }
     
+                // 3. 处理当前层级的档案冲突
+                if (fileConflicts.length > 0) {
+                    const prefixedFileConflicts = fileConflicts.map(name => pathPrefix ? `${pathPrefix}/${name}` : name);
+                    const result = await handleConflict(prefixedFileConflicts, '档案');
+    
+                    if (result.aborted) {
+                        isAborted = true;
+                        return;
+                    }
+                    // 将解决结果合并到主 resolutions 物件中
+                    Object.assign(resolutions, result.resolutions);
+                }
+            }
+    
+            try {
+                // 准备好顶层要移动的项目列表
+                const topLevelItems = Array.from(selectedItems.entries()).map(([id, { type, name }]) => ({ id: parseInt(id), type, name }));
+                
+                // 启动递归冲突解决流程
+                await resolveConflictsRecursively(topLevelItems, moveTargetFolderId);
+    
+                if (isAborted) {
+                    moveModal.style.display = 'none';
+                    showNotification('移动操作已取消。', 'info');
+                    return;
+                }
+    
+                // 4. 发送包含所有冲突解决方案的最终移动请求
                 const response = await axios.post('/api/move', {
-                    itemIds,
+                    itemIds: topLevelItems.map(item => item.id),
                     targetFolderId: moveTargetFolderId,
-                    resolutions // Send the unified resolutions map
+                    resolutions 
                 });
     
                 moveModal.style.display = 'none';
@@ -998,6 +1046,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 showNotification(response.data.message, 'success');
     
             } catch (error) {
+                moveModal.style.display = 'none';
                 alert('操作失败：' + (error.response?.data?.message || '服务器错误'));
             }
         });
