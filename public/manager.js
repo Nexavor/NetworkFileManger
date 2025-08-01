@@ -955,17 +955,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         return showNextConflict();
     }
-
-    // --- *** 关键修正区域 开始 *** ---
+    
     if (confirmMoveBtn) {
         confirmMoveBtn.addEventListener('click', async () => {
             if (!moveTargetFolderId) return;
         
-            // 总是使用最开始选择的完整项目列表
             const itemsToMoveWithDetails = Array.from(selectedItems.values());
             
             try {
-                // 1. 检查所有潜在的冲突
                 const conflictCheckRes = await axios.post('/api/check-move-conflict', {
                     itemIds: itemsToMoveWithDetails.map(item => item.id),
                     targetFolderId: moveTargetFolderId
@@ -975,14 +972,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 let fileOverwriteList = [];
                 let folderMergeList = [];
     
-                // 2. 处理资料夹冲突
                 if (folderConflicts.length > 0) {
                     for (const folderName of folderConflicts) {
                         const action = await handleFolderConflict(folderName);
                         if (action === 'merge') {
                             folderMergeList.push(folderName);
                         } else if (action === 'skip') {
-                            // 跳过操作由后端处理，前端只需告知后端哪些需要合并
+                            // Skip is handled by backend by default if not in merge list
                         } else { // abort
                             moveModal.style.display = 'none';
                             return;
@@ -990,7 +986,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
                 
-                // 3. 处理档案冲突
                 if (fileConflicts.length > 0) {
                     const result = await handleConflict(fileConflicts, '移动');
                     if (result.action === 'abort') {
@@ -1001,14 +996,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     fileOverwriteList = result.overwriteList;
                 }
     
-                // 4. 发送完整的请求到后端，让后端处理跳过逻辑
                 if (itemsToMoveWithDetails.length === 0) {
                     moveModal.style.display = 'none';
-                    return; // 如果没有选择任何项目，则不执行任何操作
+                    return;
                 }
     
                 const moveResponse = await axios.post('/api/move', {
-                    items: itemsToMoveWithDetails, // **核心**：发送未经筛选的完整列表
+                    items: itemsToMoveWithDetails,
                     targetFolderId: moveTargetFolderId,
                     overwriteFileNames: fileOverwriteList,
                     mergeFolderNames: folderMergeList
@@ -1016,7 +1010,6 @@ document.addEventListener('DOMContentLoaded', () => {
     
                 moveModal.style.display = 'none';
                 loadFolderContents(currentFolderId);
-                // 使用后端返回的详细讯息
                 showNotification(moveResponse.data.message, 'success');
     
             } catch (error) {
@@ -1024,7 +1017,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
-    // --- *** 关键修正区域 结束 *** ---
     
     if (shareBtn && shareModal) {
         const shareOptions = document.getElementById('shareOptions');
