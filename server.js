@@ -615,12 +615,26 @@ app.post('/api/move', requireLogin, async (req, res) => {
         }
         
         const items = await data.getItemsByIds(itemIds, userId);
+        let movedCount = 0;
+        let skippedCount = 0;
         
         for (const item of items) {
-            await data.moveItem(item.id, item.type, targetFolderId, userId, { overwriteList, mergeList });
+            const moved = await data.moveItem(item.id, item.type, targetFolderId, userId, { overwriteList, mergeList });
+            if (moved) {
+                movedCount++;
+            } else {
+                skippedCount++;
+            }
         }
         
-        res.json({ success: true, message: "移动成功" });
+        let message = "移动成功。";
+        if (movedCount > 0 && skippedCount > 0) {
+            message = `操作完成，${movedCount} 个项目已移动，${skippedCount} 个项目因冲突被跳过。`;
+        } else if (movedCount === 0 && skippedCount > 0) {
+            message = "所有选定项目均因冲突而被跳过。";
+        }
+
+        res.json({ success: true, message: message });
     } catch (error) { 
         console.error("Move error:", error);
         res.status(500).json({ success: false, message: '移动失败：' + error.message }); 
