@@ -314,7 +314,7 @@ app.post('/upload', requireLogin, async (req, res, next) => {
     const initialFolderId = parseInt(req.body.folderId, 10);
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
-    const overwritePaths = req.body.overwritePaths ? JSON.parse(req.body.overwritePaths) : [];
+    const resolutions = req.body.resolutions ? JSON.parse(req.body.resolutions) : {};
     let relativePaths = req.body.relativePaths;
 
     if (!relativePaths) {
@@ -333,26 +333,35 @@ app.post('/upload', requireLogin, async (req, res, next) => {
             const file = req.files[i];
             const tempFilePath = file.path;
             const relativePath = relativePaths[i];
+            
+            // 默认行为是 'upload'，如果该路径在 resolutions 中，则使用指定的动作
+            const action = resolutions[relativePath] || 'upload';
 
             try {
+                if (action === 'skip') {
+                    console.log(`Skipping file "${relativePath}" as per user request.`);
+                    continue; // 直接跳到下一个档案
+                }
+
                 const pathParts = (relativePath || file.originalname).split('/');
-                const fileName = pathParts.pop() || file.originalname;
+                let fileName = pathParts.pop() || file.originalname;
                 const folderPathParts = pathParts;
 
-                const isOverwrite = overwritePaths.includes(relativePath);
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                 
-                if (isOverwrite) {
+                if (action === 'overwrite') {
                     const existingItem = await data.findItemInFolder(fileName, targetFolderId, userId);
                     if (existingItem) {
                         await data.unifiedDelete(existingItem.id, existingItem.type, userId);
                     }
+                } else if (action === 'rename') {
+                    fileName = await data.findAvailableName(fileName, targetFolderId, userId, false);
                 } else {
-                     const conflict = await data.findItemInFolder(fileName, targetFolderId, userId);
-                     if (conflict) {
-                         console.log(`Skipping file "${relativePath}" because it exists and was not marked for overwrite.`);
-                         continue;
-                     }
+                    const conflict = await data.findItemInFolder(fileName, targetFolderId, userId);
+                    if (conflict) {
+                        console.log(`Skipping file "${relativePath}" due to unresolved conflict.`);
+                        continue;
+                    }
                 }
 
                 const result = await storage.upload(tempFilePath, fileName, file.mimetype, userId, targetFolderId, req.body.caption || '');
