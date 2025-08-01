@@ -2,7 +2,7 @@ const db = require('./database.js');
 const crypto = require('crypto');
 const path = require('path');
 
-// --- 使用者管理 ---
+// --- 使用者管理 (維持不變) ---
 function createUser(username, hashedPassword) {
     return new Promise((resolve, reject) => {
         const sql = `INSERT INTO users (username, password, is_admin) VALUES (?, ?, 0)`;
@@ -312,9 +312,13 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         if (conflict && overwriteList.includes(fileToMove.fileName)) {
             const storage = require('./storage').getStorage();
             const filesToDelete = await getFilesByIds([conflict.message_id], userId);
-            // **最终修复：确保在移动前，先删除物理文件，再删除数据库记录**
+            
+            // **修正：先进行物理删除，再更新资料库**
             if (filesToDelete.length > 0) {
-                await storage.remove(filesToDelete, [], userId);
+                const storageResult = await storage.remove(filesToDelete, [], userId);
+                if (!storageResult.success) {
+                    console.warn("覆盖操作中，删除储存端旧档案失败:", storageResult.errors);
+                }
             }
             await deleteFilesByIds([conflict.message_id], userId);
 
@@ -620,44 +624,62 @@ function cancelShare(itemId, itemType, userId) {
         });
     });
 }
+/**
+ * **新增**：遞迴地檢查移動衝突。
+ * @param {Array} itemsToMove - {id, name, type} 物件的陣列
+ * @param {number} destinationFolderId - 目標資料夾 ID
+ * @param {number} userId - 使用者 ID
+ * @returns {Promise<{fileConflicts: string[], folderConflicts: string[]}>}
+ */
+async function getConflictingItems(itemsToMove, destinationFolderId, userId) {
+    const fileConflictNames = new Set();
+    const folderConflictNames = new Set();
+    const checkedFolders = new Set();
 
-async function getConflictingItems(itemNames, targetFolderId, userId) {
-    if (!itemNames || itemNames.length === 0) {
-        return [];
+    async function findConflictsRecursive(currentItems, destId) {
+        if (!currentItems || currentItems.length === 0 || checkedFolders.has(destId)) {
+            return;
+        }
+        checkedFolders.add(destId);
+
+        const itemNames = currentItems.map(item => item.name);
+        
+        // 取得目標資料夾中所有同名項目
+        const sql = `
+            SELECT name, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ? AND name IN (${itemNames.map(()=>'?').join(',')})
+            UNION ALL
+            SELECT fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? AND fileName IN (${itemNames.map(()=>'?').join(',')})
+        `;
+        const conflictsInDest = await new Promise((res, rej) => 
+            db.all(sql, [destId, userId, ...itemNames, destId, userId, ...itemNames], (err, rows) => err ? rej(err) : res(rows))
+        );
+        const conflictMap = new Map(conflictsInDest.map(c => [c.name, c.type]));
+
+        for (const item of currentItems) {
+            const conflictType = conflictMap.get(item.name);
+            if (conflictType) {
+                // 如果來源和目標都是資料夾，則遞迴檢查
+                if (item.type === 'folder' && conflictType === 'folder') {
+                    folderConflictNames.add(item.name);
+                    const sourceChildren = await getChildrenOfFolder(item.id, userId);
+                    const destChildFolder = await findFolderByName(item.name, destId, userId);
+                    if (destChildFolder) {
+                        await findConflictsRecursive(sourceChildren, destChildFolder.id);
+                    }
+                } else {
+                    // 任何其他類型的衝突 (file-file, file-folder, folder-file) 都視為檔案衝突
+                    fileConflictNames.add(item.name);
+                }
+            }
+        }
     }
-    const uniqueNames = [...new Set(itemNames)];
-    const placeholders = uniqueNames.map(() => '?').join(',');
 
-    const sqlFiles = `
-        SELECT fileName as name, 'file' as type FROM files
-        WHERE folder_id = ? AND user_id = ? AND fileName IN (${placeholders})
-    `;
-    const sqlFolders = `
-        SELECT name, 'folder' as type FROM folders
-        WHERE parent_id = ? AND user_id = ? AND name IN (${placeholders})
-    `;
-
-    const fileConflictsPromise = new Promise((resolve, reject) => {
-        db.all(sqlFiles, [targetFolderId, userId, ...uniqueNames], (err, rows) => {
-            if (err) return reject(err);
-            resolve(rows);
-        });
-    });
-
-    const folderConflictsPromise = new Promise((resolve, reject) => {
-        db.all(sqlFolders, [targetFolderId, userId, ...uniqueNames], (err, rows) => {
-            if (err) return reject(err);
-            resolve(rows);
-        });
-    });
-
-    try {
-        const [fileConflicts, folderConflicts] = await Promise.all([fileConflictsPromise, folderConflictsPromise]);
-        return [...fileConflicts, ...folderConflicts];
-    } catch (error) {
-        console.error("Error in getConflictingItems:", error);
-        throw error;
-    }
+    await findConflictsRecursive(itemsToMove, destinationFolderId);
+    
+    return {
+        fileConflicts: Array.from(fileConflictNames),
+        folderConflicts: Array.from(folderConflictNames)
+    };
 }
 
 
@@ -698,7 +720,7 @@ function findFileByFileId(fileId, userId) {
     });
 }
 
-// 修：新增函数以直接获取根目录
+
 function getRootFolder(userId) {
     return new Promise((resolve, reject) => {
         db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [userId], (err, row) => {
@@ -709,7 +731,6 @@ function getRootFolder(userId) {
 }
 
 async function findOrCreateFolderByPath(fullPath, userId) {
-    // 修：确保能正确处理根目录 (fullPath 为 '/' 或 '')
     if (!fullPath || fullPath === '/') {
         const root = await getRootFolder(userId);
         return root.id;
