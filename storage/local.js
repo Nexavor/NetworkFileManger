@@ -19,46 +19,48 @@ setup();
 // 辅助函数：递归删除空目录
 async function removeEmptyDirs(directoryPath) {
     try {
-        // 安全检查，确保不会删除上传目录之外的内容
-        if (!directoryPath.startsWith(UPLOAD_DIR)) return;
+        if (!directoryPath.startsWith(UPLOAD_DIR) || directoryPath === UPLOAD_DIR) return;
 
         let currentPath = directoryPath;
-        // 持续向上层目录检查，直到根上传目录为止
         while (currentPath !== UPLOAD_DIR && currentPath !== path.dirname(UPLOAD_DIR)) {
             const files = await fs.readdir(currentPath);
             if (files.length === 0) {
                 await fs.rmdir(currentPath);
-                currentPath = path.dirname(currentPath); // 移动到上层目录
+                currentPath = path.dirname(currentPath);
             } else {
-                break; // 如果目录不为空，则停止
+                break;
             }
         }
     } catch (error) {
-        // 忽略错误，例如目录不存在或权限问题
         console.warn(`清理空目录失败: ${directoryPath}`, error.message);
     }
 }
 
 
+// --- 核心修复：重构 upload 函数以匹配目录结构 ---
 async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
+    const folderPathParts = await data.getFolderPath(folderId, userId);
+    const relativeFolderPath = folderPathParts.slice(1).map(p => p.name).join(path.sep);
+
     const userDir = path.join(UPLOAD_DIR, String(userId));
-    await fs.mkdir(userDir, { recursive: true });
+    const finalFolderPath = path.join(userDir, relativeFolderPath);
+    
+    await fs.mkdir(finalFolderPath, { recursive: true });
+    const finalFilePath = path.join(finalFolderPath, fileName);
 
-    const uniqueId = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
-    const finalFilePath = path.join(userDir, uniqueId);
-
-    // 从暂存区移动文件到最终位置，这比流式复制更高效
     await fs.rename(tempFilePath, finalFilePath);
     
     const stats = await fs.stat(finalFilePath);
     const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
+
+    const fileIdForDb = path.relative(userDir, finalFilePath).replace(/\\/g, '/');
 
     const dbResult = await data.addFile({
         message_id: messageId,
         fileName,
         mimetype,
         size: stats.size,
-        file_id: finalFilePath, // file_id 储存的是绝对路径
+        file_id: fileIdForDb,
         thumb_file_id: null,
         date: Date.now(),
     }, folderId, userId, 'local');
@@ -72,12 +74,12 @@ async function remove(files, folders, userId) {
     const parentDirs = new Set();
     const userUploadDir = path.join(UPLOAD_DIR, String(userId));
 
-    // 1. 删除所有文件
     for (const file of files) {
         try {
-            if (file.file_id && fsSync.existsSync(file.file_id)) {
-                parentDirs.add(path.dirname(file.file_id));
-                await fs.unlink(file.file_id);
+            const fullFilePath = path.join(userUploadDir, file.file_id);
+            if (fsSync.existsSync(fullFilePath)) {
+                parentDirs.add(path.dirname(fullFilePath));
+                await fs.unlink(fullFilePath);
             }
         } catch (e) {
             const errorMessage = `删除本地文件失败: ${file.file_id}, ${e.message}`;
@@ -87,12 +89,10 @@ async function remove(files, folders, userId) {
         }
     }
     
-    // 2. 构建并排序资料夹路径，确保从最深层开始删除
     const folderPaths = folders
-        .map(f => path.join(userUploadDir, f.path))
+        .map(f => path.join(userUploadDir, f.path.replace(/\//g, path.sep)))
         .sort((a, b) => b.length - a.length);
 
-    // 3. 删除所有资料夹
     for (const folderPath of folderPaths) {
         try {
             if (fsSync.existsSync(folderPath)) {
@@ -107,7 +107,6 @@ async function remove(files, folders, userId) {
         }
     }
 
-    // 4. 清理可能产生的空目录
     for (const dir of parentDirs) {
         await removeEmptyDirs(dir);
     }
@@ -116,13 +115,21 @@ async function remove(files, folders, userId) {
 }
 
 async function getUrl(file_id, userId) {
-    return `/local-files/${userId}/${path.basename(file_id)}`;
+    const userUploadDir = path.join(UPLOAD_DIR, String(userId));
+    const fullPath = path.join(userUploadDir, file_id);
+    // 这是一个简化的逻辑，实际上下载应该通过/download/proxy/:message_id进行
+    // 因为直接暴露文件系统路径不安全。此函数主要用于缩图等内部用途。
+    return `/local-files-relative/${userId}/${file_id}`;
 }
 
-// --- BUG 2 修复：重构 move 函数以提高稳健性 ---
-async function move(oldPath, newPath, options = {}) {
+
+// --- 核心修复：重构 move 函数 ---
+async function move(oldRelativePath, newRelativePath, options = {}, userId) {
+    const userUploadDir = path.join(UPLOAD_DIR, String(userId));
+    const oldPath = path.join(userUploadDir, oldRelativePath);
+    const newPath = path.join(userUploadDir, newRelativePath);
+
     try {
-        // 确保源路径存在
         if (!fsSync.existsSync(oldPath)) {
             throw new Error(`来源路径不存在: ${oldPath}`);
         }
@@ -130,27 +137,24 @@ async function move(oldPath, newPath, options = {}) {
         const newParentDir = path.dirname(newPath);
         await fs.mkdir(newParentDir, { recursive: true });
 
-        // 如果目标路径已存在，且 options.overwrite 为 true，则先强制删除目标。
-        // fs.rm 可以同时处理文件和文件夹，比 fs.unlink 更稳健。
         if (options.overwrite && fsSync.existsSync(newPath)) {
             await fs.rm(newPath, { recursive: true, force: true });
         }
         
-        // 现在目标路径已清空，可以安全地重命名。
         await fs.rename(oldPath, newPath);
         
-        // 清理源文件所在的旧目录（如果它变为空）
         await removeEmptyDirs(path.dirname(oldPath));
         return { success: true };
     } catch (error) {
-        // The error from data.js is sufficient. This log is for server-side debugging.
         console.error(`本地移动失败 从 ${oldPath} 到 ${newPath}:`, error);
         return { success: false, error };
     }
 }
 
-async function exists(filePath) {
-    return fsSync.existsSync(filePath);
+
+async function exists(filePath, userId) {
+    const userUploadDir = path.join(UPLOAD_DIR, String(userId));
+    return fsSync.existsSync(path.join(userUploadDir, filePath));
 }
 
 module.exports = { upload, remove, getUrl, move, exists, type: 'local' };
