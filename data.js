@@ -299,60 +299,77 @@ async function updateDescendantFilePaths(folderId, newParentPath, userId) {
     }
 }
 
-async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], mergeFolderNames = []) {
+// ========================================================
+// ================ 【核心修复】重写 moveItem ================
+// ========================================================
+async function moveItem(item, targetFolderId, userId, options) {
+    // options = { overwriteFileNames: [], mergeFolderNames: [] }
+    // 这个函式被递归呼叫，options 物件会一路传递下去，以保留使用者最初的策略。
     const storage = require('./storage').getStorage();
     const dbRun = (sql, params) => new Promise((res, rej) => db.run(sql, params, function(e) { e ? rej(e) : res(this); }));
-    
-    // --- Validation ---
+
+    // --- 1. 验证 ---
     if (item.type === 'folder') {
         const numericTargetFolderId = Number(targetFolderId);
         const numericItemId = Number(item.id);
-        if (numericItemId === numericTargetFolderId) {
-            return { success: true, skipped: true, message: 'Cannot move a folder into itself.' };
-        }
+        if (numericItemId === numericTargetFolderId) throw new Error('无法将资料夹移动到其自身内部。');
         const descendants = await getAllDescendantFolderIds(numericItemId, userId);
-        if (descendants.map(Number).includes(numericTargetFolderId)) {
-            throw new Error('无法将资料夹移动到其子目录中。');
-        }
+        if (descendants.map(Number).includes(numericTargetFolderId)) throw new Error('无法将资料夹移动到其子目录中。');
     }
 
-    // --- Conflict Resolution ---
+    // --- 2. 在“当前”目标位置检查冲突 ---
     const conflict = await checkFullConflict(item.name, targetFolderId, userId);
-    
+
+    // --- 3. 根据项目类型和使用者的“原始”策略来解决冲突 ---
     if (conflict) {
         if (item.type === 'folder') {
-            if (mergeFolderNames.includes(item.name)) {
-                const targetFolder = await findFolderByName(item.name, targetFolderId, userId);
-                if (!targetFolder) {
+            // 目标位置已存在同名资料夹
+            // 使用者最初是否选择了合并此资料夹？
+            if (options.mergeFolderNames.includes(item.name)) {
+                // 是，则合并。找到目标合并资料夹。
+                const destinationMergeFolder = await findFolderByName(item.name, targetFolderId, userId);
+                if (!destinationMergeFolder) {
                     throw new Error(`合并失败：找不到目标资料夹 "${item.name}"。`);
                 }
-                
+
+                // 获取来源资料夹的所有子项目
                 const sourceChildren = await getChildrenOfFolder(item.id, userId);
+
+                // 对于每个子项目，递归呼叫 moveItem，并将其移动到“目标合并资料夹”中
+                // 【关键】将相同的 options 物件继续传递下去！
                 for (const child of sourceChildren) {
-                    await moveItem(child, targetFolder.id, userId, overwriteFileNames, mergeFolderNames);
+                    await moveItem(child, destinationMergeFolder.id, userId, options);
                 }
+
+                // 移动完所有子项目后，删除现已空了的来源资料夹。
                 await dbRun("DELETE FROM folders WHERE id = ? AND user_id = ?", [item.id, userId]);
-                return { success: true, merged: true };
+                return { success: true, outcome: 'merged' };
             } else {
-                return { success: true, skipped: true };
+                // 否，使用者未选择合并，因此必须跳过。
+                return { success: true, outcome: 'skipped' };
             }
-        } else { // File conflict
-            if (overwriteFileNames.includes(item.name)) {
+        } else { // 档案冲突
+            // 目标位置已存在同名档案
+            // 使用者最初是否选择了覆盖此档案？
+            if (options.overwriteFileNames.includes(item.name)) {
+                // 是，则覆盖。先删除已存在的档案。
                 const existingFile = await findFileInFolder(item.name, targetFolderId, userId);
                 if (existingFile) {
                     const filesToDelete = await getFilesByIds([existingFile.message_id], userId);
                     if (filesToDelete.length > 0) {
-                       await storage.remove(filesToDelete, [], userId); 
+                        await storage.remove(filesToDelete, [], userId);
                     }
                     await deleteFilesByIds([existingFile.message_id], userId);
                 }
+                // 在此之后，函式会继续执行下面的“移动”步骤
             } else {
-                return { success: true, skipped: true };
+                // 否，使用者未选择覆盖，因此跳过。
+                return { success: true, outcome: 'skipped' };
             }
         }
     }
-    
-    // --- Physical & DB Move ---
+
+    // --- 4. 如果没有冲突，或者档案冲突已透过覆盖解决，则执行实际的移动操作 ---
     const [fileInfo] = item.type === 'file' ? await getFilesByIds([item.id], userId) : [null];
     const oldPathArr = await getFolderPath(item.parent_id, userId);
     const oldParentPath = oldPathArr.slice(1).map(p => p.name).join('/');
@@ -364,7 +381,7 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
     
     if (storage.type !== 'telegram') {
         const sourcePath = item.type === 'file' && fileInfo ? fileInfo.file_id : oldFullPath;
-        const moveResult = await storage.move(sourcePath, newFullPath, { overwrite: overwriteFileNames.includes(item.name) }, userId);
+        const moveResult = await storage.move(sourcePath, newFullPath, { overwrite: options.overwriteFileNames.includes(item.name) }, userId);
         
         if (!moveResult.success) {
             throw new Error(`移动实体项目 "${item.name}" 时发生错误: ${moveResult.error.message}`);
@@ -383,8 +400,11 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
         }
     }
 
-    return { success: true, skipped: false };
+    return { success: true, outcome: 'moved' };
 }
+// ========================================================
+// ========================================================
+// ========================================================
 
 
 function deleteSingleFolder(folderId, userId) {
