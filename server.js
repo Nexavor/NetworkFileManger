@@ -604,15 +604,11 @@ app.get('/api/folders', requireLogin, async (req, res) => {
     res.json(folders);
 });
 
-// =========================================================
-// ================ 【核心修复】API 路由修改 ================
-// =========================================================
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
         const { items, targetFolderId, overwriteFileNames, mergeFolderNames } = req.body;
         const userId = req.session.userId;
         
-        // 将冲突处理策略打包成一个物件
         const moveOptions = { 
             overwriteFileNames: overwriteFileNames || [], 
             mergeFolderNames: mergeFolderNames || []
@@ -626,7 +622,6 @@ app.post('/api/move', requireLogin, async (req, res) => {
             if (!item.id || !item.name || !item.type) {
                  return res.status(400).json({ success: false, message: `请求中包含无效的项目资料: ${JSON.stringify(item)}` });
             }
-            // 将 item 和打包后的 options 一起传下去
             await data.moveItem(item, targetFolderId, userId, moveOptions);
         }
         
@@ -637,10 +632,6 @@ app.post('/api/move', requireLogin, async (req, res) => {
         res.status(500).json({ success: false, message: `移动失败：${error.message}` }); 
     }
 });
-// =========================================================
-// =========================================================
-// =========================================================
-
 
 // 统一的删除处理器
 async function unifiedDeleteHandler(req, res) {
