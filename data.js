@@ -289,7 +289,7 @@ function getAllFolders(userId) {
     });
 }
 
-// **重构**: 移动单个项目（文件或文件夹）的核心逻辑
+// **修正后的核心移动逻辑**
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     console.log(`[DEBUG] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标文件夹 ID ${targetFolderId}`);
     const { resolutions = {}, pathPrefix = '' } = options;
@@ -300,6 +300,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         throw new Error(`找不到来源项目 ID: ${itemId}`);
     }
     
+    // *** 关键修正: 使用 path.join 来构建正确的相对路径 ***
     const currentPath = path.join(pathPrefix, sourceItem.name).replace(/\\/g, '/');
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
     const resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
@@ -345,6 +346,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
 
             for (const child of children) {
                 console.log(`[DEBUG] moveItem: -> 正在递归移动子项目 "${child.name}" (ID: ${child.id})`);
+                // *** 关键修正: 传递更新后的 pathPrefix ***
                 const childMoved = await moveItem(child.id, child.type, existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
                 if (!childMoved) {
                     allChildrenMoved = false;
