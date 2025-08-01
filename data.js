@@ -294,10 +294,14 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
                 if (remainingChildren.length === 0) {
                     await deleteSingleFolder(itemId, userId);
                 }
+                return true; // 表示已处理 (合并)
+            } else {
+                return false; // 表示因冲突而跳过
             }
         } else {
             // 没有冲突，直接移动
             await moveItems([], [itemId], targetFolderId, userId);
+            return true; // 表示已处理 (移动)
         }
     } else { // file
         const fileToMove = (await getFilesByIds([itemId], userId))[0];
@@ -315,8 +319,13 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             await deleteFilesByIds([conflict.message_id], userId);
 
             await moveItems([itemId], [], targetFolderId, userId);
+            return true; // 表示已处理 (覆盖)
         } else if (!conflict) {
             await moveItems([itemId], [], targetFolderId, userId);
+            return true; // 表示已处理 (移动)
+        } else {
+             // 存在冲突且不在覆盖列表中，则跳过
+            return false;
         }
     }
 }
