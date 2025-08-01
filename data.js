@@ -289,7 +289,6 @@ function getAllFolders(userId) {
     });
 }
 
-// **修正后的核心移动逻辑**
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     console.log(`[DEBUG] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标文件夹 ID ${targetFolderId}`);
     const { resolutions = {}, pathPrefix = '' } = options;
@@ -300,7 +299,6 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         throw new Error(`找不到来源项目 ID: ${itemId}`);
     }
     
-    // *** 关键修正: 使用 path.join 来构建正确的相对路径 ***
     const currentPath = path.join(pathPrefix, sourceItem.name).replace(/\\/g, '/');
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
     const resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
@@ -328,6 +326,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
                 console.warn(`[DEBUG] moveItem: 尝试覆盖但目标位置不存在项目 "${currentPath}"。`);
                 return false; 
             }
+            // *** 日志优化: 使用 existingItemInTarget.name ***
             console.log(`[DEBUG] moveItem: 覆盖目标位置的项目 "${existingItemInTarget.name}" (ID: ${existingItemInTarget.id})。`);
             await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
@@ -346,7 +345,6 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
 
             for (const child of children) {
                 console.log(`[DEBUG] moveItem: -> 正在递归移动子项目 "${child.name}" (ID: ${child.id})`);
-                // *** 关键修正: 传递更新后的 pathPrefix ***
                 const childMoved = await moveItem(child.id, child.type, existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
                 if (!childMoved) {
                     allChildrenMoved = false;
@@ -788,25 +786,20 @@ function cancelShare(itemId, itemType, userId) {
         });
     });
 }
-// **重构**: 简化的冲突检测逻辑
+
 async function getConflictingItems(itemsToMove, destinationFolderId, userId) {
     const fileConflicts = new Set();
     const folderConflicts = new Set();
 
-    // 1. 获取目标目录下的所有第一层子项
     const destContents = await getChildrenOfFolder(destinationFolderId, userId);
     const destMap = new Map(destContents.map(item => [item.name, item.type]));
 
-    // 2. 遍历所有准备移动的项目
     for (const item of itemsToMove) {
         const destType = destMap.get(item.name);
         if (destType) {
-            // 如果在目标目录中找到了同名项目，则存在冲突
             if (item.type === 'folder' && destType === 'folder') {
-                // 只有“文件夹 vs 文件夹”的冲突才算作文件夹冲突（可合并）
                 folderConflicts.add(item.name);
             } else {
-                // 所有其他情况（文件 vs 文件, 文件 vs 文件夹等）都算作文件冲突（需覆盖/重命名）
                 fileConflicts.add(item.name);
             }
         }
@@ -844,12 +837,14 @@ function findFileInFolder(fileName, folderId, userId) {
         });
     });
 }
+
+// *** 日志优化: 在查询中同时获取 name ***
 function findItemInFolder(name, folderId, userId) {
     return new Promise((resolve, reject) => {
         const sql = `
-            SELECT id, 'folder' as type FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?
+            SELECT id, name, 'folder' as type FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?
             UNION ALL
-            SELECT message_id as id, 'file' as type FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?
+            SELECT message_id as id, fileName as name, 'file' as type FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?
         `;
         db.get(sql, [name, folderId, userId, name, folderId, userId], (err, row) => {
             if (err) return reject(err);
@@ -857,6 +852,7 @@ function findItemInFolder(name, folderId, userId) {
         });
     });
 }
+
 async function findAvailableName(originalName, folderId, userId, isFolder) {
     let newName = originalName;
     let counter = 1;
