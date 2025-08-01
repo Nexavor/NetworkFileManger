@@ -4,9 +4,10 @@ const path = require('path');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 
-const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
+// *** CRITICAL FIX: Use path.resolve for an unambiguous, absolute path ***
+const UPLOAD_DIR = path.resolve(__dirname, 'data', 'uploads');
 
-// --- 使用者管理 (维持不变) ---
+// --- User Management (Unchanged) ---
 function createUser(username, hashedPassword) {
     return new Promise((resolve, reject) => {
         const sql = `INSERT INTO users (username, password, is_admin) VALUES (?, ?, 0)`;
@@ -87,7 +88,7 @@ async function deleteUser(userId) {
 }
 
 
-// --- 档案和资料夹搜寻 (维持不变) ---
+// --- File and Folder Search (Unchanged) ---
 function searchItems(query, userId) {
     return new Promise((resolve, reject) => {
         const searchQuery = `%${query}%`;
@@ -117,9 +118,7 @@ function searchItems(query, userId) {
     });
 }
 
-// --- 资料夹与档案操作 ---
-
-// *** CRITICAL FIX: Corrected UNION ALL columns ***
+// --- Folder and File Operations ---
 function getItemsByIds(itemIds, userId) {
     return new Promise((resolve, reject) => {
         if (!itemIds || itemIds.length === 0) return resolve([]);
@@ -300,61 +299,48 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
     const sourceItem = (await getItemsByIds([itemId], userId))[0];
     if (!sourceItem) throw new Error(`找不到来源项目 ID: ${itemId}`);
     
-    const resolutionAction = resolutions[sourceItem.name] || 'skip';
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
+    const resolutionAction = resolutions[sourceItem.name] || (existingItemInTarget ? 'skip' : 'move');
 
-    if (resolutionAction === 'skip') {
-        if (existingItemInTarget) return false;
-        // if no conflict, normal move proceeds
-    }
-    
-    if (resolutionAction === 'rename') {
-        const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
-        if (itemType === 'folder') {
-            await renameFolder(itemId, newName, userId);
-            await moveItems([], [itemId], targetFolderId, userId);
-        } else {
-            await renameAndMoveFile(itemId, newName, targetFolderId, userId);
-        }
-        return true;
-    }
+    try {
+        switch (resolutionAction) {
+            case 'skip':
+                return false;
 
-    if (itemType === 'folder') {
-        if (existingItemInTarget) {
-            if (resolutionAction === 'merge' && existingItemInTarget.type === 'folder') {
+            case 'rename':
+                const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
+                if (itemType === 'folder') {
+                    await renameFolder(itemId, newName, userId);
+                    await moveItems([], [itemId], targetFolderId, userId);
+                } else {
+                    await renameAndMoveFile(itemId, newName, targetFolderId, userId);
+                }
+                return true;
+
+            case 'overwrite':
+                if (!existingItemInTarget) return false; // Should not happen
+                await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
+                await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
+                return true;
+
+            case 'merge':
+                if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') return false;
                 const children = await getChildrenOfFolder(itemId, userId);
                 for (const child of children) {
+                    // Pass resolutions down for recursive merge conflicts
                     await moveItem(child.id, child.type, existingItemInTarget.id, userId, options);
                 }
-                const remainingChildren = await getChildrenOfFolder(itemId, userId);
-                if (remainingChildren.length === 0) {
-                     await unifiedDelete(itemId, 'folder', userId);
-                }
+                // After moving all children, delete the now-empty source folder
+                await unifiedDelete(itemId, 'folder', userId);
                 return true;
-            } else if (resolutionAction === 'overwrite') {
-                 await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
-                 await moveItems([], [itemId], targetFolderId, userId);
-                 return true;
-            } else {
-                return false;
-            }
-        } else {
-            await moveItems([], [itemId], targetFolderId, userId);
-            return true;
-        }
-    } else { // file
-        if (existingItemInTarget) {
-            if (resolutionAction === 'overwrite') {
-                await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
-                await moveItems([itemId], [], targetFolderId, userId);
+
+            default: // 'move' or no specific resolution needed
+                await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
                 return true;
-            } else {
-                 return false;
-            }
-        } else {
-            await moveItems([itemId], [], targetFolderId, userId);
-            return true;
         }
+    } catch (err) {
+        console.error(`移动操作失败 [${sourceItem.name}]:`, err);
+        throw err; // Propagate error to stop the process
     }
 }
 
@@ -372,53 +358,58 @@ async function unifiedDelete(itemId, itemType, userId) {
         filesForStorage.push(...directFiles);
     }
     
-    const storageResult = await storage.remove(filesForStorage, foldersForStorage, userId);
-    if (!storageResult.success) {
-        console.warn("统一删除操作中，部分项目在储存端删除失败:", storageResult.errors);
+    // Physical delete first, with proper error handling
+    try {
+        await storage.remove(filesForStorage, foldersForStorage, userId);
+    } catch (err) {
+        console.error("实体档案删除失败:", err);
+        throw new Error("实体档案删除失败，操作已中止。");
     }
-
+    
+    // Then DB delete
     await executeDeletion(filesForStorage.map(f => f.message_id), foldersForStorage.map(f => f.id), userId);
 }
 
 async function moveItems(fileIds, folderIds, targetFolderId, userId) {
-    if (fileIds && fileIds.length > 0) {
-        const filesToMove = await getFilesByIds(fileIds, userId);
-        const localFiles = filesToMove.filter(f => f.storage_type === 'local');
-        if (localFiles.length > 0) {
-            const targetPathParts = await getFolderPath(targetFolderId, userId);
-            const targetRelativePath = path.join(...targetPathParts.slice(1).map(p => p.name));
+    try {
+        if (fileIds && fileIds.length > 0) {
+            const filesToMove = await getFilesByIds(fileIds, userId);
+            const localFiles = filesToMove.filter(f => f.storage_type === 'local');
+            if (localFiles.length > 0) {
+                const targetPathParts = await getFolderPath(targetFolderId, userId);
+                const targetRelativePath = path.join(...targetPathParts.slice(1).map(p => p.name));
 
-            for (const file of localFiles) {
-                const newRelativePath = path.join(targetRelativePath, file.fileName).replace(/\\/g, '/');
-                const oldFullPath = path.join(UPLOAD_DIR, String(userId), file.file_id);
-                const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
-                
-                try {
+                for (const file of localFiles) {
+                    const newRelativePath = path.join(targetRelativePath, file.fileName).replace(/\\/g, '/');
+                    const oldFullPath = path.join(UPLOAD_DIR, String(userId), file.file_id);
+                    const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
+                    
                     await fs.mkdir(path.dirname(newFullPath), { recursive: true });
                     await fs.rename(oldFullPath, newFullPath);
                     await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [newRelativePath, file.message_id], (e) => e ? rej(e) : res()));
-                } catch (e) { console.error(`本地档案实体移动失败: ${e.message}`); }
+                }
             }
         }
-    }
-    if (folderIds && folderIds.length > 0) {
-        const foldersToMove = await getItemsByIds(folderIds, userId);
-        const targetPathParts = await getFolderPath(targetFolderId, userId);
-        const targetRelativePath = path.join(...targetPathParts.slice(1).map(p => p.name));
-        
-        for (const folder of foldersToMove) {
-            const oldPathParts = await getFolderPath(folder.parent_id, userId);
-            const oldRelativePath = path.join(...oldPathParts.slice(1).map(p => p.name), folder.name);
-            const oldFullPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath);
-            const newFullPath = path.join(UPLOAD_DIR, String(userId), targetRelativePath, folder.name);
+        if (folderIds && folderIds.length > 0) {
+            const foldersToMove = await getItemsByIds(folderIds, userId);
+            const targetPathParts = await getFolderPath(targetFolderId, userId);
+            const targetRelativePath = path.join(...targetPathParts.slice(1).map(p => p.name));
             
-            try {
+            for (const folder of foldersToMove) {
+                const oldPathParts = await getFolderPath(folder.parent_id, userId);
+                const oldRelativePath = path.join(...oldPathParts.slice(1).map(p => p.name), folder.name);
+                const oldFullPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath);
+                const newFullPath = path.join(UPLOAD_DIR, String(userId), targetRelativePath, folder.name);
+                
                 if (fsSync.existsSync(oldFullPath)) {
                     await fs.mkdir(path.dirname(newFullPath), { recursive: true });
                     await fs.rename(oldFullPath, newFullPath);
                 }
-            } catch (e) { console.error(`本地资料夹实体移动失败: ${e.message}`); }
+            }
         }
+    } catch (err) {
+        console.error("实体档案移动失败:", err);
+        throw new Error("实体档案移动失败，操作已中止。");
     }
 
     return new Promise((resolve, reject) => {
@@ -481,8 +472,7 @@ async function getFolderDeletionData(folderId, userId) {
         let current = folderMap.get(fId);
         while(current && current.parent_id) {
             pathParts.unshift(current.name);
-            const parent = folderMap.get(current.parent_id);
-            current = parent;
+            current = folderMap.get(current.parent_id);
         }
         return path.join(...pathParts);
     }
@@ -505,12 +495,12 @@ function executeDeletion(fileIds, folderIds, userId) {
             const promises = [];
             
             if (fileIds.length > 0) {
-                const place = fileIds.map(() => '?').join(',');
-                promises.push(new Promise((res, rej) => db.run(`DELETE FROM files WHERE message_id IN (${place}) AND user_id = ?`, [...fileIds, userId], (e) => e ? rej(e) : res())));
+                const place = Array.from(new Set(fileIds)).map(() => '?').join(',');
+                promises.push(new Promise((res, rej) => db.run(`DELETE FROM files WHERE message_id IN (${place}) AND user_id = ?`, [...new Set(fileIds), userId], (e) => e ? rej(e) : res())));
             }
             if (folderIds.length > 0) {
-                const place = folderIds.map(() => '?').join(',');
-                promises.push(new Promise((res, rej) => db.run(`DELETE FROM folders WHERE id IN (${place}) AND user_id = ?`, [...folderIds, userId], (e) => e ? rej(e) : res())));
+                const place = Array.from(new Set(folderIds)).map(() => '?').join(',');
+                promises.push(new Promise((res, rej) => db.run(`DELETE FROM folders WHERE id IN (${place}) AND user_id = ?`, [...new Set(folderIds), userId], (e) => e ? rej(e) : res())));
             }
 
             Promise.all(promises)
@@ -547,6 +537,8 @@ function getFilesByIds(messageIds, userId) {
     });
 }
 
+// ... (Rest of the file remains unchanged: getFileByShareToken, getFolderByShareToken, etc.)
+// ... (Make sure to include all functions from the previous correct version here)
 function getFileByShareToken(token) {
      return new Promise((resolve, reject) => {
         const sql = "SELECT * FROM files WHERE share_token = ?";
@@ -606,7 +598,12 @@ async function renameFile(messageId, newFileName, userId) {
         const oldFullPath = path.join(UPLOAD_DIR, String(userId), file.file_id);
         const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
         
-        await fs.rename(oldFullPath, newFullPath);
+        try {
+            await fs.rename(oldFullPath, newFullPath);
+        } catch(err) {
+            console.error(`实体档案重新命名失败: ${err.message}`);
+            throw new Error(`实体档案重新命名失败`);
+        }
         
         const sql = `UPDATE files SET fileName = ?, file_id = ? WHERE message_id = ? AND user_id = ?`;
         return new Promise((resolve, reject) => {
@@ -639,8 +636,13 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
         const oldFullPath = path.join(UPLOAD_DIR, String(userId), file.file_id);
         const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
         
-        await fs.mkdir(path.dirname(newFullPath), { recursive: true });
-        await fs.rename(oldFullPath, newFullPath);
+        try {
+            await fs.mkdir(path.dirname(newFullPath), { recursive: true });
+            await fs.rename(oldFullPath, newFullPath);
+        } catch(err) {
+            console.error(`实体档案移动并重命名失败: ${err.message}`);
+            throw new Error(`实体档案移动并重命名失败`);
+        }
         
         const sql = `UPDATE files SET fileName = ?, file_id = ?, folder_id = ? WHERE message_id = ? AND user_id = ?`;
         return new Promise((resolve, reject) => {
@@ -670,7 +672,10 @@ async function renameFolder(folderId, newFolderName, userId) {
              await fs.rename(oldFullPath, newFullPath);
         }
     } catch(e) {
-        if (e.code !== 'ENOENT') console.error(`本地资料夹重新命名失败: ${e.message}`);
+        if (e.code !== 'ENOENT') {
+            console.error(`本地资料夹重新命名失败: ${e.message}`);
+            throw new Error("本地资料夹重新命名失败");
+        }
     }
 
     const sql = `UPDATE folders SET name = ? WHERE id = ? AND user_id = ?`;
