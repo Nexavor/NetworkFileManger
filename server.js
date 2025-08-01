@@ -373,9 +373,10 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                         await data.deleteFilesByIds([existingFile.message_id], userId);
                     }
                 } else {
-                     const conflict = await data.findFileInFolder(fileName, targetFolderId, userId);
+                     // --- BUG 1 修复：使用 checkFullConflict 替代 findFileInFolder ---
+                     const conflict = await data.checkFullConflict(fileName, targetFolderId, userId);
                      if (conflict) {
-                         console.log(`Skipping file "${relativePath}" because it exists and was not marked for overwrite.`);
+                         console.log(`Skipping file "${relativePath}" because a conflict exists and was not marked for overwrite.`);
                          continue; // 跳过此文件
                      }
                 }
