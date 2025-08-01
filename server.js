@@ -328,6 +328,7 @@ app.post('/upload', requireLogin, async (req, res, next) => {
     }
 
     const results = [];
+    let skippedCount = 0;
     try {
         for (let i = 0; i < req.files.length; i++) {
             const file = req.files[i];
@@ -340,6 +341,7 @@ app.post('/upload', requireLogin, async (req, res, next) => {
             try {
                 if (action === 'skip') {
                     console.log(`Skipping file "${relativePath}" as per user request.`);
+                    skippedCount++;
                     continue; // 直接跳到下一个档案
                 }
 
@@ -360,6 +362,7 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                     const conflict = await data.findItemInFolder(fileName, targetFolderId, userId);
                     if (conflict) {
                         console.log(`Skipping file "${relativePath}" due to unresolved conflict.`);
+                        skippedCount++;
                         continue;
                     }
                 }
@@ -373,7 +376,11 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                 }
             }
         }
-        res.json({ success: true, results });
+        if (results.length === 0 && skippedCount > 0) {
+            res.json({ success: true, skippedAll: true, message: '所有文件因冲突而被跳过。' });
+        } else {
+            res.json({ success: true, results });
+        }
     } catch (error) {
         console.error("Upload processing error:", error);
         for (const file of req.files) {
