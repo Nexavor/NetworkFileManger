@@ -2,10 +2,11 @@ const db = require('./database.js');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs').promises;
+const fsSync = require('fs');
 
-const UPLOAD_DIR = path.join(__dirname, 'data', 'uploads');
+const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
 
-// --- User Management (Unchanged) ---
+// --- 使用者管理 (维持不变) ---
 function createUser(username, hashedPassword) {
     return new Promise((resolve, reject) => {
         const sql = `INSERT INTO users (username, password, is_admin) VALUES (?, ?, 0)`;
@@ -86,7 +87,7 @@ async function deleteUser(userId) {
 }
 
 
-// --- File and Folder Search (Unchanged) ---
+// --- 档案和资料夹搜寻 (维持不变) ---
 function searchItems(query, userId) {
     return new Promise((resolve, reject) => {
         const searchQuery = `%${query}%`;
@@ -116,15 +117,21 @@ function searchItems(query, userId) {
     });
 }
 
-// --- Folder and File Operations ---
+// --- 资料夹与档案操作 ---
+
+// *** CRITICAL FIX: Corrected UNION ALL columns ***
 function getItemsByIds(itemIds, userId) {
     return new Promise((resolve, reject) => {
         if (!itemIds || itemIds.length === 0) return resolve([]);
         const placeholders = itemIds.map(() => '?').join(',');
         const sql = `
-            SELECT id, name, parent_id, 'folder' as type FROM folders WHERE id IN (${placeholders}) AND user_id = ?
+            SELECT id, name, parent_id, 'folder' as type, null as storage_type, null as file_id
+            FROM folders 
+            WHERE id IN (${placeholders}) AND user_id = ?
             UNION ALL
-            SELECT *, message_id as id, fileName as name, 'file' as type FROM files WHERE message_id IN (${placeholders}) AND user_id = ?
+            SELECT message_id as id, fileName as name, folder_id as parent_id, 'file' as type, storage_type, file_id
+            FROM files 
+            WHERE message_id IN (${placeholders}) AND user_id = ?
         `;
         db.all(sql, [...itemIds, userId, ...itemIds, userId], (err, rows) => {
             if (err) return reject(err);
@@ -287,27 +294,26 @@ function getAllFolders(userId) {
     });
 }
 
-// *** CRITICAL FIX: Refactored moveItem to be non-recursive and atomic ***
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
-    const { overwriteList = [], mergeList = [], resolutions = {} } = options;
+    const { resolutions = {} } = options;
 
     const sourceItem = (await getItemsByIds([itemId], userId))[0];
     if (!sourceItem) throw new Error(`找不到来源项目 ID: ${itemId}`);
     
-    const resolutionAction = resolutions[sourceItem.name] || (mergeList.includes(sourceItem.name) ? 'merge' : (overwriteList.includes(sourceItem.name) ? 'overwrite' : 'skip'));
-
+    const resolutionAction = resolutions[sourceItem.name] || 'skip';
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
 
     if (resolutionAction === 'skip') {
-        return false; // Explicitly skip
+        if (existingItemInTarget) return false;
+        // if no conflict, normal move proceeds
     }
-
+    
     if (resolutionAction === 'rename') {
         const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
         if (itemType === 'folder') {
-            await renameFolder(itemId, newName, userId); // Just rename, location is same
-            await moveItems([], [itemId], targetFolderId, userId); // Now move
-        } else { // file
+            await renameFolder(itemId, newName, userId);
+            await moveItems([], [itemId], targetFolderId, userId);
+        } else {
             await renameAndMoveFile(itemId, newName, targetFolderId, userId);
         }
         return true;
@@ -330,9 +336,9 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
                  await moveItems([], [itemId], targetFolderId, userId);
                  return true;
             } else {
-                return false; // Skip if conflict exists and no resolution
+                return false;
             }
-        } else { // No conflict, just move
+        } else {
             await moveItems([], [itemId], targetFolderId, userId);
             return true;
         }
@@ -343,9 +349,9 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
                 await moveItems([itemId], [], targetFolderId, userId);
                 return true;
             } else {
-                 return false; // Skip if conflict exists and no resolution
+                 return false;
             }
-        } else { // No conflict, just move
+        } else {
             await moveItems([itemId], [], targetFolderId, userId);
             return true;
         }
@@ -366,19 +372,15 @@ async function unifiedDelete(itemId, itemType, userId) {
         filesForStorage.push(...directFiles);
     }
     
-    // Physical delete first
     const storageResult = await storage.remove(filesForStorage, foldersForStorage, userId);
     if (!storageResult.success) {
         console.warn("统一删除操作中，部分项目在储存端删除失败:", storageResult.errors);
     }
-    
-    // Then DB delete
+
     await executeDeletion(filesForStorage.map(f => f.message_id), foldersForStorage.map(f => f.id), userId);
 }
 
-// *** CRITICAL FIX: This function now handles physical file moves for 'local' storage ***
 async function moveItems(fileIds, folderIds, targetFolderId, userId) {
-    // 1. Handle physical file system moves for local storage
     if (fileIds && fileIds.length > 0) {
         const filesToMove = await getFilesByIds(fileIds, userId);
         const localFiles = filesToMove.filter(f => f.storage_type === 'local');
@@ -387,19 +389,15 @@ async function moveItems(fileIds, folderIds, targetFolderId, userId) {
             const targetRelativePath = path.join(...targetPathParts.slice(1).map(p => p.name));
 
             for (const file of localFiles) {
-                const oldFullPath = path.join(UPLOAD_DIR, String(userId), file.file_id);
                 const newRelativePath = path.join(targetRelativePath, file.fileName).replace(/\\/g, '/');
+                const oldFullPath = path.join(UPLOAD_DIR, String(userId), file.file_id);
                 const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
                 
                 try {
                     await fs.mkdir(path.dirname(newFullPath), { recursive: true });
                     await fs.rename(oldFullPath, newFullPath);
-                    // Update file_id in DB to new relative path
                     await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [newRelativePath, file.message_id], (e) => e ? rej(e) : res()));
-                } catch (e) {
-                    console.error(`本地档案实体移动失败: from ${oldFullPath} to ${newFullPath}`, e);
-                    // Decide if you want to stop the whole operation or just log the error
-                }
+                } catch (e) { console.error(`本地档案实体移动失败: ${e.message}`); }
             }
         }
     }
@@ -415,49 +413,32 @@ async function moveItems(fileIds, folderIds, targetFolderId, userId) {
             const newFullPath = path.join(UPLOAD_DIR, String(userId), targetRelativePath, folder.name);
             
             try {
-                if (require('fs').existsSync(oldFullPath)) {
+                if (fsSync.existsSync(oldFullPath)) {
                     await fs.mkdir(path.dirname(newFullPath), { recursive: true });
                     await fs.rename(oldFullPath, newFullPath);
                 }
-            } catch (e) {
-                console.error(`本地资料夹实体移动失败: from ${oldFullPath} to ${newFullPath}`, e);
-            }
+            } catch (e) { console.error(`本地资料夹实体移动失败: ${e.message}`); }
         }
     }
 
-
-    // 2. Handle DB record updates
     return new Promise((resolve, reject) => {
         db.serialize(() => {
             db.run("BEGIN TRANSACTION;");
             const promises = [];
 
             if (fileIds && fileIds.length > 0) {
-                const filePlaceholders = fileIds.map(() => '?').join(',');
-                const moveFilesSql = `UPDATE files SET folder_id = ? WHERE message_id IN (${filePlaceholders}) AND user_id = ?`;
-                promises.push(new Promise((res, rej) => {
-                    db.run(moveFilesSql, [targetFolderId, ...fileIds, userId], (err) => err ? rej(err) : res());
-                }));
+                const place = fileIds.map(() => '?').join(',');
+                promises.push(new Promise((res, rej) => db.run(`UPDATE files SET folder_id = ? WHERE message_id IN (${place}) AND user_id = ?`, [targetFolderId, ...fileIds, userId], (e) => e ? rej(e) : res())));
             }
 
             if (folderIds && folderIds.length > 0) {
-                const folderPlaceholders = folderIds.map(() => '?').join(',');
-                const moveFoldersSql = `UPDATE folders SET parent_id = ? WHERE id IN (${folderPlaceholders}) AND user_id = ?`;
-                 promises.push(new Promise((res, rej) => {
-                    db.run(moveFoldersSql, [targetFolderId, ...folderIds, userId], (err) => err ? rej(err) : res());
-                }));
+                const place = folderIds.map(() => '?').join(',');
+                promises.push(new Promise((res, rej) => db.run(`UPDATE folders SET parent_id = ? WHERE id IN (${place}) AND user_id = ?`, [targetFolderId, ...folderIds, userId], (e) => e ? rej(e) : res())));
             }
 
             Promise.all(promises)
-                .then(() => {
-                    db.run("COMMIT;", (err) => {
-                        if (err) reject(err);
-                        else resolve({ success: true });
-                    });
-                })
-                .catch((err) => {
-                    db.run("ROLLBACK;", () => reject(err));
-                });
+                .then(() => db.run("COMMIT;", (e) => e ? reject(e) : resolve({ success: true })))
+                .catch((err) => db.run("ROLLBACK;", () => reject(err)));
         });
     });
 }
@@ -500,8 +481,8 @@ async function getFolderDeletionData(folderId, userId) {
         let current = folderMap.get(fId);
         while(current && current.parent_id) {
             pathParts.unshift(current.name);
-            current = folderMap.get(folderMap.get(fId).parent_id);
-            fId = current ? current.id : null;
+            const parent = folderMap.get(current.parent_id);
+            current = parent;
         }
         return path.join(...pathParts);
     }
@@ -524,18 +505,16 @@ function executeDeletion(fileIds, folderIds, userId) {
             const promises = [];
             
             if (fileIds.length > 0) {
-                const filePlaceholders = fileIds.map(() => '?').join(',');
-                const sql = `DELETE FROM files WHERE message_id IN (${filePlaceholders}) AND user_id = ?`;
-                promises.push(new Promise((res, rej) => db.run(sql, [...fileIds, userId], (err) => err ? rej(err) : res())));
+                const place = fileIds.map(() => '?').join(',');
+                promises.push(new Promise((res, rej) => db.run(`DELETE FROM files WHERE message_id IN (${place}) AND user_id = ?`, [...fileIds, userId], (e) => e ? rej(e) : res())));
             }
             if (folderIds.length > 0) {
-                const folderPlaceholders = folderIds.map(() => '?').join(',');
-                const sql = `DELETE FROM folders WHERE id IN (${folderPlaceholders}) AND user_id = ?`;
-                promises.push(new Promise((res, rej) => db.run(sql, [...folderIds, userId], (err) => err ? rej(err) : res())));
+                const place = folderIds.map(() => '?').join(',');
+                promises.push(new Promise((res, rej) => db.run(`DELETE FROM folders WHERE id IN (${place}) AND user_id = ?`, [...folderIds, userId], (e) => e ? rej(e) : res())));
             }
 
             Promise.all(promises)
-                .then(() => db.run("COMMIT;", (err) => err ? reject(err) : resolve({ success: true })))
+                .then(() => db.run("COMMIT;", (e) => e ? reject(e) : resolve({ success: true })))
                 .catch((err) => db.run("ROLLBACK;", () => reject(err)));
         });
     });
@@ -638,7 +617,6 @@ async function renameFile(messageId, newFileName, userId) {
         });
     }
 
-    // Default for non-local storage
     const sql = `UPDATE files SET fileName = ? WHERE message_id = ? AND user_id = ?`;
     return new Promise((resolve, reject) => {
         db.run(sql, [newFileName, messageId, userId], function(err) {
@@ -649,7 +627,6 @@ async function renameFile(messageId, newFileName, userId) {
     });
 }
 
-// *** NEW: Handles both rename and move for a file ***
 async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId) {
     const file = (await getFilesByIds([messageId], userId))[0];
     if (!file) throw new Error('File not found for rename and move');
@@ -671,7 +648,6 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
         });
     }
 
-    // Default for non-local: just update DB
     const sql = `UPDATE files SET fileName = ?, folder_id = ? WHERE message_id = ? AND user_id = ?`;
     return new Promise((resolve, reject) => {
         db.run(sql, [newFileName, targetFolderId, messageId, userId], (err) => err ? reject(err) : resolve({ success: true }));
@@ -690,7 +666,7 @@ async function renameFolder(folderId, newFolderName, userId) {
     const newFullPath = path.join(UPLOAD_DIR, String(userId), parentRelativePath, newFolderName);
     
     try {
-        if (require('fs').existsSync(oldFullPath)) {
+        if (fsSync.existsSync(oldFullPath)) {
              await fs.rename(oldFullPath, newFullPath);
         }
     } catch(e) {
@@ -888,7 +864,6 @@ async function findAvailableName(originalName, folderId, userId, isFolder) {
 }
 
 
-// --- Scanner Functions ---
 function findFileByFileId(fileId, userId) {
     return new Promise((resolve, reject) => {
         const sql = `SELECT message_id FROM files WHERE file_id = ? AND user_id = ?`;
