@@ -423,6 +423,16 @@ app.get('/api/folder/:id', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: '读取资料夹内容失败。' }); }
 });
 
+// --- 核心修复：恢复被删除的 /api/folders 路由 ---
+app.get('/api/folders', requireLogin, async (req, res) => {
+    try {
+        const folders = await data.getAllFolders(req.session.userId);
+        res.json(folders);
+    } catch (error) {
+        res.status(500).json({ success: false, message: '获取资料夹列表失败。' });
+    }
+});
+
 app.post('/api/folder', requireLogin, async (req, res) => {
     const { name, parentId } = req.body;
     const userId = req.session.userId;
@@ -526,8 +536,6 @@ app.post('/rename', requireLogin, async (req, res) => {
     }
 });
 
-// --- 核心修复区 ---
-
 app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = parseInt(req.params.message_id, 10);
@@ -539,8 +547,7 @@ app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
             if (link) return res.redirect(link);
         }
         
-        // 本地储存模式目前没有独立的缩图，可回传一个通用图示
-        const placeholder = path.join(__dirname, 'public', 'file-icon.png'); // 假设你有一个通用图示
+        const placeholder = path.join(__dirname, 'public', 'file-icon.png');
         if (fs.existsSync(placeholder)) {
             res.sendFile(placeholder);
         } else {
@@ -549,7 +556,6 @@ app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
             res.writeHead(200, { 'Content-Type': 'image/gif', 'Content-Length': img.length });
             res.end(img);
         }
-
     } catch (error) { res.status(500).send('获取缩图失败'); }
 });
 
@@ -617,8 +623,6 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
         res.status(500).send('无法获取文件内容'); 
     }
 });
-
-// --- 分享功能修复区 ---
 
 function handleStream(stream, res) {
     stream.on('error', (err) => { if (!res.headersSent) res.status(500).send('读取文件流时发生错误'); })
@@ -743,7 +747,6 @@ app.get('/share/thumbnail/:folderToken/:fileId', async (req, res) => {
         const placeholder = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
         res.writeHead(200, { 'Content-Type': 'image/gif', 'Content-Length': placeholder.length });
         res.end(placeholder);
-
     } catch (error) {
         res.status(500).send('获取缩图失败');
     }
@@ -856,16 +859,23 @@ app.post('/api/scan/local', requireAdmin, async (req, res) => {
         const rootFolder = await data.getRootFolder(userId);
         if (!rootFolder) throw new Error(`找不到使用者 ${userId} 的根目录`);
 
-        async function scanDirectory(dir, parentFolderId) {
+        async function scanDirectory(dir, currentParentId) {
             const entries = await fsp.readdir(dir, { withFileTypes: true });
             for (const entry of entries) {
                 const fullPath = path.join(dir, entry.name);
                 const relativePath = path.relative(userUploadDir, fullPath).replace(/\\/g, '/');
 
                 if (entry.isDirectory()) {
-                    const newParentFolderId = await data.findOrCreateFolderByPath(relativePath, userId);
+                    const folderInDb = await data.findFolderByName(entry.name, currentParentId, userId);
+                    let newParentId;
+                    if (folderInDb) {
+                        newParentId = folderInDb.id;
+                    } else {
+                        const newFolder = await data.createFolder(entry.name, currentParentId, userId);
+                        newParentId = newFolder.id;
+                    }
                     log.push({ message: `进入目录: ${relativePath}`, type: 'info' });
-                    await scanDirectory(fullPath, newParentFolderId);
+                    await scanDirectory(fullPath, newParentId);
                 } else {
                     const fileId = relativePath;
                     const existing = await data.findFileByFileId(fileId, userId);
@@ -881,7 +891,7 @@ app.post('/api/scan/local', requireAdmin, async (req, res) => {
                             size: stats.size,
                             file_id: fileId,
                             date: stats.mtime.getTime(),
-                        }, parentFolderId, userId, 'local');
+                        }, currentParentId, userId, 'local');
                         log.push({ message: `已汇入: ${relativePath}`, type: 'success' });
                     }
                 }
