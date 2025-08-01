@@ -304,9 +304,17 @@ async function updateDescendantFilePaths(folderId, newParentPath, userId) {
 
 
 // *** BUG修复 重构 moveItem 函数 ***
-async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], mergeFolderNames = []) {
+async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], mergeFolderNames = [], skippedFileNames = [], skippedFolderNames = []) {
     const storage = require('./storage').getStorage();
     const dbRun = (sql, params) => new Promise((res, rej) => db.run(sql, params, function(e) { e ? rej(e) : res(this); }));
+
+    // 【关键修复】在函数开头增加检查，如果项目本身就在跳过清单中，直接返回
+    if (item.type === 'file' && skippedFileNames.includes(item.name)) {
+         return { success: true, skipped: true };
+    }
+    if (item.type === 'folder' && skippedFolderNames.includes(item.name)) {
+         return { success: true, skipped: true };
+    }
     
     // --- Validation ---
     if (item.type === 'folder') {
@@ -326,7 +334,8 @@ async function moveItem(item, targetFolderId, userId, overwriteFileNames = [], m
         
         const sourceChildren = await getChildrenOfFolder(item.id, userId);
         for (const child of sourceChildren) {
-            await moveItem(child, targetFolder.id, userId, overwriteFileNames, mergeFolderNames);
+            // 【关键修复】递归呼叫时，将跳过清单继续向下传递
+            await moveItem(child, targetFolder.id, userId, overwriteFileNames, mergeFolderNames, skippedFileNames, skippedFolderNames);
         }
         await dbRun("DELETE FROM folders WHERE id = ? AND user_id = ?", [item.id, userId]);
         return { success: true };
