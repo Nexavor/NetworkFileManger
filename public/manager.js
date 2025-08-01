@@ -179,13 +179,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (conflicts.length > 0) {
             const conflictNames = conflicts.map(f => f.webkitRelativePath || f.name);
             const conflictResult = await handleConflict(conflictNames, '档案');
-            if (conflictResult.action === 'abort') {
+            if (conflictResult.aborted) {
                  if (filesToUpload.length === 0) {
                     showNotification('上传操作已取消。', 'info', !isDrag ? uploadNotificationArea : null);
                     return;
                 }
             } else {
-                pathsToOverwrite = conflictResult.overwriteList;
+                pathsToOverwrite = Object.entries(conflictResult.resolutions)
+                                        .filter(([, action]) => action === 'overwrite')
+                                        .map(([name]) => name);
                 const filesToMaybeUpload = conflicts.filter(f => pathsToOverwrite.includes(f.webkitRelativePath || f.name));
                 filesToUpload.push(...filesToMaybeUpload);
             }
