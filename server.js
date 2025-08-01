@@ -533,7 +533,7 @@ app.get('/api/folder/:id', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: '读取资料夹内容失败。' }); }
 });
 
-
+// --- *** 关键修正：重构 /api/folder 端点 *** ---
 app.post('/api/folder', requireLogin, async (req, res) => {
     const { name, parentId } = req.body;
     const userId = req.session.userId;
@@ -548,9 +548,19 @@ app.post('/api/folder', requireLogin, async (req, res) => {
         }
 
         const result = await data.createFolder(name, parentId, userId);
-        const parentPath = await data.getFolderPath(parentId, userId);
-        const newFolderPath = path.join(__dirname, 'data', 'uploads', String(userId), ...parentPath.slice(1).map(p=>p.name), name);
-        await fsp.mkdir(newFolderPath, {recursive: true});
+        
+        const storage = storageManager.getStorage();
+        if (storage.type === 'local' || storage.type === 'webdav') {
+            const newFolderPathParts = await data.getFolderPath(result.id, userId);
+            const newFullPath = path.posix.join(...newFolderPathParts.slice(1).map(p => p.name));
+
+            if (storage.type === 'local') {
+                const newLocalPath = path.join(__dirname, 'data', 'uploads', String(userId), newFullPath);
+                await fsp.mkdir(newLocalPath, { recursive: true });
+            } else if (storage.type === 'webdav' && storage.createDirectory) {
+                await storage.createDirectory(newFullPath);
+            }
+        }
 
         res.json(result);
     } catch (error) {
