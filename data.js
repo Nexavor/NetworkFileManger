@@ -1,5 +1,3 @@
-// data.js
-
 const db = require('./database.js');
 const crypto = require('crypto');
 const path = require('path');
@@ -294,7 +292,7 @@ function getAllFolders(userId) {
 // **重构**: 移动单个项目（文件或文件夹）的核心逻辑
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     console.log(`[DEBUG] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标文件夹 ID ${targetFolderId}`);
-    const { resolutions = {} } = options;
+    const { resolutions = {}, pathPrefix = '' } = options;
     
     const sourceItem = (await getItemsByIds([itemId], userId))[0];
     if (!sourceItem) {
@@ -302,19 +300,20 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         throw new Error(`找不到来源项目 ID: ${itemId}`);
     }
     
+    const currentPath = path.join(pathPrefix, sourceItem.name).replace(/\\/g, '/');
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
-    const resolutionAction = resolutions[sourceItem.name] || (existingItemInTarget ? 'skip_default' : 'move');
-    console.log(`[DEBUG] moveItem: 项目 "${sourceItem.name}" 的解决策略是: ${resolutionAction}`);
+    const resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
+    console.log(`[DEBUG] moveItem: 项目 "${currentPath}" 的解决策略是: ${resolutionAction}`);
 
     switch (resolutionAction) {
         case 'skip':
         case 'skip_default':
-            console.log(`[DEBUG] moveItem: 跳过项目 "${sourceItem.name}"。`);
+            console.log(`[DEBUG] moveItem: 跳过项目 "${currentPath}"。`);
             return false;
 
         case 'rename':
             const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
-            console.log(`[DEBUG] moveItem: 重命名项目 "${sourceItem.name}" 为 "${newName}" 并移动。`);
+            console.log(`[DEBUG] moveItem: 重命名项目 "${currentPath}" 为 "${newName}" 并移动。`);
             if (itemType === 'folder') {
                 await renameFolder(itemId, newName, userId);
                 await moveItems([], [itemId], targetFolderId, userId);
@@ -325,7 +324,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
 
         case 'overwrite':
             if (!existingItemInTarget) {
-                console.warn(`[DEBUG] moveItem: 尝试覆盖但目标位置不存在项目 "${sourceItem.name}"。`);
+                console.warn(`[DEBUG] moveItem: 尝试覆盖但目标位置不存在项目 "${currentPath}"。`);
                 return false; 
             }
             console.log(`[DEBUG] moveItem: 覆盖目标位置的项目 "${existingItemInTarget.name}" (ID: ${existingItemInTarget.id})。`);
@@ -346,7 +345,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
 
             for (const child of children) {
                 console.log(`[DEBUG] moveItem: -> 正在递归移动子项目 "${child.name}" (ID: ${child.id})`);
-                const childMoved = await moveItem(child.id, child.type, existingItemInTarget.id, userId, options);
+                const childMoved = await moveItem(child.id, child.type, existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
                 if (!childMoved) {
                     allChildrenMoved = false;
                 }
@@ -363,7 +362,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             return true;
 
         default: // 'move'
-            console.log(`[DEBUG] moveItem: 直接移动项目 "${sourceItem.name}"。`);
+            console.log(`[DEBUG] moveItem: 直接移动项目 "${currentPath}"。`);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
             return true;
     }
