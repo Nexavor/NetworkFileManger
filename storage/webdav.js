@@ -150,4 +150,4 @@ async function getUrl(file_id, userId) {
     return client.getFileDownloadLink(path.posix.join('/', file_id));
 }
 
-module.exports = { upload, remove, getUrl, stream, resetClient, type: 'webdav' };
+module.exports = { upload, remove, getUrl, stream, resetClient, getClient, type: 'webdav' };
