@@ -551,6 +551,15 @@ app.post('/api/move', requireLogin, async (req, res) => {
         const { itemIds, targetFolderId, resolutions = {} } = req.body;
         const userId = req.session.userId;
 
+        // --- *** 调试日志 开始 *** ---
+        console.log('--- [DEBUG] /api/move: 收到移动请求 ---');
+        console.log(`[DEBUG] User ID: ${userId}`);
+        console.log(`[DEBUG] Target Folder ID: ${targetFolderId}`);
+        console.log('[DEBUG] Item IDs:', itemIds);
+        console.log('[DEBUG] Resolutions:', resolutions);
+        console.log('--- [DEBUG] /api/move: 请求内容结束 ---');
+        // --- *** 调试日志 结束 *** ---
+
         if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0 || !targetFolderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
