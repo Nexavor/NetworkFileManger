@@ -400,13 +400,24 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         let result;
 
         if (mode === 'edit' && fileId) {
-             const filesToUpdate = await data.getFilesByIds([fileId], userId);
+            const filesToUpdate = await data.getFilesByIds([fileId], userId);
             if (filesToUpdate.length > 0) {
                 const originalFile = filesToUpdate[0];
+
+                // *** START FIX ***
+                // Check if the filename has changed and if the new name causes a conflict.
+                if (fileName !== originalFile.fileName) {
+                    const conflict = await data.checkFullConflict(fileName, originalFile.folder_id, userId);
+                    if (conflict) {
+                        // Clean up temp file before returning error
+                        await fsp.unlink(tempFilePath).catch(err => console.error(`无法删除临时档: ${tempFilePath}`, err));
+                        return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
+                    }
+                }
+                // *** END FIX ***
+                
                 await data.unifiedDelete(originalFile.id, 'file', userId);
-                // --- *** 关键修正 开始 *** ---
                 result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, originalFile.folder_id);
-                // --- *** 关键修正 结束 *** ---
             } else {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
             }
