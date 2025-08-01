@@ -972,7 +972,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 let fileOverwriteList = [];
                 let folderMergeList = [];
                 let finalItemsToMove = [...itemsToMoveWithDetails];
-                // *** 新增：用于追踪使用者选择跳过的项目 ***
                 const skippedFolderNames = new Set();
                 const skippedFileNames = new Set();
 
@@ -983,9 +982,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (action === 'merge') {
                             folderMergeList.push(folderName);
                         } else if (action === 'skip') {
-                            // 只记录被跳过的资料夹名称
                             skippedFolderNames.add(folderName);
-                        } else { // abort
+                        } else {
                             moveModal.style.display = 'none';
                             return;
                         }
@@ -1000,7 +998,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         return;
                     }
                     fileOverwriteList = result.overwriteList;
-                    // *** 新增：找出哪些档案被跳过了 ***
                     fileConflicts.forEach(name => {
                         if (!fileOverwriteList.includes(name)) {
                             skippedFileNames.add(name);
@@ -1008,7 +1005,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                 }
     
-                // *** 核心修正：基于跳过清单来过滤最终移动的项目 ***
                 finalItemsToMove = finalItemsToMove.filter(item => {
                     if (item.type === 'folder' && skippedFolderNames.has(item.name)) {
                         return false;
@@ -1021,12 +1017,12 @@ document.addEventListener('DOMContentLoaded', () => {
     
                 if (finalItemsToMove.length === 0) {
                     moveModal.style.display = 'none';
-                    showNotification('没有项目被移动。', 'success');
+                    showNotification('所有冲突项目均已跳过，没有文件被移动。', 'info');
                     loadFolderContents(currentFolderId);
                     return;
                 }
     
-                await axios.post('/api/move', {
+                const moveResponse = await axios.post('/api/move', {
                     items: finalItemsToMove,
                     targetFolderId: moveTargetFolderId,
                     overwriteFileNames: fileOverwriteList,
@@ -1035,7 +1031,10 @@ document.addEventListener('DOMContentLoaded', () => {
     
                 moveModal.style.display = 'none';
                 loadFolderContents(currentFolderId);
-                showNotification('项目移动成功！', 'success');
+                // --- *** 关键修正 开始 *** ---
+                // 使用后端返回的详细讯息
+                showNotification(moveResponse.data.message, 'success');
+                // --- *** 关键修正 结束 *** ---
     
             } catch (error) {
                 alert('操作失败：' + (error.response?.data?.message || '服务器错误'));
