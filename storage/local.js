@@ -143,6 +143,7 @@ async function move(oldPath, newPath, options = {}) {
         await removeEmptyDirs(path.dirname(oldPath));
         return { success: true };
     } catch (error) {
+        // The error from data.js is sufficient. This log is for server-side debugging.
         console.error(`本地移动失败 从 ${oldPath} 到 ${newPath}:`, error);
         return { success: false, error };
     }
