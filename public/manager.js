@@ -117,7 +117,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!isDrag) {
                     uploadModal.style.display = 'none';
                 }
-                showNotification('上传成功！', 'success');
+                if (res.data.skippedAll) {
+                    showNotification('没有文件被上传，所有冲突的项目都已被跳过。', 'info');
+                } else {
+                    showNotification('上传成功！', 'success');
+                }
                 fileInput.value = '';
                 folderInput.value = '';
                 loadFolderContents(currentFolderId);
@@ -686,7 +690,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const lastPart = pathParts.filter(p => p).pop();
             let folderId = parseInt(lastPart, 10);
             if (isNaN(folderId)) {
-                folderId = 1; 
+                const rootFolderLink = document.querySelector('.breadcrumb a');
+                folderId = rootFolderLink ? parseInt(rootFolderLink.dataset.folderId) : 1;
             }
             loadFolderContents(folderId);
         }
@@ -912,7 +917,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 moveModal.style.display = 'flex';
                 moveTargetFolderId = null;
                 confirmMoveBtn.disabled = true;
-            } catch { alert('无法获取资料夹列表。'); }
+            } catch { alert('无法获取资料夾列表。'); }
         });
     }
     if (folderTree) {
