@@ -431,7 +431,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         } else if (mode === 'create' && folderId) {
              const conflict = await data.checkFullConflict(fileName, folderId, userId);
             if (conflict) {
-                return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
+                return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
             }
             result = await storage.upload(tempFilePath, fileName, 'text/plain', userId, folderId);
         } else {
@@ -604,6 +604,7 @@ app.get('/api/folders', requireLogin, async (req, res) => {
     res.json(folders);
 });
 
+// --- BUG 2 修复：修改 /api/move 路由以提供更准确的回报 ---
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
         const { items, targetFolderId, overwriteFileNames, mergeFolderNames } = req.body;
