@@ -604,10 +604,9 @@ app.get('/api/folders', requireLogin, async (req, res) => {
     res.json(folders);
 });
 
-// --- BUG 2 修复：修改 /api/move 路由以提供更准确的回报 ---
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
-        const { items, targetFolderId, overwriteFileNames, mergeFolderNames, skippedFileNames = [], skippedFolderNames = [] } = req.body;
+        const { items, targetFolderId, overwriteFileNames, mergeFolderNames } = req.body;
         const userId = req.session.userId;
 
         if (!items || !Array.isArray(items) || !targetFolderId) {
@@ -619,7 +618,7 @@ app.post('/api/move', requireLogin, async (req, res) => {
             if (!item.id || !item.name || !item.type) {
                  return res.status(400).json({ success: false, message: `请求中包含无效的项目资料: ${JSON.stringify(item)}` });
             }
-            const result = await data.moveItem(item, targetFolderId, userId, overwriteFileNames, mergeFolderNames, skippedFileNames, skippedFolderNames);
+            const result = await data.moveItem(item, targetFolderId, userId, overwriteFileNames, mergeFolderNames);
             if (result && result.skipped) {
                 skippedCount++;
             }
