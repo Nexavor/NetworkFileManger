@@ -446,6 +446,48 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    async function handleConflict(conflicts, operation = '移动') {
+        let overwriteList = [];
+        let i = 0;
+    
+        function showNextConflict() {
+            return new Promise((resolve) => {
+                if (i >= conflicts.length) {
+                    resolve({ action: 'finish', overwriteList });
+                    return;
+                }
+    
+                conflictFileName.textContent = conflicts[i];
+                conflictModal.style.display = 'flex';
+    
+                conflictOptions.onclick = (e) => {
+                    const action = e.target.dataset.action;
+                    if (!action) return;
+    
+                    conflictModal.style.display = 'none';
+                    conflictOptions.onclick = null; 
+    
+                    if (action === 'overwrite') {
+                        overwriteList.push(conflicts[i]);
+                        i++;
+                        resolve(showNextConflict());
+                    } else if (action === 'overwrite_all') {
+                        overwriteList = [...overwriteList, ...conflicts.slice(i)];
+                        resolve({ action: 'finish', overwriteList });
+                    } else if (action === 'skip') {
+                        i++;
+                        resolve(showNextConflict());
+                    } else if (action === 'skip_all') {
+                         resolve({ action: 'finish', overwriteList: overwriteList });
+                    } else if (action === 'abort') {
+                        resolve({ action: 'abort' });
+                    }
+                };
+            });
+        }
+        return showNextConflict();
+    }
+
     const checkScreenWidthAndCollapse = () => {
         if (window.innerWidth <= 768) {
             if (actionBar && !actionBar.classList.contains('collapsed')) {
@@ -908,58 +950,18 @@ document.addEventListener('DOMContentLoaded', () => {
             confirmMoveBtn.disabled = false;
         });
     }
-
-    async function handleConflict(conflicts, operation = '移动') {
-        let overwriteList = [];
-        let i = 0;
     
-        function showNextConflict() {
-            return new Promise((resolve) => {
-                if (i >= conflicts.length) {
-                    resolve({ action: 'finish', overwriteList });
-                    return;
-                }
-    
-                conflictFileName.textContent = conflicts[i];
-                conflictModal.style.display = 'flex';
-    
-                conflictOptions.onclick = (e) => {
-                    const action = e.target.dataset.action;
-                    if (!action) return;
-    
-                    conflictModal.style.display = 'none';
-                    conflictOptions.onclick = null; 
-    
-                    if (action === 'overwrite') {
-                        overwriteList.push(conflicts[i]);
-                        i++;
-                        resolve(showNextConflict());
-                    } else if (action === 'overwrite_all') {
-                        overwriteList = [...overwriteList, ...conflicts.slice(i)];
-                        resolve({ action: 'finish', overwriteList });
-                    } else if (action === 'skip') {
-                        i++;
-                        resolve(showNextConflict());
-                    } else if (action === 'skip_all') {
-                         resolve({ action: 'finish', overwriteList: overwriteList });
-                    } else if (action === 'abort') {
-                        resolve({ action: 'abort' });
-                    }
-                };
-            });
-        }
-        return showNextConflict();
-    }
-
+    // --- *** 关键修正 开始 *** ---
     if (confirmMoveBtn) {
         confirmMoveBtn.addEventListener('click', async () => {
             if (!moveTargetFolderId) return;
     
-            const itemIds = Array.from(selectedItems.keys()).map(id => parseInt(id, 10));
+            const initialItemIds = Array.from(selectedItems.keys()).map(id => parseInt(id, 10));
+            const originalItemCount = selectedItems.size;
             
             try {
                 const conflictCheckRes = await axios.post('/api/check-move-conflict', {
-                    itemIds: itemIds,
+                    itemIds: initialItemIds,
                     targetFolderId: moveTargetFolderId
                 });
     
@@ -967,8 +969,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 let fileOverwriteList = [];
                 let folderMergeList = [];
-                const itemsToMove = Array.from(selectedItems.values());
-                let finalItemIds = [...itemIds];
+                let finalItemIds = [...initialItemIds]; 
     
                 if (folderConflicts.length > 0) {
                     for (const folderName of folderConflicts) {
@@ -976,9 +977,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (action === 'merge') {
                             folderMergeList.push(folderName);
                         } else if (action === 'skip') {
-                            const folderToSkip = itemsToMove.find(item => item.name === folderName && item.type === 'folder');
-                            const idToSkip = Array.from(selectedItems.keys())[itemsToMove.indexOf(folderToSkip)];
-                            finalItemIds = finalItemIds.filter(id => id !== parseInt(idToSkip));
+                            const folderToSkip = Array.from(selectedItems.entries()).find(([id, item]) => item.name === folderName && item.type === 'folder');
+                            if(folderToSkip) {
+                                const idToSkip = parseInt(folderToSkip[0]);
+                                finalItemIds = finalItemIds.filter(id => id !== idToSkip);
+                            }
                         } else { // abort
                             moveModal.style.display = 'none';
                             return;
@@ -994,44 +997,42 @@ document.addEventListener('DOMContentLoaded', () => {
                         return;
                     }
                     fileOverwriteList = result.overwriteList;
-                }
-    
-                const finalFileItemsToMove = itemsToMove.filter(item => finalItemIds.includes(parseInt(Array.from(selectedItems.keys())[itemsToMove.indexOf(item)])));
-    
-                finalItemIds = finalFileItemsToMove
-                    .filter(item => {
-                        if (item.type === 'file' && fileConflicts.includes(item.name) && !fileOverwriteList.includes(item.name)) {
-                            return false;
+
+                    const filesToSkip = fileConflicts.filter(name => !fileOverwriteList.includes(name));
+                    filesToSkip.forEach(nameToSkip => {
+                         const fileToSkip = Array.from(selectedItems.entries()).find(([id, item]) => item.name === nameToSkip && item.type === 'file');
+                         if (fileToSkip) {
+                           const idToSkip = parseInt(fileToSkip[0]);
+                           finalItemIds = finalItemIds.filter(id => id !== idToSkip);
                         }
-                        return true;
-                    })
-                    .map(item => Array.from(selectedItems.keys())[itemsToMove.indexOf(item)])
-                    .map(id => parseInt(id));
+                    });
+                }
     
                 if (finalItemIds.length === 0) {
                     moveModal.style.display = 'none';
-                    showNotification('没有项目被移动。', 'success');
+                    showNotification('所有选定项目均因冲突而被跳过。', 'success');
                     loadFolderContents(currentFolderId);
                     return;
                 }
     
-                await axios.post('/api/move', {
+                const response = await axios.post('/api/move', {
                     itemIds: finalItemIds,
                     targetFolderId: moveTargetFolderId,
                     overwriteList: fileOverwriteList,
-                    mergeList: folderMergeList
+                    mergeList: folderMergeList,
+                    originalItemCount: originalItemCount
                 });
     
                 moveModal.style.display = 'none';
                 loadFolderContents(currentFolderId);
-                showNotification('项目移动成功！', 'success');
+                showNotification(response.data.message, 'success');
     
             } catch (error) {
                 alert('操作失败：' + (error.response?.data?.message || '服务器错误'));
             }
         });
     }
-    
+    // --- *** 关键修正 结束 *** ---
 
     if (shareBtn && shareModal) {
         const shareOptions = document.getElementById('shareOptions');
