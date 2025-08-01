@@ -604,42 +604,43 @@ app.get('/api/folders', requireLogin, async (req, res) => {
     res.json(folders);
 });
 
+// =========================================================
+// ================ 【核心修复】API 路由修改 ================
+// =========================================================
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
         const { items, targetFolderId, overwriteFileNames, mergeFolderNames } = req.body;
         const userId = req.session.userId;
+        
+        // 将冲突处理策略打包成一个物件
+        const moveOptions = { 
+            overwriteFileNames: overwriteFileNames || [], 
+            mergeFolderNames: mergeFolderNames || []
+        };
 
         if (!items || !Array.isArray(items) || !targetFolderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
         
-        let skippedCount = 0;
         for (const item of items) {
             if (!item.id || !item.name || !item.type) {
                  return res.status(400).json({ success: false, message: `请求中包含无效的项目资料: ${JSON.stringify(item)}` });
             }
-            const result = await data.moveItem(item, targetFolderId, userId, overwriteFileNames, mergeFolderNames);
-            if (result && result.skipped) {
-                skippedCount++;
-            }
+            // 将 item 和打包后的 options 一起传下去
+            await data.moveItem(item, targetFolderId, userId, moveOptions);
         }
         
-        let message = "移动成功";
-        if (skippedCount > 0) {
-            const total = items.length;
-            if (skippedCount === total) {
-                message = `所有 ${total} 个项目都因名称冲突而被跳过。`;
-            } else {
-                message = `移动完成，有 ${skippedCount} 个同名项目被跳过。`;
-            }
-        }
-        res.json({ success: true, message: message });
+        res.json({ success: true, message: "移动操作已完成。" });
 
     } catch (error) { 
         console.error("移动操作失败:", error);
         res.status(500).json({ success: false, message: `移动失败：${error.message}` }); 
     }
 });
+// =========================================================
+// =========================================================
+// =========================================================
+
 
 // 统一的删除处理器
 async function unifiedDeleteHandler(req, res) {
