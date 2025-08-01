@@ -1,3 +1,5 @@
+// data.js
+
 const db = require('./database.js');
 const crypto = require('crypto');
 const path = require('path');
@@ -291,26 +293,28 @@ function getAllFolders(userId) {
 
 // **重构**: 移动单个项目（文件或文件夹）的核心逻辑
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
+    console.log(`[DEBUG] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标文件夹 ID ${targetFolderId}`);
     const { resolutions = {} } = options;
     
     const sourceItem = (await getItemsByIds([itemId], userId))[0];
     if (!sourceItem) {
+        console.error(`[DEBUG] moveItem: 找不到来源项目 ID: ${itemId}`);
         throw new Error(`找不到来源项目 ID: ${itemId}`);
     }
     
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
-    // 决定最终操作：优先使用客户端传来的解决方案，否则根据是否存在冲突来决定是默认跳过还是直接移动
     const resolutionAction = resolutions[sourceItem.name] || (existingItemInTarget ? 'skip_default' : 'move');
+    console.log(`[DEBUG] moveItem: 项目 "${sourceItem.name}" 的解决策略是: ${resolutionAction}`);
 
     switch (resolutionAction) {
         case 'skip':
         case 'skip_default':
-            // 跳过操作，返回 false 表示未移动
+            console.log(`[DEBUG] moveItem: 跳过项目 "${sourceItem.name}"。`);
             return false;
 
         case 'rename':
-            // 重命名并移动
             const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
+            console.log(`[DEBUG] moveItem: 重命名项目 "${sourceItem.name}" 为 "${newName}" 并移动。`);
             if (itemType === 'folder') {
                 await renameFolder(itemId, newName, userId);
                 await moveItems([], [itemId], targetFolderId, userId);
@@ -320,39 +324,46 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             return true;
 
         case 'overwrite':
-            // 覆盖操作
-            if (!existingItemInTarget) return false; // 安全检查
+            if (!existingItemInTarget) {
+                console.warn(`[DEBUG] moveItem: 尝试覆盖但目标位置不存在项目 "${sourceItem.name}"。`);
+                return false; 
+            }
+            console.log(`[DEBUG] moveItem: 覆盖目标位置的项目 "${existingItemInTarget.name}" (ID: ${existingItemInTarget.id})。`);
             await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
             return true;
 
         case 'merge':
-            // 合并操作，仅当来源和目标都是文件夹时有效
             if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') {
+                console.warn(`[DEBUG] moveItem: 尝试合并但条件不满足（来源或目标不是文件夹）。`);
                 return false;
             }
-
+            console.log(`[DEBUG] moveItem: 开始合并文件夹 ID ${itemId} 到文件夹 ID ${existingItemInTarget.id}`);
+            
             const children = await getChildrenOfFolder(itemId, userId);
-            let allChildrenMoved = true; // 标记所有子项是否都成功移动
+            console.log(`[DEBUG] moveItem: 在源文件夹 ID ${itemId} 中找到 ${children.length} 个子项目。`);
+            let allChildrenMoved = true;
 
             for (const child of children) {
-                // 递归调用 moveItem 来处理子项，目标是已存在的目标文件夹
+                console.log(`[DEBUG] moveItem: -> 正在递归移动子项目 "${child.name}" (ID: ${child.id})`);
                 const childMoved = await moveItem(child.id, child.type, existingItemInTarget.id, userId, options);
                 if (!childMoved) {
-                    allChildrenMoved = false; // 任何一个子项被跳过，则标记为 false
+                    allChildrenMoved = false;
                 }
+                console.log(`[DEBUG] moveItem: -> 子项目 "${child.name}" 移动结果: ${childMoved ? '成功' : '跳过'}`);
             }
             
-            // 只有当所有子项都被成功移走（源文件夹已空）时，才删除源文件夹
             if (allChildrenMoved) {
+                console.log(`[DEBUG] moveItem: 所有子项目都已成功移动，删除空的源文件夹 ID ${itemId}`);
                 await unifiedDelete(itemId, 'folder', userId);
+            } else {
+                console.log(`[DEBUG] moveItem: 源文件夹 ID ${itemId} 中有子项目被跳过，不删除该文件夹。`);
             }
             
-            // **关键修正**: 只要启动了合并流程，就认为顶层操作已处理，返回 true
             return true;
 
         default: // 'move'
-            // 默认的移动操作
+            console.log(`[DEBUG] moveItem: 直接移动项目 "${sourceItem.name}"。`);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
             return true;
     }
