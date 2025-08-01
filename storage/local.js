@@ -20,7 +20,7 @@ setup();
 async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
     const userDir = path.join(UPLOAD_DIR, String(userId));
     
-    // 获取目标资料夹的完整相对路径
+    // 获取目标资料夾的完整相对路径
     const folderPathParts = await data.getFolderPath(folderId, userId);
     // 从路径阵列建立相对于 userDir 的路径 (忽略根目录 '/')
     const relativeFolderPath = path.join(...folderPathParts.slice(1).map(p => p.name)); 
