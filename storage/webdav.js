@@ -125,7 +125,6 @@ async function remove(files, folders, userId) {
         } catch (error) {
             if (!(error.response && error.response.status === 404)) {
                 const errorMessage = `删除 WebDAV ${item.type} [${item.path}] 失败: ${error.message}`;
-                console.error(errorMessage);
                 results.errors.push(errorMessage);
                 results.success = false;
             }
@@ -157,7 +156,6 @@ async function createDirectory(fullPath) {
         // 确保路径以斜线开头且规范化
         const remotePath = path.posix.join('/', fullPath);
         if (await client.exists(remotePath)) {
-            console.log(`WebDAV directory already exists: ${remotePath}`);
             return true;
         }
         await client.createDirectory(remotePath, { recursive: true });
@@ -165,10 +163,8 @@ async function createDirectory(fullPath) {
     } catch (e) {
         // 忽略目录已存在的错误 (405 Method Not Allowed 是一个常见响应)
         if (e.response && (e.response.status === 405 || e.response.status === 501)) {
-            console.warn(`无法创建目录 (可能已存在或方法不允许): ${fullPath}`);
             return true;
         }
-        console.error(`建立 WebDAV 目录 '${fullPath}' 失败:`, e);
         throw new Error(`建立 WebDAV 目录失败: ${e.message}`);
     }
 }
