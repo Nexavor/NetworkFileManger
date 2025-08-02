@@ -42,7 +42,6 @@ async function createRootFolder(userId) {
         const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
         db.run(sql, ['/', null, userId], function (err) {
             if (err) return reject(err);
-            console.log(`已为新管理员 (ID: ${userId}) 建立根目录。`);
             resolve();
         });
     });
@@ -61,10 +60,8 @@ async function resetOrCreateAdmin() {
     }
 
     try {
-        console.log('正在产生安全的密码杂凑值...');
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(newPassword, salt);
-        console.log('杂凑值已产生。');
 
         const existingUser = await findUser(ADMIN_USERNAME);
 
@@ -76,7 +73,6 @@ async function resetOrCreateAdmin() {
                     console.error('\x1b[31m%s\x1b[0m', '更新密码时发生资料库错误:', err.message);
                 } else {
                     console.log('\x1b[32m%s\x1b[0m', `✅ 成功！使用者 "${ADMIN_USERNAME}" 的密码已被重设。`);
-                    console.log('现在您可以重新启动主程式并使用新密码登入。');
                 }
                 rl.close();
                 db.close();
@@ -92,13 +88,11 @@ async function resetOrCreateAdmin() {
                     return;
                 }
                 const newUserId = this.lastID;
-                console.log(`成功建立管理员帐号 "${ADMIN_USERNAME}" (ID: ${newUserId})。`);
                 
                 // 为新管理员建立根目录
                 await createRootFolder(newUserId);
                 
                 console.log('\x1b[32m%s\x1b[0m', `✅ 成功！管理员帐号已建立并设定好密码。`);
-                console.log('现在您可以重新启动主程式并使用新密码登入。');
                 rl.close();
                 db.close();
             });
