@@ -30,7 +30,7 @@ async function cleanupTempDir() {
             try {
                 await fsp.unlink(path.join(TMP_DIR, file));
             } catch (err) {
-                console.warn(`清理临时文件时发生非致命错误: ${file}`, err.message);
+                // 在生产环境中，这类非致命警告可以被移除或记录到专门的日志文件
             }
         }
     } catch (error) {
@@ -289,7 +289,6 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
 const uploadMiddleware = (req, res, next) => {
     upload.array('files')(req, res, (err) => {
         if (err) {
-            console.error("Multer upload error:", err);
             if (err.code === 'LIMIT_FILE_SIZE') {
                 return res.status(400).json({ success: false, message: '文件大小超出限制。' });
             }
@@ -335,14 +334,12 @@ app.post('/upload', requireLogin, async (req, res, next) => {
             const tempFilePath = file.path;
             const relativePath = relativePaths[i];
             
-            // 默认行为是 'upload'，如果该路径在 resolutions 中，则使用指定的动作
             const action = resolutions[relativePath] || 'upload';
 
             try {
                 if (action === 'skip') {
-                    console.log(`Skipping file "${relativePath}" as per user request.`);
                     skippedCount++;
-                    continue; // 直接跳到下一个档案
+                    continue;
                 }
 
                 const pathParts = (relativePath || file.originalname).split('/');
@@ -361,7 +358,6 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                 } else {
                     const conflict = await data.findItemInFolder(fileName, targetFolderId, userId);
                     if (conflict) {
-                        console.log(`Skipping file "${relativePath}" due to unresolved conflict.`);
                         skippedCount++;
                         continue;
                     }
@@ -372,7 +368,7 @@ app.post('/upload', requireLogin, async (req, res, next) => {
 
             } finally {
                 if (fs.existsSync(tempFilePath)) {
-                    await fsp.unlink(tempFilePath).catch(err => console.error(`无法删除临时档: ${tempFilePath}`, err));
+                    await fsp.unlink(tempFilePath).catch(err => {});
                 }
             }
         }
@@ -382,10 +378,9 @@ app.post('/upload', requireLogin, async (req, res, next) => {
             res.json({ success: true, results });
         }
     } catch (error) {
-        console.error("Upload processing error:", error);
         for (const file of req.files) {
             if (fs.existsSync(file.path)) {
-                await fsp.unlink(file.path).catch(err => console.error(`无法删除错误处理中的临时档: ${file.path}`, err));
+                await fsp.unlink(file.path).catch(err => {});
             }
         }
         res.status(500).json({ success: false, message: '处理上传时发生错误: ' + error.message });
@@ -414,7 +409,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                 if (fileName !== originalFile.fileName) {
                     const conflict = await data.checkFullConflict(fileName, originalFile.folder_id, userId);
                     if (conflict) {
-                        await fsp.unlink(tempFilePath).catch(err => console.error(`无法删除临时档: ${tempFilePath}`, err));
+                        await fsp.unlink(tempFilePath).catch(err => {});
                         return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
                     }
                 }
@@ -435,11 +430,10 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         }
         res.json({ success: true, fileId: result.fileId });
     } catch (error) {
-        console.error("Text file error:", error);
         res.status(500).json({ success: false, message: '伺服器内部错误' });
     } finally {
         if (fs.existsSync(tempFilePath)) {
-            await fsp.unlink(tempFilePath).catch(err => console.error(`无法删除文字档的临时档: ${tempFilePath}`, err));
+            await fsp.unlink(tempFilePath).catch(err => {});
         }
     }
 });
@@ -487,7 +481,6 @@ app.post('/api/check-existence', requireLogin, async (req, res) => {
         );
         res.json({ success: true, files: existenceChecks });
     } catch (error) {
-        console.error("Existence check error:", error);
         res.status(500).json({ success: false, message: "检查档案是否存在时发生内部错误。" });
     }
 });
@@ -511,7 +504,6 @@ app.post('/api/check-move-conflict', requireLogin, async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Conflict check error:", error);
         res.status(500).json({ success: false, message: '检查名称冲突时出错: ' + error.message });
     }
 });
@@ -540,7 +532,6 @@ app.get('/api/folder/:id', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: '读取资料夹内容失败。' }); }
 });
 
-// --- *** 关键修正：重构 /api/folder 端点 *** ---
 app.post('/api/folder', requireLogin, async (req, res) => {
     const { name, parentId } = req.body;
     const userId = req.session.userId;
@@ -611,7 +602,6 @@ app.post('/api/move', requireLogin, async (req, res) => {
                 }
 
             } catch (err) {
-                console.error(`移动项目 ID ${itemId} 时发生错误:`, err);
                 errors.push(err.message);
             }
         }
@@ -630,7 +620,6 @@ app.post('/api/move', requireLogin, async (req, res) => {
         res.json({ success: errors.length === 0, message: message });
 
     } catch (error) { 
-        console.error("Move API error:", error);
         res.status(500).json({ success: false, message: '移动失败：' + error.message }); 
     }
 });
@@ -715,7 +704,6 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
         }
 
     } catch (error) { 
-        console.error("Download proxy error", error);
         res.status(500).send('下载代理失败: ' + error.message); 
     }
 });
@@ -743,7 +731,6 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
             } else { res.status(404).send('无法获取文件链接'); }
         }
     } catch (error) { 
-        console.error("File content error:", error);
         res.status(500).send('无法获取文件内容'); 
     }
 });
@@ -791,7 +778,6 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
         }
         await archive.finalize();
     } catch (error) {
-        console.error("Archive download error:", error);
         res.status(500).send('压缩档案时发生错误');
     }
 });
@@ -813,7 +799,6 @@ app.post('/share', requireLogin, async (req, res) => {
             res.status(404).json(result); 
         }
     } catch (error) {
-        console.error("Share link creation error:", error);
         res.status(500).json({ success: false, message: '在伺服器上建立分享连结时发生错误。' });
     }
 });
@@ -871,7 +856,7 @@ app.post('/api/scan/local', requireAdmin, async (req, res) => {
                         log.push({ message: `已存在: ${relativePath}，跳过。`, type: 'info' });
                     } else {
                         const stats = await fsp.stat(fullPath);
-                        const folderPath = path.dirname(relativePath);
+                        const folderPath = path.dirname(relativePath).replace(/\\/g, '/');
                         const folderId = await data.findOrCreateFolderByPath(folderPath, userId);
                         const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
                         await data.addFile({
@@ -890,7 +875,6 @@ app.post('/api/scan/local', requireAdmin, async (req, res) => {
         await scanDirectory(userUploadDir);
         res.json({ success: true, log });
     } catch (error) {
-        console.error('Local scan error:', error);
         log.push({ message: `扫描本地文件时出错: ${error.message}`, type: 'error' });
         res.status(500).json({ success: false, message: error.message, log });
     }
@@ -1002,7 +986,6 @@ app.get('/share/view/folder/:token', async (req, res) => {
 
 function handleStream(stream, res) {
     stream.on('error', (err) => {
-        console.error('Stream error:', err);
         if (!res.headersSent) {
             res.status(500).send('读取文件流时发生错误');
         }
