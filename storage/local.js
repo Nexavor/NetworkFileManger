@@ -10,7 +10,7 @@ async function setup() {
     try {
         await fs.mkdir(UPLOAD_DIR, { recursive: true });
     } catch (e) {
-        console.error("无法建立上传目录:", e);
+        // 在生产环境中，可以记录到专门的日志文件
     }
 }
 setup();
@@ -68,7 +68,6 @@ async function remove(files, folders, userId) {
             }
         } catch (error) {
             const errorMessage = `删除本地文件 [${file.file_id}] 失败: ${error.message}`;
-            console.error(errorMessage);
             results.errors.push(errorMessage);
             results.success = false;
         }
@@ -85,7 +84,6 @@ async function remove(files, folders, userId) {
             }
         } catch (error) {
             const errorMessage = `删除本地资料夹 [${folder.path}] 失败: ${error.message}`;
-            console.error(errorMessage);
             results.errors.push(errorMessage);
             results.success = false;
         }
@@ -125,7 +123,6 @@ async function removeEmptyDirsRecursive(directoryPath, userBaseDir) {
     } catch (error) {
         // 初始的存在性检查应该能避免大多数 ENOENT 错误，
         // 但保留 catch 以处理其他潜在的文件系统问题（如权限错误）。
-        console.warn(`清理空目录时发生非预期的错误: ${directoryPath}`, error.message);
     }
 }
 
