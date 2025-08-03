@@ -10,13 +10,12 @@ const fs = require('fs');
 const fsp = require('fs').promises;
 const crypto = require('crypto');
 const db = require('./database.js'); 
-
 const data = require('./data.js');
 const storageManager = require('./storage'); 
 
 const app = express();
 
-// --- Temp File Directory and Cleanup ---
+// --- 暂存文件目录与清理 ---
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
 async function cleanupTempDir() {
@@ -52,13 +51,18 @@ app.use(session({
   cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }
 }));
 
+// --- *** 关键修正 开始 *** ---
+// 信任反向代理，让 req.protocol 能正确反映 https
+app.set('trust proxy', 1);
+// --- *** 关键修正 结束 *** ---
+
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// --- Middleware ---
+// --- 中介软体 ---
 const fixFileNameEncoding = (req, res, next) => {
     if (req.files) {
         req.files.forEach(file => {
@@ -80,7 +84,7 @@ function requireAdmin(req, res, next) {
     res.status(403).send('权限不足');
 }
 
-// --- Routes ---
+// --- 路由 ---
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views/login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views/register.html')));
 app.get('/editor', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/editor.html')));
@@ -146,7 +150,7 @@ app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 
 
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- API Endpoints ---
+// --- API 端点 ---
 app.post('/api/user/change-password', requireLogin, async (req, res) => {
     const { oldPassword, newPassword } = req.body;
     
@@ -823,7 +827,7 @@ app.post('/api/cancel-share', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: '取消分享失败' }); }
 });
 
-// --- Scanner Endpoints ---
+// --- 扫描器端点 ---
 app.post('/api/scan/local', requireAdmin, async (req, res) => {
     const { userId } = req.body;
     const log = [];
@@ -846,7 +850,7 @@ app.post('/api/scan/local', requireAdmin, async (req, res) => {
             for (const entry of entries) {
                 const fullPath = path.join(dir, entry.name);
                 const relativePath = path.relative(userUploadDir, fullPath).replace(/\\/g, '/');
-                const fileId = relativePath; // file_id is the relative path
+                const fileId = relativePath; // file_id 是相对路径
 
                 if (entry.isDirectory()) {
                     await scanDirectory(fullPath);
@@ -936,7 +940,7 @@ app.post('/api/scan/webdav', requireAdmin, async (req, res) => {
     }
 });
 
-// --- Share Routes ---
+// --- 分享路由 ---
 app.get('/share/view/file/:token', async (req, res) => {
     try {
         const token = req.params.token;
