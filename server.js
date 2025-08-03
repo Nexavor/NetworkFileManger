@@ -301,6 +301,12 @@ app.post('/upload', requireLogin, (req, res) => {
     const storage = storageManager.getStorage();
     const fields = {};
     const fileProcessingPromises = [];
+    
+    // --- **关键修正：建立一个 Promise 来等待 folderId 被解析** ---
+    let resolveFolderId;
+    const folderIdPromise = new Promise(resolve => {
+        resolveFolderId = resolve;
+    });
 
     req.busboy.on('field', (fieldname, val) => {
         if (fieldname === 'relativePaths') {
@@ -309,25 +315,32 @@ app.post('/upload', requireLogin, (req, res) => {
         } else {
             fields[fieldname] = val;
         }
+        // 当 folderId 被解析时，立即解决 Promise
+        if (fieldname === 'folderId') {
+            resolveFolderId(val);
+        }
     });
 
     req.busboy.on('file', (fieldname, fileStream, fileInfo) => {
-        // busboy 会自动处理文件名编码
         const { filename, mimeType } = fileInfo;
         
         const filePromise = (async () => {
-            // 等待所有字段都被解析
-            await new Promise(resolve => setImmediate(resolve));
-            
-            const initialFolderId = parseInt(fields.folderId, 10);
+            // 等待 folderId 被解析
+            const initialFolderIdStr = await folderIdPromise;
+            if (!initialFolderIdStr) {
+                throw new Error("请求中缺少 folderId。");
+            }
+            const initialFolderId = parseInt(initialFolderIdStr, 10);
+
+            // 其余的字段现在应该是可用的了
             const resolutions = fields.resolutions ? JSON.parse(fields.resolutions) : {};
             const relativePaths = fields.relativePaths || [];
             
-            // 找到此文件对应的相对路径
             const relativePath = relativePaths.find(p => path.basename(p) === filename) || filename;
             const action = resolutions[relativePath] || 'upload';
 
             if (action === 'skip') {
+                fileStream.resume(); // 消耗掉流，防止请求挂起
                 return { skipped: true };
             }
 
@@ -347,6 +360,7 @@ app.post('/upload', requireLogin, (req, res) => {
             } else {
                 const conflict = await data.findItemInFolder(finalFileName, targetFolderId, userId);
                 if (conflict) {
+                    fileStream.resume(); // 消耗掉流
                     return { skipped: true };
                 }
             }
@@ -373,6 +387,14 @@ app.post('/upload', requireLogin, (req, res) => {
         }
     });
 
+    // 错误处理
+    req.busboy.on('error', (err) => {
+        console.error('Busboy error:', err);
+        if (!res.headersSent) {
+            res.status(500).json({ success: false, message: '解析上传数据时出错。' });
+        }
+    });
+
     req.pipe(req.busboy);
 });
 app.post('/api/text-file', requireLogin, async (req, res) => {
@@ -390,6 +412,9 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         await fsp.writeFile(tempFilePath, content, 'utf8');
         let result;
 
+        // **关键修正：为 upload 创建一个流**
+        const fileStream = fs.createReadStream(tempFilePath);
+        
         if (mode === 'edit' && fileId) {
             const filesToUpdate = await data.getFilesByIds([fileId], userId);
             if (filesToUpdate.length > 0) {
@@ -398,13 +423,11 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                 if (fileName !== originalFile.fileName) {
                     const conflict = await data.checkFullConflict(fileName, originalFile.folder_id, userId);
                     if (conflict) {
-                        await fsp.unlink(tempFilePath).catch(err => {});
                         return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
                     }
                 }
                 
                 await data.unifiedDelete(originalFile.message_id, 'file', userId);
-                const fileStream = fs.createReadStream(tempFilePath);
                 result = await storage.upload(fileStream, fileName, 'text/plain', userId, originalFile.folder_id);
             } else {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
@@ -414,7 +437,6 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
             if (conflict) {
                 return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
             }
-            const fileStream = fs.createReadStream(tempFilePath);
             result = await storage.upload(fileStream, fileName, 'text/plain', userId, folderId);
         } else {
             return res.status(400).json({ success: false, message: '请求参数无效' });
