@@ -16,8 +16,8 @@ async function setup() {
 setup();
 
 // **重构：上传逻辑**
-// 现在会根据 folderId 建立完整的目录结构
-async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
+// 现在接收一个 stream 而不是 tempFilePath
+async function upload(stream, fileName, mimetype, userId, folderId) {
     const userDir = path.join(UPLOAD_DIR, String(userId));
     
     // 获取目标资料夾的完整相对路径
@@ -32,24 +32,36 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
     const finalFilePath = path.join(finalFolderPath, fileName);
     const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/'); // 储存相对路径
 
-    // 从暂存位置移动档案到最终位置
-    await fs.rename(tempFilePath, finalFilePath);
-    
-    const stats = await fs.stat(finalFilePath);
-    const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
+    // --- 核心修改：使用流式写入 ---
+    const writeStream = fsSync.createWriteStream(finalFilePath);
+    stream.pipe(writeStream);
 
-    const dbResult = await data.addFile({
-        message_id: messageId,
-        fileName,
-        mimetype,
-        size: stats.size,
-        file_id: relativeFilePath, // **关键：现在储存的是相对路径**
-        thumb_file_id: null,
-        date: Date.now(),
-    }, folderId, userId, 'local');
+    return new Promise((resolve, reject) => {
+        writeStream.on('finish', async () => {
+            try {
+                const stats = await fs.stat(finalFilePath);
+                const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
 
-    return { success: true, message: '文件已储存至本地。', fileId: dbResult.fileId };
+                const dbResult = await data.addFile({
+                    message_id: messageId,
+                    fileName,
+                    mimetype,
+                    size: stats.size,
+                    file_id: relativeFilePath,
+                    thumb_file_id: null,
+                    date: Date.now(),
+                }, folderId, userId, 'local');
+
+                resolve({ success: true, message: '文件已储存至本地。', fileId: dbResult.fileId });
+            } catch (dbError) {
+                reject(dbError);
+            }
+        });
+        writeStream.on('error', reject);
+        stream.on('error', reject);
+    });
 }
+
 
 // **重构：删除逻辑**
 // 现在会删除实体档案，并清理空的父目录
