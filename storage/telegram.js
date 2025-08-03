@@ -6,19 +6,21 @@ const fs = require('fs'); // 引入 fs 模组
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 
-// 将 upload 函数的第一个参数从 fileBuffer 改为 tempFilePath
-async function upload(tempFilePath, fileName, mimetype, userId, folderId, caption = '') {
+// **重构：上传逻辑**
+// 将 upload 函数的第一个参数从 tempFilePath 改为 stream
+async function upload(stream, fileName, mimetype, userId, folderId, caption = '') {
   try {
     const formData = new FormData();
     formData.append('chat_id', process.env.CHANNEL_ID);
     formData.append('caption', caption || fileName);
     
-    // 从临时文件路径创建可读流并添加到表单中
-    const fileStream = fs.createReadStream(tempFilePath);
-    formData.append('document', fileStream, { filename: fileName });
+    // --- 核心修改：直接使用传入的 stream ---
+    formData.append('document', stream, { filename: fileName });
 
     const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
-        headers: formData.getHeaders() 
+        headers: formData.getHeaders(),
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
     });
 
     if (res.data.ok) {
