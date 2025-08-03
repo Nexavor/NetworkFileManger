@@ -9,9 +9,9 @@ const bcrypt = require('bcrypt');
 const fs = require('fs');
 const fsp = require('fs').promises;
 const crypto = require('crypto');
-const db = require('./database.js'); 
+const db = require('./database.js');
 const data = require('./data.js');
-const storageManager = require('./storage'); 
+const storageManager = require('./storage');
 
 const app = express();
 
@@ -113,8 +113,8 @@ app.post('/register', async (req, res) => {
     try {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-        const newUser = await data.createUser(username, hashedPassword); 
-        await data.createFolder('/', null, newUser.id); 
+        const newUser = await data.createUser(username, hashedPassword);
+        await data.createFolder('/', null, newUser.id);
         await fsp.mkdir(path.join(__dirname, 'data', 'uploads', String(newUser.id)), { recursive: true });
         res.redirect('/login');
     } catch (error) {
@@ -263,7 +263,7 @@ app.get('/api/admin/webdav', requireAdmin, (req, res) => {
 
 app.post('/api/admin/webdav', requireAdmin, (req, res) => {
     const { url, username, password } = req.body;
-    if (!url || !username) { 
+    if (!url || !username) {
         return res.status(400).json({ success: false, message: '缺少必要参数' });
     }
     const config = storageManager.readConfig();
@@ -282,7 +282,7 @@ app.post('/api/admin/webdav', requireAdmin, (req, res) => {
 
 app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
     const config = storageManager.readConfig();
-    config.webdav = {}; 
+    config.webdav = {};
     if (storageManager.writeConfig(config)) {
         res.json({ success: true, message: 'WebDAV 设定已删除' });
     } else {
@@ -518,12 +518,12 @@ app.get('/api/search', requireLogin, async (req, res) => {
         const query = req.query.q;
         if (!query) return res.status(400).json({ success: false, message: '需要提供搜寻关键字。' });
         
-        const contents = await data.searchItems(query, req.session.userId); 
+        const contents = await data.searchItems(query, req.session.userId);
         
         const path = [{ id: null, name: `搜寻结果: "${query}"` }];
         res.json({ contents, path });
-    } catch (error) { 
-        res.status(500).json({ success: false, message: '搜寻失败。' }); 
+    } catch (error) {
+        res.status(500).json({ success: false, message: '搜寻失败。' });
     }
 });
 
@@ -594,7 +594,7 @@ app.post('/api/move', requireLogin, async (req, res) => {
                 const items = await data.getItemsByIds([itemId], userId);
                 if (items.length === 0) {
                     totalSkipped++;
-                    continue; 
+                    continue;
                 }
                 
                 const item = items[0];
@@ -623,8 +623,8 @@ app.post('/api/move', requireLogin, async (req, res) => {
 
         res.json({ success: errors.length === 0, message: message });
 
-    } catch (error) { 
-        res.status(500).json({ success: false, message: '移动失败：' + error.message }); 
+    } catch (error) {
+        res.status(500).json({ success: false, message: '移动失败：' + error.message });
     }
 });
 
@@ -658,8 +658,8 @@ app.post('/rename', requireLogin, async (req, res) => {
             return res.status(400).json({ success: false, message: '无效的项目类型。'});
         }
         res.json(result);
-    } catch (error) { 
-        res.status(500).json({ success: false, message: '重命名失败: ' + error.message }); 
+    } catch (error) {
+        res.status(500).json({ success: false, message: '重命名失败: ' + error.message });
     }
 });
 
@@ -707,8 +707,8 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
             } else { res.status(404).send('无法获取文件链接'); }
         }
 
-    } catch (error) { 
-        res.status(500).send('下载代理失败: ' + error.message); 
+    } catch (error) {
+        res.status(500).send('下载代理失败: ' + error.message);
     }
 });
 
@@ -734,8 +734,8 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
                 res.send(response.data);
             } else { res.status(404).send('无法获取文件链接'); }
         }
-    } catch (error) { 
-        res.status(500).send('无法获取文件内容'); 
+    } catch (error) {
+        res.status(500).send('无法获取文件内容');
     }
 });
 
@@ -800,7 +800,7 @@ app.post('/share', requireLogin, async (req, res) => {
             const shareUrl = `${req.protocol}://${req.get('host')}/share/view/${itemType}/${result.token}`;
             res.json({ success: true, url: shareUrl });
         } else {
-            res.status(404).json(result); 
+            res.status(404).json(result);
         }
     } catch (error) {
         res.status(500).json({ success: false, message: '在伺服器上建立分享连结时发生错误。' });
@@ -948,6 +948,7 @@ app.get('/share/view/file/:token', async (req, res) => {
         if (fileInfo) {
             const downloadUrl = `/share/download/file/${token}`;
             let textContent = null;
+            // 检查是否为文字档案
             if (fileInfo.mimetype && fileInfo.mimetype.startsWith('text/')) {
                 const storage = storageManager.getStorage();
                 if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
@@ -966,7 +967,14 @@ app.get('/share/view/file/:token', async (req, res) => {
                     }
                 }
             }
-            res.render('share-view', { file: fileInfo, downloadUrl, textContent });
+            
+            // 如果获取到文字内容，则直接发送纯文字，否则渲染 EJS 视图
+            if (textContent !== null) {
+                res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                res.send(textContent);
+            } else {
+                res.render('share-view', { file: fileInfo, downloadUrl, textContent: null });
+            }
         } else {
             res.status(404).render('share-error', { message: '此分享连结无效或已过期。' });
         }
@@ -983,8 +991,8 @@ app.get('/share/view/folder/:token', async (req, res) => {
         } else {
             res.status(404).render('share-error', { message: '此分享连结无效或已过期。' });
         }
-    } catch (error) { 
-        res.status(500).render('share-error', { message: '处理分享请求时发生错误。' }); 
+    } catch (error) {
+        res.status(500).render('share-error', { message: '处理分享请求时发生错误。' });
     }
 });
 
