@@ -1081,5 +1081,8 @@ app.get('/share/download/:folderToken/:fileId', async (req, res) => {
     }
 });
 
-
-app.listen(PORT, () => console.log(`✅ 伺服器已在 http://localhost:${PORT} 上运行`));
+// --- *** 关键修正 开始 *** ---
+// 延长伺服器超时时间以支援大档案上传
+const server = app.listen(PORT, () => console.log(`✅ 伺服器已在 http://localhost:${PORT} 上运行`));
+server.setTimeout(30 * 60 * 1000); // 设定为 30 分钟
+// --- *** 关键修正 结束 *** ---
