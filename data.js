@@ -544,15 +544,19 @@ function executeDeletion(fileIds, folderIds, userId) {
 
 
 function addFile(fileData, folderId = 1, userId, storageType) {
+    // --- *** 关键修正 开始 *** ---
+    // 将 BigInt 转换为字串以确保相容性
     const { message_id, fileName, mimetype, file_id, thumb_file_id, date, size } = fileData;
+    const messageIdAsString = typeof message_id === 'bigint' ? message_id.toString() : message_id;
     const sql = `INSERT INTO files (message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folder_id, user_id, storage_type)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     return new Promise((resolve, reject) => {
-        db.run(sql, [message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
+        db.run(sql, [messageIdAsString, fileName, mimetype, file_id, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
             if (err) reject(err);
             else resolve({ success: true, id: this.lastID, fileId: this.lastID });
         });
     });
+    // --- *** 关键修正 结束 *** ---
 }
 
 function getFilesByIds(messageIds, userId) {
@@ -700,7 +704,7 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
 
 async function renameFolder(folderId, newFolderName, userId) {
     const folder = await new Promise((res, rej) => db.get("SELECT * FROM folders WHERE id=?", [folderId], (e,r)=>e?rej(e):res(r)));
-    if (!folder) return { success: false, message: '资料夹未找到。'};
+    if (!folder) return { success: false, message: '资料夾未找到。'};
     
     const storage = require('./storage').getStorage();
 
@@ -738,7 +742,7 @@ async function renameFolder(folderId, newFolderName, userId) {
     return new Promise((resolve, reject) => {
         db.run(sql, [newFolderName, folderId, userId], function(err) {
             if (err) reject(err);
-            else if (this.changes === 0) resolve({ success: false, message: '资料夹未找到。' });
+            else if (this.changes === 0) resolve({ success: false, message: '资料夾未找到。' });
             else resolve({ success: true });
         });
     });
