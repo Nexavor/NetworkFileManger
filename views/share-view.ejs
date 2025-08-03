@@ -21,22 +21,7 @@
             min-height: 100vh;
         }
 
-        /* --- 文字档案专用样式 --- */
-        body.text-mode {
-            background-color: #ffffff; /* 纯白背景 */
-        }
-        
-        pre {
-            /* 关键修正：移除所有内外边距，让文字顶格显示 */
-            margin: 0;
-            padding: 1em; /* 只保留少量内部边距以方便阅读 */
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            font-family: 'Courier New', Courier, monospace;
-            color: #333;
-        }
-
-        /* --- 非文字档案的预览卡片样式 --- */
+        /* --- 预览卡片样式 --- */
         .share-container {
             background-color: #fff;
             border-radius: 8px;
@@ -94,48 +79,42 @@
         }
     </style>
 </head>
-<body class="<%- textContent ? 'text-mode' : '' %>">
+<body>
+    <div class="center-container">
+        <div class="share-container">
+            <% 
+                let iconClass = 'fa-file-alt';
+                if (file.mimetype) {
+                    if (file.mimetype.startsWith('image/')) iconClass = 'fa-file-image';
+                    else if (file.mimetype.startsWith('video/')) iconClass = 'fa-file-video';
+                    else if (file.mimetype.includes('pdf')) iconClass = 'fa-file-pdf';
+                    else if (file.mimetype.includes('archive') || file.mimetype.includes('zip')) iconClass = 'fa-file-archive';
+                }
+            %>
+            <div class="file-icon">
+                <i class="fas <%= iconClass %>"></i>
+            </div>
+            
+            <h2><%= file.fileName %></h2>
+            
+            <% if (file.share_expires_at) { %>
+                <p class="file-info">此分享将于 <%= new Date(file.share_expires_at).toLocaleString() %> 过期</p>
+            <% } else { %>
+                <p class="file-info">此分享永久有效</p>
+            <% } %>
 
-    <% if (textContent) { %>
-        <pre><%- textContent %></pre>
-    <% } else { %>
-        <div class="center-container">
-            <div class="share-container">
-                <% 
-                    let iconClass = 'fa-file-alt';
-                    if (file.mimetype) {
-                        if (file.mimetype.startsWith('image/')) iconClass = 'fa-file-image';
-                        else if (file.mimetype.startsWith('video/')) iconClass = 'fa-file-video';
-                        else if (file.mimetype.includes('pdf')) iconClass = 'fa-file-pdf';
-                        else if (file.mimetype.includes('archive') || file.mimetype.includes('zip')) iconClass = 'fa-file-archive';
-                    }
-                %>
-                <div class="file-icon">
-                    <i class="fas <%= iconClass %>"></i>
-                </div>
-                
-                <h2><%= file.fileName %></h2>
-                
-                <% if (file.share_expires_at) { %>
-                    <p class="file-info">此分享将于 <%= new Date(file.share_expires_at).toLocaleString() %> 过期</p>
-                <% } else { %>
-                    <p class="file-info">此分享永久有效</p>
+            <a href="<%= downloadUrl %>" class="download-btn">
+                <i class="fas fa-download"></i> 下载文件
+            </a>
+
+            <div class="preview-container">
+                <% if (file.mimetype && file.mimetype.startsWith('image/')) { %>
+                    <img src="<%= downloadUrl %>" alt="图片预览">
+                <% } else if (file.mimetype && file.mimetype.startsWith('video/')) { %>
+                    <video src="<%= downloadUrl %>" controls preload="metadata"></video>
                 <% } %>
-    
-                <a href="<%= downloadUrl %>" class="download-btn">
-                    <i class="fas fa-download"></i> 下载文件
-                </a>
-    
-                <div class="preview-container">
-                    <% if (file.mimetype && file.mimetype.startsWith('image/')) { %>
-                        <img src="<%= downloadUrl %>" alt="图片预览">
-                    <% } else if (file.mimetype && file.mimetype.startsWith('video/')) { %>
-                        <video src="<%= downloadUrl %>" controls preload="metadata"></video>
-                    <% } %>
-                </div>
             </div>
         </div>
-    <% } %>
-
+    </div>
 </body>
 </html>
