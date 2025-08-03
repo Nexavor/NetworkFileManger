@@ -50,11 +50,13 @@ async function getFolderPath(folderId, userId) {
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
-async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
+// **重构：上传逻辑**
+// 现在接收一个 stream 而不是 tempFilePath
+async function upload(stream, fileName, mimetype, userId, folderId) {
     const client = getClient();
     const folderPath = await getFolderPath(folderId, userId);
     const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
-    
+
     if (folderPath && folderPath !== "/") {
         try {
             await client.createDirectory(folderPath, { recursive: true });
@@ -64,27 +66,34 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
             }
         }
     }
-
-    const fileBuffer = await fsp.readFile(tempFilePath);
-    const success = await client.putFileContents(remotePath, fileBuffer, { overwrite: true });
-
-    if (!success) {
-        throw new Error('WebDAV putFileContents 操作失败');
-    }
-
-    const stat = await client.stat(remotePath);
-    const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
-
-    const dbResult = await data.addFile({
-        message_id: messageId,
-        fileName,
-        mimetype,
-        size: stat.size,
-        file_id: remotePath,
-        date: new Date(stat.lastmod).getTime(),
-    }, folderId, userId, 'webdav');
     
-    return { success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId };
+    // --- 核心修改：使用流式上传 ---
+    const writeStream = client.createWriteStream(remotePath);
+    stream.pipe(writeStream);
+
+    return new Promise((resolve, reject) => {
+        writeStream.on('finish', async () => {
+            try {
+                const stat = await client.stat(remotePath);
+                const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
+
+                const dbResult = await data.addFile({
+                    message_id: messageId,
+                    fileName,
+                    mimetype,
+                    size: stat.size,
+                    file_id: remotePath,
+                    date: new Date(stat.lastmod).getTime(),
+                }, folderId, userId, 'webdav');
+                
+                resolve({ success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId });
+            } catch (dbError) {
+                reject(dbError);
+            }
+        });
+        writeStream.on('error', reject);
+        stream.on('error', reject);
+    });
 }
 
 
