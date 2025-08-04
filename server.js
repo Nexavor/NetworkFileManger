@@ -257,7 +257,6 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
     }
 });
 
-// *** 核心修改：使用 Busboy 重构上传路由 ***
 app.post('/upload', requireLogin, (req, res) => {
     console.log('[Server] /upload 路由启动，使用 Busboy 进行流式处理');
     const userId = req.session.userId;
@@ -267,26 +266,24 @@ app.post('/upload', requireLogin, (req, res) => {
 
     let busboy;
     try {
-        busboy = new Busboy({ headers: req.headers });
+        // *** 核心修正：移除 'new' 关键字 ***
+        busboy = Busboy({ headers: req.headers });
     } catch (e) {
         console.error('[Server] Busboy 初始化失败:', e);
         return res.status(400).json({ success: false, message: '无效的上传请求格式。' });
     }
 
-    // 1. 处理非档案栏位
     busboy.on('field', (fieldname, val) => {
         console.log(`[Server] Busboy 收到栏位: ${fieldname}`);
         formFields[fieldname] = val;
     });
 
-    // 2. 处理档案流
     busboy.on('file', (fieldname, fileStream, filename, encoding, mimetype) => {
-        const decodedFilename = decodeURIComponent(escape(filename)); // 更可靠的中文档名解码
+        const decodedFilename = decodeURIComponent(escape(filename));
         console.log(`[Server] Busboy 开始接收档案流: ${decodedFilename} (MIME: ${mimetype})`);
 
         const filePromise = new Promise(async (resolve, reject) => {
             try {
-                // 等待 folderId, resolutions 等关键栏位被解析
                 const waitForFields = () => {
                     return new Promise(resolveFields => {
                         if (formFields.folderId) {
@@ -397,8 +394,8 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
     }
 
     const TMP_DIR = path.join(__dirname, 'data', 'tmp');
-    if (!fsSync.existsSync(TMP_DIR)) {
-        fsSync.mkdirSync(TMP_DIR, { recursive: true });
+    if (!fs.existsSync(TMP_DIR)) {
+        fs.mkdirSync(TMP_DIR, { recursive: true });
     }
     const tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.txt`);
 
@@ -439,7 +436,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         console.error('[API] Text File Error:', error);
         res.status(500).json({ success: false, message: '伺服器内部错误' });
     } finally {
-        if (fsSync.existsSync(tempFilePath)) {
+        if (fs.existsSync(tempFilePath)) {
             await fsp.unlink(tempFilePath).catch(err => { console.warn('删除文字档暂存失败', err)});
         }
     }
@@ -592,16 +589,10 @@ app.post('/api/move', requireLogin, async (req, res) => {
         let totalSkipped = 0;
         const errors = [];
         
-        for (const itemId of itemIds) {
+        const topLevelItems = await data.getItemsByIds(itemIds, userId);
+        
+        for (const item of topLevelItems) {
             try {
-                // **关键修正**：需要先判断是档案还是资料夹
-                const items = await data.getItemsByIds([itemId], userId);
-                if (items.length === 0) {
-                    totalSkipped++;
-                    continue;
-                }
-                
-                const item = items[0];
                 const report = await data.moveItem(item.id, item.type, targetFolderId, userId, { resolutions });
                 totalMoved += report.moved;
                 totalSkipped += report.skipped;
