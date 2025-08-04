@@ -289,27 +289,33 @@ function getAllFolders(userId) {
 }
 
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
+    console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}`);
     const { resolutions = {}, pathPrefix = '' } = options;
     const report = { moved: 0, skipped: 0, errors: 0 };
     
     const sourceItem = (await getItemsByIds([itemId], userId))[0];
     if (!sourceItem) {
         report.errors++;
+        console.error(`[Data] moveItem: 找不到来源项目 ID ${itemId}`);
         return report;
     }
     
     const currentPath = path.join(pathPrefix, sourceItem.name).replace(/\\/g, '/');
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
     const resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
+    console.log(`[Data] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
 
     switch (resolutionAction) {
         case 'skip':
         case 'skip_default':
             report.skipped++;
+            console.log(`[Data] moveItem: 跳过项目 "${currentPath}"`);
             return report;
 
         case 'rename':
+            console.log(`[Data] moveItem: 重新命名项目 "${currentPath}"`);
             const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
+            console.log(`[Data] moveItem: 找到可用新名称 "${newName}"`);
             if (itemType === 'folder') {
                 await renameFolder(itemId, newName, userId);
                 await moveItems([], [itemId], targetFolderId, userId);
@@ -321,9 +327,11 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
 
         case 'overwrite':
             if (!existingItemInTarget) {
+                console.warn(`[Data] moveItem: 尝试覆盖但目标项目 "${currentPath}" 不存在，跳过。`);
                 report.skipped++;
                 return report;
             }
+            console.log(`[Data] moveItem: 覆盖目标项目 "${currentPath}" (ID: ${existingItemInTarget.id})`);
             await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
             report.moved++;
@@ -331,14 +339,17 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
 
         case 'merge':
             if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') {
+                console.warn(`[Data] moveItem: 尝试合并但目标项目 "${currentPath}" 不是资料夹，跳过。`);
                 report.skipped++;
                 return report;
             }
             
+            console.log(`[Data] moveItem: 合并资料夹 "${currentPath}" 到目标资料夹 ID ${existingItemInTarget.id}`);
             const children = await getChildrenOfFolder(itemId, userId);
             let allChildrenProcessedSuccessfully = true;
 
             for (const child of children) {
+                console.log(`[Data] moveItem: 递回移动子项目 "${child.name}" (ID: ${child.id})`);
                 const childReport = await moveItem(child.id, child.type, existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
@@ -349,12 +360,16 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             }
             
             if (allChildrenProcessedSuccessfully) {
+                console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夹 ID ${itemId}`);
                 await unifiedDelete(itemId, 'folder', userId);
+            } else {
+                console.warn(`[Data] moveItem: 部分子项目未能成功合并，保留原始资料夹 ID ${itemId}`);
             }
             
             return report;
 
         default: // 'move'
+            console.log(`[Data] moveItem: 直接移动项目 "${currentPath}"`);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
             report.moved++;
             return report;
