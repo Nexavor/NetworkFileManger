@@ -9,35 +9,57 @@ const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
 async function setup() {
     try {
         await fs.mkdir(UPLOAD_DIR, { recursive: true });
+        console.log('[Local Storage] 上传目录已确认存在:', UPLOAD_DIR);
     } catch (e) {
-        // 在生产环境中，可以记录到专门的日志文件
+        console.error('[Local Storage] 建立上传目录失败:', e);
     }
 }
 setup();
 
 // **重构：上传逻辑**
-// 现在会根据 folderId 建立完整的目录结构
+// 现在改为纯流式上传
 async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
+    console.log(`[Local Storage] 开始处理上传: ${fileName} (暂存: ${tempFilePath})`);
     const userDir = path.join(UPLOAD_DIR, String(userId));
     
     // 获取目标资料夾的完整相对路径
     const folderPathParts = await data.getFolderPath(folderId, userId);
-    // 从路径阵列建立相对于 userDir 的路径 (忽略根目录 '/')
     const relativeFolderPath = path.join(...folderPathParts.slice(1).map(p => p.name)); 
     const finalFolderPath = path.join(userDir, relativeFolderPath);
 
     // 建立目标目录
+    console.log(`[Local Storage] 确保目标目录存在: ${finalFolderPath}`);
     await fs.mkdir(finalFolderPath, { recursive: true });
 
     const finalFilePath = path.join(finalFolderPath, fileName);
     const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/'); // 储存相对路径
+    console.log(`[Local Storage] 最终档案路径: ${finalFilePath}`);
 
-    // 从暂存位置移动档案到最终位置
-    await fs.rename(tempFilePath, finalFilePath);
+    // **核心修改：使用流式传输**
+    await new Promise((resolve, reject) => {
+        const readStream = fsSync.createReadStream(tempFilePath);
+        const writeStream = fsSync.createWriteStream(finalFilePath);
+        
+        readStream.on('error', (err) => {
+            console.error(`[Local Storage] 读取暂存盘案流失败: ${tempFilePath}`, err);
+            reject(err);
+        });
+        writeStream.on('error', (err) => {
+            console.error(`[Local Storage] 写入最终档案流失败: ${finalFilePath}`, err);
+            reject(err);
+        });
+        writeStream.on('finish', () => {
+            console.log(`[Local Storage] 档案流式传输完成: ${fileName}`);
+            resolve();
+        });
+        
+        readStream.pipe(writeStream);
+    });
     
     const stats = await fs.stat(finalFilePath);
     const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
-
+    
+    console.log(`[Local Storage] 正在将档案资讯写入资料库: ${fileName}`);
     const dbResult = await data.addFile({
         message_id: messageId,
         fileName,
@@ -47,9 +69,11 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
         thumb_file_id: null,
         date: Date.now(),
     }, folderId, userId, 'local');
-
+    
+    console.log(`[Local Storage] 档案 ${fileName} 成功储存至本地并记录到资料库。`);
     return { success: true, message: '文件已储存至本地。', fileId: dbResult.fileId };
 }
+
 
 // **重构：删除逻辑**
 // 现在会删除实体档案，并清理空的父目录
