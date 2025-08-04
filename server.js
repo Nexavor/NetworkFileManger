@@ -22,7 +22,7 @@ async function cleanupTempDir() {
     try {
         if (!fs.existsSync(TMP_DIR)) {
             await fsp.mkdir(TMP_DIR, { recursive: true });
-            console.log(`[Server] 创建暂存目录: ${TMP_DIR}`);
+            console.log(`[调试日志][Server] 创建暂存目录: ${TMP_DIR}`);
             return;
         }
         const files = await fsp.readdir(TMP_DIR);
@@ -30,10 +30,10 @@ async function cleanupTempDir() {
             try {
                 await fsp.unlink(path.join(TMP_DIR, file));
             } catch (err) {
-                console.warn(`[Server] 清理暂存文件时发生非致命错误: ${file}`, err.message);
+                console.warn(`[调试日志][Server] 清理暂存文件时发生非致命错误: ${file}`, err.message);
             }
         }
-        console.log(`[Server] 暂存目录清理完成: ${TMP_DIR}`);
+        console.log(`[调试日志][Server] 暂存目录清理完成: ${TMP_DIR}`);
     } catch (error) {
         console.error(`[严重错误] 清理暂存目录失败: ${TMP_DIR}。`, error);
     }
@@ -295,7 +295,7 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
 const uploadMiddleware = (req, res, next) => {
     upload.array('files')(req, res, (err) => {
         if (err) {
-            console.error('[Server] Multer 上传错误:', err);
+            console.error('[调试日志][Server] Multer 上传错误:', err);
             if (err.code === 'LIMIT_FILE_SIZE') {
                 return res.status(400).json({ success: false, message: '文件大小超出限制。' });
             }
@@ -309,10 +309,11 @@ const uploadMiddleware = (req, res, next) => {
 };
 
 app.post('/upload', requireLogin, async (req, res, next) => {
+    // 每次上传前都清理一次暂存区，防止旧文件堆积
     await cleanupTempDir();
     next();
 }, uploadMiddleware, fixFileNameEncoding, async (req, res) => {
-    console.log('[Server] /upload 路由启动，接收到档案数量:', req.files ? req.files.length : 0);
+    console.log('[调试日志][Server] /upload 路由启动，接收到档案数量:', req.files ? req.files.length : 0);
 
     if (!req.files || req.files.length === 0) {
         return res.status(400).json({ success: false, message: '没有选择文件' });
@@ -323,7 +324,7 @@ app.post('/upload', requireLogin, async (req, res, next) => {
     const storage = storageManager.getStorage();
     const resolutions = req.body.resolutions ? JSON.parse(req.body.resolutions) : {};
     let relativePaths = req.body.relativePaths;
-    console.log(`[Server] 上传目标资料夹ID: ${initialFolderId}, 使用者ID: ${userId}, 储存模式: ${storage.type}`);
+    console.log(`[调试日志][Server] 上传目标资料夹ID: ${initialFolderId}, 使用者ID: ${userId}, 储存模式: ${storage.type}`);
 
     if (!relativePaths) {
         relativePaths = req.files.map(file => file.originalname);
@@ -340,15 +341,15 @@ app.post('/upload', requireLogin, async (req, res, next) => {
     try {
         for (let i = 0; i < req.files.length; i++) {
             const file = req.files[i];
-            const tempFilePath = file.path;
+            const tempFilePath = file.path; // **核心变更点：直接使用 Multer 提供的暂存路径**
             const relativePath = relativePaths[i];
-            console.log(`[Server] 开始处理档案 #${i + 1}: ${relativePath}, 暂存路径: ${tempFilePath}`);
+            console.log(`[调试日志][Server] 开始处理档案 #${i + 1}: ${relativePath}, 暂存路径: ${tempFilePath}`);
             
             const action = resolutions[relativePath] || 'upload';
 
             try {
                 if (action === 'skip') {
-                    console.log(`[Server] 侦测到 'skip' 操作，跳过档案: ${relativePath}`);
+                    console.log(`[调试日志][Server] 侦测到 'skip' 操作，跳过档案: ${relativePath}`);
                     skippedCount++;
                     continue;
                 }
@@ -357,39 +358,40 @@ app.post('/upload', requireLogin, async (req, res, next) => {
                 let fileName = pathParts.pop() || file.originalname;
                 const folderPathParts = pathParts;
 
-                console.log(`[Server] 解析路径... 档名: ${fileName}, 目标子路径:`, folderPathParts);
+                console.log(`[调试日志][Server] 解析路径... 档名: ${fileName}, 目标子路径:`, folderPathParts);
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
-                console.log(`[Server] 解析后最终资料夹ID: ${targetFolderId}`);
+                console.log(`[调试日志][Server] 解析后最终资料夹ID: ${targetFolderId}`);
                 
                 if (action === 'overwrite') {
                     const existingItem = await data.findItemInFolder(fileName, targetFolderId, userId);
                     if (existingItem) {
-                        console.log(`[Server] 侦测到 'overwrite' 操作，删除已存在项目: ${fileName} (ID: ${existingItem.id})`);
+                        console.log(`[调试日志][Server] 侦测到 'overwrite' 操作，删除已存在项目: ${fileName} (ID: ${existingItem.id})`);
                         await data.unifiedDelete(existingItem.id, existingItem.type, userId);
                     }
                 } else if (action === 'rename') {
                     const originalFileName = fileName;
                     fileName = await data.findAvailableName(fileName, targetFolderId, userId, false);
-                    console.log(`[Server] 侦测到 'rename' 操作，新档名为: ${fileName} (原档名: ${originalFileName})`);
+                    console.log(`[调试日志][Server] 侦测到 'rename' 操作，新档名为: ${fileName} (原档名: ${originalFileName})`);
                 } else {
                     const conflict = await data.findItemInFolder(fileName, targetFolderId, userId);
                     if (conflict) {
-                        console.log(`[Server] 侦测到冲突且无解决方案，跳过档案: ${fileName}`);
+                        console.log(`[调试日志][Server] 侦测到冲突且无解决方案，跳过档案: ${fileName}`);
                         skippedCount++;
                         continue;
                     }
                 }
 
-                console.log(`[Server] 调用储存引擎 [${storage.type}] 上传档案: ${fileName}`);
-                // **核心修改：直接传递暂存文件路径，而不是文件缓冲区**
+                console.log(`[调试日志][Server] 调用储存引擎 [${storage.type}] 上传档案: ${fileName}`);
+                // **核心变更：直接传递暂存文件路径，而不是文件缓冲区**
                 const result = await storage.upload(tempFilePath, fileName, file.mimetype, userId, targetFolderId, req.body.caption || '');
                 results.push(result);
-                console.log(`[Server] 储存引擎处理完成: ${fileName}`);
+                console.log(`[调试日志][Server] 储存引擎处理完成: ${fileName}`);
 
             } finally {
+                // 不论成功与否，都尝试删除暂存盘案
                 if (fs.existsSync(tempFilePath)) {
                     await fsp.unlink(tempFilePath).catch(err => {
-                        console.warn(`[Server] 删除暂存文件失败: ${tempFilePath}`, err.message);
+                        console.warn(`[调试日志][Server] 删除暂存文件失败: ${tempFilePath}`, err.message);
                     });
                 }
             }
@@ -399,9 +401,10 @@ app.post('/upload', requireLogin, async (req, res, next) => {
         } else {
             res.json({ success: true, results });
         }
-        console.log('[Server] /upload 路由处理完毕。');
+        console.log('[调试日志][Server] /upload 路由处理完毕。');
     } catch (error) {
-        console.error('[Server] /upload 路由发生严重错误:', error);
+        console.error('[调试日志][Server] /upload 路由发生严重错误:', error);
+        // 确保发生严重错误时，所有暂存盘案都被清理
         for (const file of req.files) {
             if (fs.existsSync(file.path)) {
                 await fsp.unlink(file.path).catch(err => {});
