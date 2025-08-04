@@ -18,7 +18,6 @@ const app = express();
 
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
-// 仅用于确保目录存在
 async function setupTempDir() {
     try {
         if (!fs.existsSync(TMP_DIR)) {
@@ -247,9 +246,9 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
 });
 
 
-// --- *** 最终纯流式上传路由 *** ---
+// --- *** 最终防并发纯流式上传路由 *** ---
 app.post('/upload', requireLogin, (req, res) => {
-    console.log('[Server] /upload 路由启动 (纯流式)');
+    console.log('[Server] /upload 路由启动 (防并发纯流式)');
     
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
@@ -257,7 +256,6 @@ app.post('/upload', requireLogin, (req, res) => {
     const fileProcessingPromises = [];
     let fileIndex = -1;
 
-    // **最终方案：移除所有限制，由流处理本身来控制**
     const busboy = Busboy({ headers: req.headers });
 
     busboy.on('field', (key, value) => {
@@ -274,18 +272,14 @@ app.post('/upload', requireLogin, (req, res) => {
         const { filename, mimeType } = fileInfo;
         const currentFileIndex = fileIndex;
         
-        // 使用 PassThrough 流来解决背压问题
-        const passThrough = new PassThrough({
-            highWaterMark: 50 * 1024 * 1024 // 50MB 内存缓冲区
-        });
+        const passThrough = new PassThrough({ highWaterMark: 50 * 1024 * 1024 });
         fileStream.pipe(passThrough);
 
         const promise = new Promise((resolve, reject) => {
-            // 立即开始处理流，但将数据库等异步操作放在后面
             processFile(passThrough, filename, mimeType, currentFileIndex)
                 .then(resolve)
                 .catch(err => {
-                    fileStream.resume(); // 确保消耗掉错误的流
+                    fileStream.resume();
                     reject(err);
                 });
         });
@@ -306,14 +300,33 @@ app.post('/upload', requireLogin, (req, res) => {
         const action = resolutions[relativePath] || 'upload';
 
         if (action === 'skip') {
-            stream.resume(); // 消耗掉被跳过的流
+            stream.resume();
             return;
         }
 
         const pathParts = relativePath.split('/');
         let currentFileName = pathParts.pop() || filename;
         const folderPathParts = pathParts;
-        const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
+        
+        // --- *** 关键修正：加入竞态条件处理 *** ---
+        let targetFolderId;
+        try {
+            targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
+        } catch (error) {
+            if (error.code === 'SQLITE_CONSTRAINT') {
+                console.warn(`[Server] 捕获到文件夹创建冲突，尝试重新获取文件夹 ID。路径: ${folderPathParts.join('/')}`);
+                // 假设 data.findFolderByPath 只查找不创建
+                targetFolderId = await data.findFolderByPath(initialFolderId, folderPathParts, userId);
+                if (targetFolderId === null) {
+                    // 如果重试后仍然找不到，说明发生了更严重的问题，抛出原始错误
+                    throw error;
+                }
+            } else {
+                // 重新抛出其他类型的数据库错误
+                throw error;
+            }
+        }
+        // --- *** 修正结束 *** ---
 
         if (action === 'overwrite') {
             const existing = await data.findItemInFolder(currentFileName, targetFolderId, userId);
@@ -321,11 +334,10 @@ app.post('/upload', requireLogin, (req, res) => {
         } else if (action === 'rename') {
             currentFileName = await data.findAvailableName(currentFileName, targetFolderId, userId, false);
         } else if (await data.findItemInFolder(currentFileName, targetFolderId, userId)) {
-            stream.resume(); // 消耗掉冲突的流
+            stream.resume();
             return;
         }
         
-        // **核心：将流直接传递给存储模块**
         await storage.upload(stream, currentFileName, mimeType, userId, targetFolderId, fields.caption || '');
     }
 
@@ -336,7 +348,8 @@ app.post('/upload', requireLogin, (req, res) => {
             res.json({ success: true, message: '上传成功！' });
         } catch (error) {
             console.error('[Server] /upload Busboy finish 处理错误:', error);
-            res.status(500).json({ success: false, message: '处理上传时发生错误: ' + error.message });
+            const status = error.code === 'SQLITE_CONSTRAINT' ? 409 : 500; // 409 Conflict
+            res.status(status).json({ success: false, message: '处理上传时发生错误: ' + error.message });
         }
     });
     
@@ -355,7 +368,6 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
     
     try {
         let result;
-        // 将内容转换为流
         const stream = require('stream');
         const readable = stream.Readable.from(content);
 
