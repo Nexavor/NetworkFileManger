@@ -288,15 +288,24 @@ function getAllFolders(userId) {
     });
 }
 
+// *** 关键修正：重构 moveItem 以正确处理 ID 和路径 ***
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}`);
     const { resolutions = {}, pathPrefix = '' } = options;
     const report = { moved: 0, skipped: 0, errors: 0 };
     
-    const sourceItem = (await getItemsByIds([itemId], userId))[0];
+    // 使用一个更明确的查询，只获取特定类型的项目
+    const sourceItem = await new Promise((resolve, reject) => {
+        const table = itemType === 'folder' ? 'folders' : 'files';
+        const idColumn = itemType === 'folder' ? 'id' : 'message_id';
+        const nameColumn = itemType === 'folder' ? 'name' : 'fileName';
+        const sql = `SELECT ${idColumn} as id, ${nameColumn} as name, '${itemType}' as type FROM ${table} WHERE ${idColumn} = ? AND user_id = ?`;
+        db.get(sql, [itemId, userId], (err, row) => err ? reject(err) : resolve(row));
+    });
+
     if (!sourceItem) {
         report.errors++;
-        console.error(`[Data] moveItem: 找不到来源项目 ID ${itemId}`);
+        console.error(`[Data] moveItem: 找不到来源项目 ID ${itemId} (类型: ${itemType})`);
         return report;
     }
     
@@ -331,7 +340,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
                 report.skipped++;
                 return report;
             }
-            console.log(`[Data] moveItem: 覆盖目标项目 "${currentPath}" (ID: ${existingItemInTarget.id})`);
+            console.log(`[Data] moveItem: 覆盖目标项目 "${currentPath}" (ID: ${existingItemInTarget.id}, 类型: ${existingItemInTarget.type})`);
             await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
             report.moved++;
@@ -345,16 +354,28 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             }
             
             console.log(`[Data] moveItem: 合并资料夹 "${currentPath}" 到目标资料夹 ID ${existingItemInTarget.id}`);
-            const children = await getChildrenOfFolder(itemId, userId);
+            // **修正：使用 getFolderContents 分别处理档案和资料夹**
+            const { folders: childFolders, files: childFiles } = await getFolderContents(itemId, userId);
             let allChildrenProcessedSuccessfully = true;
 
-            for (const child of children) {
-                console.log(`[Data] moveItem: 递回移动子项目 "${child.name}" (ID: ${child.id})`);
-                const childReport = await moveItem(child.id, child.type, existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
+            for (const childFolder of childFolders) {
+                console.log(`[Data] moveItem: 递回移动子资料夹 "${childFolder.name}" (ID: ${childFolder.id})`);
+                const childReport = await moveItem(childFolder.id, 'folder', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
                 report.errors += childReport.errors;
-                if(childReport.skipped > 0 || childReport.errors > 0) {
+                if (childReport.skipped > 0 || childReport.errors > 0) {
+                    allChildrenProcessedSuccessfully = false;
+                }
+            }
+            
+            for (const childFile of childFiles) {
+                console.log(`[Data] moveItem: 递回移动子档案 "${childFile.name}" (ID: ${childFile.id})`);
+                const childReport = await moveItem(childFile.id, 'file', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
+                report.moved += childReport.moved;
+                report.skipped += childReport.skipped;
+                report.errors += childReport.errors;
+                 if (childReport.skipped > 0 || childReport.errors > 0) {
                     allChildrenProcessedSuccessfully = false;
                 }
             }
