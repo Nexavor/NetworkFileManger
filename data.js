@@ -294,7 +294,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
     const { resolutions = {}, pathPrefix = '' } = options;
     const report = { moved: 0, skipped: 0, errors: 0 };
     
-    // 使用一个更明确的查询，只获取特定类型的项目
+    // **修正：使用一个更明确的查询，只获取特定类型的项目**
     const sourceItem = await new Promise((resolve, reject) => {
         const table = itemType === 'folder' ? 'folders' : 'files';
         const idColumn = itemType === 'folder' ? 'id' : 'message_id';
