@@ -16,8 +16,8 @@ async function setup() {
 setup();
 
 // **重构：上传逻辑**
-// 将 tempFilePath 改为 fileStream，并使用流式写入
-async function upload(fileStream, fileName, mimetype, userId, folderId) {
+// 现在会根据 folderId 建立完整的目录结构
+async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
     const userDir = path.join(UPLOAD_DIR, String(userId));
     
     // 获取目标资料夾的完整相对路径
@@ -32,14 +32,8 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
     const finalFilePath = path.join(finalFolderPath, fileName);
     const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/'); // 储存相对路径
 
-    // 使用流式写入代替移动文件
-    await new Promise((resolve, reject) => {
-        const writeStream = fsSync.createWriteStream(finalFilePath);
-        fileStream.pipe(writeStream);
-        writeStream.on('finish', resolve);
-        writeStream.on('error', reject);
-        fileStream.on('error', reject); // 确保也处理读取流的错误
-    });
+    // 从暂存位置移动档案到最终位置
+    await fs.rename(tempFilePath, finalFilePath);
     
     const stats = await fs.stat(finalFilePath);
     const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
@@ -150,4 +144,3 @@ function stream(file_id, userId) {
 }
 
 module.exports = { upload, remove, getUrl, stream, type: 'local' };
-

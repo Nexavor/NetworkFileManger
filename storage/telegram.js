@@ -1,7 +1,6 @@
 require('dotenv').config();
 const axios = require('axios');
 const FormData = require('form-data');
-// **修正**: 将路径从 './data.js' 改为 '../data.js'
 const data = require('../data.js');
 const fs = require('fs'); // 引入 fs 模组
 
