@@ -979,31 +979,27 @@ async function findOrCreateFolderByPath(fullPath, userId) {
     return parentId;
 }
 
-// *** 关键修正：修复竞争条件 ***
 async function resolvePathToFolderId(startFolderId, pathParts, userId) {
     let currentParentId = startFolderId;
     for (const part of pathParts) {
         if (!part) continue;
 
-        let folder = await findFolderByName(part, currentParentId, userId);
+        let folder = await new Promise((resolve, reject) => {
+            const sql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
+            db.get(sql, [part, currentParentId, userId], (err, row) => err ? reject(err) : resolve(row));
+        });
+
         if (folder) {
             currentParentId = folder.id;
         } else {
-            try {
-                const result = await createFolder(part, currentParentId, userId);
-                currentParentId = result.id;
-            } catch (error) {
-                if (error.message.includes('同目录下已存在同名资料夹')) {
-                    const newFoundFolder = await findFolderByName(part, currentParentId, userId);
-                    if (newFoundFolder) {
-                        currentParentId = newFoundFolder.id;
-                    } else {
-                        throw new Error(`创建或查找资料夹 "${part}" 失败。`);
-                    }
-                } else {
-                    throw error;
-                }
-            }
+            const newFolder = await new Promise((resolve, reject) => {
+                const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
+                db.run(sql, [part, currentParentId, userId], function(err) {
+                    if (err) return reject(err);
+                    resolve({ id: this.lastID });
+                });
+            });
+            currentParentId = newFolder.id;
         }
     }
     return currentParentId;
