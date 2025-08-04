@@ -288,12 +288,13 @@ function getAllFolders(userId) {
     });
 }
 
+// --- *** 关键修正：重构 moveItem 以正确处理文件夹合并逻辑 *** ---
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     console.log(`[Data] moveItem: Processing item ID ${itemId} (Type: ${itemType}) -> Target Folder ID ${targetFolderId}`);
     const { resolutions = {}, pathPrefix = '', isMerging = false } = options;
     const report = { moved: 0, skipped: 0, errors: 0 };
 
-    // 1. Get source item info
+    // 1. 获取来源项目信息
     const sourceItem = await new Promise((resolve, reject) => {
         const table = itemType === 'folder' ? 'folders' : 'files';
         const idColumn = itemType === 'folder' ? 'id' : 'message_id';
@@ -308,23 +309,26 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         return report;
     }
 
-    // 2. Determine action based on conflicts and options
+    // 2. 根据冲突和选项决定操作
     const currentPath = path.join(pathPrefix, sourceItem.name).replace(/\\/g, '/');
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
 
     let action = resolutions[currentPath];
     if (!action) {
         if (existingItemInTarget) {
-            // If we are in a parent merge operation, the default for sub-folders is also merge.
-            // For files, the default is overwrite.
-            action = isMerging ? (itemType === 'folder' ? 'merge' : 'overwrite') : 'skip_default';
+            // 如果是在父文件夹的合并操作中，子文件夹的预设行为也是合并，档案则为覆盖
+            if (isMerging) {
+                action = itemType === 'folder' ? 'merge' : 'overwrite';
+            } else {
+                action = 'skip_default'; // 顶层冲突的预设行为是跳过
+            }
         } else {
             action = 'move';
         }
     }
     console.log(`[Data] moveItem: Action for "${currentPath}" is "${action}"`);
 
-    // 3. Execute action
+    // 3. 执行操作
     try {
         switch (action) {
             case 'skip':
@@ -374,7 +378,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
                     const childReport = await moveItem(child.id, child.type, existingItemInTarget.id, userId, { 
                         ...options, 
                         pathPrefix: currentPath,
-                        isMerging: true // Propagate the merging state
+                        isMerging: true // 传递合并状态
                     });
                     report.moved += childReport.moved;
                     report.skipped += childReport.skipped;
@@ -405,7 +409,6 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
     
     return report;
 }
-
 
 async function unifiedDelete(itemId, itemType, userId) {
     const storage = require('./storage').getStorage();
@@ -988,27 +991,44 @@ async function findOrCreateFolderByPath(fullPath, userId) {
     return parentId;
 }
 
+// --- *** 关键修正：重构 resolvePathToFolderId 以解决并发冲突 *** ---
 async function resolvePathToFolderId(startFolderId, pathParts, userId) {
     let currentParentId = startFolderId;
     for (const part of pathParts) {
         if (!part) continue;
 
-        let folder = await new Promise((resolve, reject) => {
-            const sql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
-            db.get(sql, [part, currentParentId, userId], (err, row) => err ? reject(err) : resolve(row));
+        // 首先尝试直接插入新资料夹
+        const newFolderId = await new Promise((resolve, reject) => {
+            const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
+            db.run(sql, [part, currentParentId, userId], function(err) {
+                if (err) {
+                    // 如果错误是唯一性约束失败，代表资料夹已被其他并发操作建立
+                    if (err.message.includes('UNIQUE')) {
+                        resolve(null); // 回传 null 表示需要后续查询
+                    } else {
+                        reject(err); // 若是其他错误，则抛出
+                    }
+                } else {
+                    resolve(this.lastID); // 插入成功，回传新的 ID
+                }
+            });
         });
 
-        if (folder) {
-            currentParentId = folder.id;
+        if (newFolderId) {
+            // 如果我们成功建立了新资料夹，就使用新的 ID
+            currentParentId = newFolderId;
         } else {
-            const newFolder = await new Promise((resolve, reject) => {
-                const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
-                db.run(sql, [part, currentParentId, userId], function(err) {
+            // 如果插入失败因为资料夹已存在，我们就查询它的 ID
+            const existingFolder = await new Promise((resolve, reject) => {
+                const sql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
+                db.get(sql, [part, currentParentId, userId], (err, row) => {
                     if (err) return reject(err);
-                    resolve({ id: this.lastID });
+                    // 理论上此时必定能找到，否则表示有更严重的问题
+                    if (!row) return reject(new Error(`在发生 UNIQUE 错误后，仍找不到资料夹 '${part}'。`));
+                    resolve(row);
                 });
             });
-            currentParentId = newFolder.id;
+            currentParentId = existingFolder.id;
         }
     }
     return currentParentId;
