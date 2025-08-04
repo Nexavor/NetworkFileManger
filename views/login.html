@@ -106,17 +106,19 @@
     </div>
   </div>
 
-  <!-- --- *** 关键修正 开始 *** --- -->
   <script>
     document.addEventListener('DOMContentLoaded', () => {
       const form = document.getElementById('loginForm');
       const usernameInput = document.getElementById('username');
       const passwordInput = document.getElementById('password');
 
+      // 当在任一输入框中按下 Enter 键时，提交表单
       const handleEnter = (event) => {
         if (event.key === 'Enter') {
-          event.preventDefault(); // 防止预设的换行行为
-          form.submit();
+          event.preventDefault(); // 防止预设行为
+          if (usernameInput.value && passwordInput.value) {
+            form.submit();
+          }
         }
       };
       
@@ -124,6 +126,5 @@
       passwordInput.addEventListener('keydown', handleEnter);
     });
   </script>
-  <!-- --- *** 关键修正 结束 *** --- -->
-</body>
+  </body>
 </html>
