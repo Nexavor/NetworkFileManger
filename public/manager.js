@@ -136,6 +136,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
     
+    // *** 关键修正：确保路径和档案以正确的顺序发送 ***
     const uploadFiles = async (files, targetFolderId, isDrag = false) => {
         if (files.length === 0) {
             showNotification('请选择文件。', 'error', !isDrag ? uploadNotificationArea : null);
@@ -149,7 +150,6 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // 总是上传所有由使用者选择的文件
         const fileObjects = Array.from(files).filter(f => f.name);
         const filesToCheck = fileObjects.map(f => ({
             relativePath: f.webkitRelativePath || f.name
@@ -177,13 +177,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     
         const formData = new FormData();
+        const relativePaths = [];
         fileObjects.forEach(file => {
             formData.append('files', file);
-            formData.append('relativePaths', file.webkitRelativePath || file.name);
+            relativePaths.push(file.webkitRelativePath || file.name);
         });
         
+        // **修正：将所有路径作为单一字段发送**
+        formData.append('relativePaths', relativePaths.join(',')); 
+
         formData.append('folderId', targetFolderId);
-        formData.append('resolutions', JSON.stringify(resolutions)); // 将解决方案发送给服务器
+        formData.append('resolutions', JSON.stringify(resolutions));
     
         const captionInput = document.getElementById('uploadCaption');
         if (captionInput && captionInput.value && !isDrag) {
@@ -1115,4 +1119,3 @@ document.addEventListener('DOMContentLoaded', () => {
         window.addEventListener('resize', checkScreenWidthAndCollapse);
     }
 });
-
