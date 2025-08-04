@@ -149,6 +149,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // 总是上传所有由使用者选择的文件
         const fileObjects = Array.from(files).filter(f => f.name);
         const filesToCheck = fileObjects.map(f => ({
             relativePath: f.webkitRelativePath || f.name
@@ -177,9 +178,9 @@ document.addEventListener('DOMContentLoaded', () => {
     
         const formData = new FormData();
         fileObjects.forEach(file => {
-            // *** 关键修正：使用 webkitRelativePath 作为第三个参数（档名） ***
-            // 这会将资料夹结构一起发送给伺服器
-            formData.append('files', file, file.webkitRelativePath || file.name);
+            formData.append('files', file);
+            // *** 关键修正：新增一个栏位来明确传递每个档案的相对路径 ***
+            formData.append('relativePaths', file.webkitRelativePath || file.name);
         });
         
         formData.append('folderId', targetFolderId);
@@ -847,7 +848,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (deleteBtn) {
         deleteBtn.addEventListener('click', async () => {
             if (selectedItems.size === 0) return;
-            if (!confirm(`确定要删除这 ${selectedItems.size} 个项目吗？\n注意：删除资料夹将会一并删除其所有内容！`)) return;
+            if (!confirm(`确定要删除这 ${selectedItems.size} 个项目吗？\n注意：删除资料夾将会一并删除其所有内容！`)) return;
             const filesToDelete = [], foldersToDelete = [];
             selectedItems.forEach((item, id) => {
                 if (item.type === 'file') filesToDelete.push(parseInt(id));
