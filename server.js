@@ -49,10 +49,7 @@ app.use(session({
   cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }
 }));
 
-// --- *** 关键修正 开始 *** ---
-// 信任反向代理，让 req.protocol 能正确反映 https
 app.set('trust proxy', 1);
-// --- *** 关键修正 结束 *** ---
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
@@ -321,7 +318,6 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
     }
 });
 
-// --- **重构 /upload 路由为纯流式处理** ---
 app.post('/upload', requireLogin, (req, res) => {
     if (!req.busboy) {
         console.error('[UPLOAD-ERROR] Busboy 中介软体未初始化。');
@@ -334,7 +330,6 @@ app.post('/upload', requireLogin, (req, res) => {
     const fields = {};
     const fileProcessingPromises = [];
     
-    // --- **关键修正：建立一个 Promise 来等待 folderId 被解析** ---
     let resolveFolderId;
     const folderIdPromise = new Promise(resolve => {
         resolveFolderId = resolve;
@@ -455,11 +450,10 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         await fsp.writeFile(tempFilePath, content, 'utf8');
         let result;
 
-        // **关键修正：为 upload 创建一个流**
         const fileStream = fs.createReadStream(tempFilePath);
         
         if (mode === 'edit' && fileId) {
-            const filesToUpdate = await data.getFilesByIds([fileId], userId);
+            const filesToUpdate = await data.getFilesByIds([String(fileId)], userId);
             if (filesToUpdate.length > 0) {
                 const originalFile = filesToUpdate[0];
                 
@@ -497,7 +491,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
 
 app.get('/api/file-info/:id', requireLogin, async (req, res) => {
     try {
-        const fileId = parseInt(req.params.id, 10);
+        const fileId = req.params.id; // ID is a string
         const [fileInfo] = await data.getFilesByIds([fileId], req.session.userId);
         if (fileInfo) {
             res.json(fileInfo);
@@ -703,7 +697,7 @@ app.post('/rename', requireLogin, async (req, res) => {
 
         let result;
         if (type === 'file') {
-            result = await data.renameFile(parseInt(id, 10), newName, userId);
+            result = await data.renameFile(id, newName, userId);
         } else if (type === 'folder') {
             result = await data.renameFolder(parseInt(id, 10), newName, userId);
         } else {
@@ -717,7 +711,7 @@ app.post('/rename', requireLogin, async (req, res) => {
 
 app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     try {
-        const messageId = parseInt(req.params.message_id, 10);
+        const messageId = req.params.message_id; // ID is a string
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
 
         if (fileInfo && fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
@@ -735,7 +729,7 @@ app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
 
 app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
     try {
-        const messageId = parseInt(req.params.message_id, 10);
+        const messageId = req.params.message_id; // ID is a string
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
         
         if (!fileInfo || !fileInfo.file_id) {
@@ -766,7 +760,7 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
 
 app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     try {
-        const messageId = parseInt(req.params.message_id, 10);
+        const messageId = req.params.message_id; // ID is a string
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
 
         if (!fileInfo || !fileInfo.file_id) {
@@ -803,7 +797,7 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
         }
         let filesToArchive = [];
         if (messageIds.length > 0) {
-            const directFiles = await data.getFilesByIds(messageIds, userId);
+            const directFiles = await data.getFilesByIds(messageIds.map(String), userId);
             filesToArchive.push(...directFiles.map(f => ({ ...f, path: f.fileName })));
         }
         for (const folderId of folderIds) {
@@ -846,7 +840,7 @@ app.post('/share', requireLogin, async (req, res) => {
             return res.status(400).json({ success: false, message: '缺少必要参数。' });
         }
         
-        const result = await data.createShareLink(parseInt(itemId, 10), itemType, expiresIn, req.session.userId);
+        const result = await data.createShareLink(String(itemId), itemType, expiresIn, req.session.userId);
         
         if (result.success) {
             const shareUrl = `${req.protocol}://${req.get('host')}/share/view/${itemType}/${result.token}`;
@@ -874,7 +868,7 @@ app.post('/api/cancel-share', requireLogin, async (req, res) => {
     try {
         const { itemId, itemType } = req.body;
         if (!itemId || !itemType) return res.status(400).json({ success: false, message: '缺少必要参数' });
-        const result = await data.cancelShare(parseInt(itemId, 10), itemType, req.session.userId);
+        const result = await data.cancelShare(String(itemId), itemType, req.session.userId);
         res.json(result);
     } catch (error) { res.status(500).json({ success: false, message: '取消分享失败' }); }
 });
@@ -902,7 +896,7 @@ app.post('/api/scan/local', requireAdmin, async (req, res) => {
             for (const entry of entries) {
                 const fullPath = path.join(dir, entry.name);
                 const relativePath = path.relative(userUploadDir, fullPath).replace(/\\/g, '/');
-                const fileId = relativePath; // file_id 是相对路径
+                const fileId = relativePath; 
 
                 if (entry.isDirectory()) {
                     await scanDirectory(fullPath);
@@ -1000,7 +994,6 @@ app.get('/share/view/file/:token', async (req, res) => {
         if (fileInfo) {
             const downloadUrl = `/share/download/file/${token}`;
             let textContent = null;
-            // 检查是否为文字档案
             if (fileInfo.mimetype && fileInfo.mimetype.startsWith('text/')) {
                 const storage = storageManager.getStorage();
                 if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
@@ -1020,7 +1013,6 @@ app.get('/share/view/file/:token', async (req, res) => {
                 }
             }
             
-            // 如果获取到文字内容，则直接发送纯文字，否则渲染 EJS 视图
             if (textContent !== null) {
                 res.setHeader('Content-Type', 'text/plain; charset=utf-8');
                 res.send(textContent);
@@ -1050,6 +1042,7 @@ app.get('/share/view/folder/:token', async (req, res) => {
 
 function handleStream(stream, res) {
     stream.on('error', (err) => {
+        console.error("[STREAM-ERROR] 读取档案流时发生错误:", err);
         if (!res.headersSent) {
             res.status(500).send('读取文件流时发生错误');
         }
@@ -1089,7 +1082,7 @@ app.get('/share/download/file/:token', async (req, res) => {
 app.get('/share/thumbnail/:folderToken/:fileId', async (req, res) => {
     try {
         const { folderToken, fileId } = req.params;
-        const fileInfo = await data.findFileInSharedFolder(parseInt(fileId, 10), folderToken);
+        const fileInfo = await data.findFileInSharedFolder(String(fileId), folderToken);
 
         if (fileInfo && fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
             const storage = storageManager.getStorage();
@@ -1109,7 +1102,7 @@ app.get('/share/thumbnail/:folderToken/:fileId', async (req, res) => {
 app.get('/share/download/:folderToken/:fileId', async (req, res) => {
     try {
         const { folderToken, fileId } = req.params;
-        const fileInfo = await data.findFileInSharedFolder(parseInt(fileId, 10), folderToken);
+        const fileInfo = await data.findFileInSharedFolder(String(fileId), folderToken);
         
         if (!fileInfo || !fileInfo.file_id) {
              return res.status(404).send('文件信息未找到或权限不足');
