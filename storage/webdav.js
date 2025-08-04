@@ -1,8 +1,6 @@
 const { createClient } = require('webdav');
 const data = require('../data.js');
 const db = require('../database.js');
-const fsp = require('fs').promises;
-const fs = require('fs');
 const path = require('path');
 
 let client = null;
@@ -48,37 +46,32 @@ async function getFolderPath(folderId, userId) {
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
-// **最终版：上传逻辑接收 tempFilePath**
-async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
-    console.log(`[WebDAV Storage] 开始处理上传: ${fileName} (来源: ${tempFilePath})`);
+// **最终版：上传逻辑接收 fileStream**
+async function upload(fileStream, fileName, mimetype, userId, folderId) {
+    console.log(`[WebDAV Storage] 开始处理纯流式上传: ${fileName}`);
     
     const client = getClient();
     const folderPath = await getFolderPath(folderId, userId);
-    // 使用 path.posix 来确保在任何系统上都使用 / 作为分隔符
     const remotePath = path.posix.join(folderPath, fileName);
     console.log(`[WebDAV Storage] 目标 WebDAV 路径: ${remotePath}`);
+    
+    let size = 0;
+    fileStream.on('data', chunk => size += chunk.length);
 
     try {
         if (folderPath && folderPath !== "/") {
             try {
                 await client.createDirectory(folderPath, { recursive: true });
             } catch (e) {
-                // 忽略“目录已存在”或“方法不允许”的错误
                 if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
                      throw new Error(`建立 WebDAV 目录失败 (${e.response.status}): ${e.message}`);
                 }
             }
         }
         
-        // **核心逻辑：从 tempFilePath 获取文件大小和创建读取流**
-        const stats = await fsp.stat(tempFilePath);
-        const readStream = fs.createReadStream(tempFilePath);
-
         console.log(`[WebDAV Storage] 开始将档案流上传至 ${remotePath}`);
-        const success = await client.putFileContents(remotePath, readStream, { 
-          overwrite: true,
-          contentLength: stats.size
-        });
+        // **核心逻辑：直接传递流，并移除 contentLength**
+        const success = await client.putFileContents(remotePath, fileStream, { overwrite: true });
 
         if (!success) {
             throw new Error('WebDAV putFileContents 操作失败');
@@ -91,7 +84,7 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
             message_id: messageId,
             fileName,
             mimetype,
-            size: stats.size,
+            size, // 记录流式传输过程中的大小
             file_id: remotePath,
             date: Date.now(),
         }, folderId, userId, 'webdav');
