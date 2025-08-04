@@ -2,30 +2,27 @@ require('dotenv').config();
 const axios = require('axios');
 const FormData = require('form-data');
 const data = require('../data.js');
-const fs = require('fs'); 
+const fs = require('fs'); // 引入 fs 模组
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 
-// *** 核心修改：upload 函数现在直接接收档案流 (fileStream) 和一个获取大小的函式 (getFileSize) ***
-async function upload(fileStream, fileName, mimetype, getFileSize, userId, folderId, caption = '') {
-  console.log(`[Telegram Storage] 开始以流式上传档案: ${fileName}`);
+// 将 upload 函数的第一个参数从 fileBuffer 改为 tempFilePath
+async function upload(tempFilePath, fileName, mimetype, userId, folderId, caption = '') {
+  console.log(`[Telegram Storage] 开始上传档案: ${fileName} 到暂存路径: ${tempFilePath}`);
   try {
     const formData = new FormData();
     formData.append('chat_id', process.env.CHANNEL_ID);
     formData.append('caption', caption || fileName);
     
-    // **直接将档案流添加到表单中，而不是从路径读取**
-    console.log(`[Telegram Storage] 将档案流 ${fileName} 添加到 FormData`);
-    formData.append('document', fileStream, { filename: fileName, contentType: mimetype });
+    // 从临时文件路径创建可读流并添加到表单中
+    console.log(`[Telegram Storage] 建立档案读取流: ${tempFilePath}`);
+    const fileStream = fs.createReadStream(tempFilePath);
+    formData.append('document', fileStream, { filename: fileName });
 
     console.log(`[Telegram Storage] 正在发送档案到 Telegram API...`);
     const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
         headers: formData.getHeaders() 
     });
-
-    // 档案大小只有在流传输结束后才能确定
-    const finalSize = getFileSize();
-    console.log(`[Telegram Storage] 档案流传输完成，最终大小: ${finalSize} bytes`);
 
     if (res.data.ok) {
         console.log(`[Telegram Storage] Telegram API 成功接收档案: ${fileName}`);
@@ -38,8 +35,7 @@ async function upload(fileStream, fileName, mimetype, getFileSize, userId, folde
               message_id: result.message_id,
               fileName,
               mimetype: fileData.mime_type || mimetype,
-              // **使用从流计算出的最终大小**
-              size: fileData.file_size || finalSize,
+              size: fileData.file_size,
               file_id: fileData.file_id,
               thumb_file_id: fileData.thumb ? fileData.thumb.file_id : null,
               date: Date.now(),
@@ -53,10 +49,6 @@ async function upload(fileStream, fileName, mimetype, getFileSize, userId, folde
   } catch (error) {
     const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
     console.error(`[Telegram Storage] 上传过程中发生严重错误: ${errorDescription}`);
-    // 如果档案流被中断，确保它被正确处理
-    if (!fileStream.destroyed) {
-        fileStream.destroy();
-    }
     return { success: false, error: { description: errorDescription }};
   }
 }
@@ -79,7 +71,7 @@ async function remove(files, userId) {
             }
         } catch (error) {
             const reason = error.response ? error.response.data.description : error.message;
-            if (reason && reason.includes("message to delete not found")) {
+            if (reason.includes("message to delete not found")) {
                 results.success.push(messageId);
             } else {
                 results.failure.push({ id: messageId, reason });
