@@ -17,9 +17,9 @@ async function setup() {
 setup();
 
 // **重构：上传逻辑**
-// 现在改为纯流式上传
-async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
-    console.log(`[Local Storage] 开始处理上传: ${fileName} (暂存: ${tempFilePath})`);
+// 现在直接接收一个可读流 (fileStream)
+async function upload(fileStream, fileName, mimetype, userId, folderId) {
+    console.log(`[Local Storage] 开始处理流式上传: ${fileName}`);
     const userDir = path.join(UPLOAD_DIR, String(userId));
     
     // 获取目标资料夾的完整相对路径
@@ -32,31 +32,26 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
     await fs.mkdir(finalFolderPath, { recursive: true });
 
     const finalFilePath = path.join(finalFolderPath, fileName);
-    const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/'); // 储存相对路径
+    const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/');
     console.log(`[Local Storage] 最终档案路径: ${finalFilePath}`);
 
-    // **核心修改：使用流式传输**
+    const writeStream = fsSync.createWriteStream(finalFilePath);
+    let size = 0;
+    fileStream.on('data', (chunk) => {
+        size += chunk.length;
+    });
+
+    // **核心修改：使用 Promise 来等待流完成**
     await new Promise((resolve, reject) => {
-        const readStream = fsSync.createReadStream(tempFilePath);
-        const writeStream = fsSync.createWriteStream(finalFilePath);
+        writeStream.on('finish', resolve);
+        writeStream.on('error', reject);
+        fileStream.on('error', reject); // 捕获读取流的错误
         
-        readStream.on('error', (err) => {
-            console.error(`[Local Storage] 读取暂存盘案流失败: ${tempFilePath}`, err);
-            reject(err);
-        });
-        writeStream.on('error', (err) => {
-            console.error(`[Local Storage] 写入最终档案流失败: ${finalFilePath}`, err);
-            reject(err);
-        });
-        writeStream.on('finish', () => {
-            console.log(`[Local Storage] 档案流式传输完成: ${fileName}`);
-            resolve();
-        });
-        
-        readStream.pipe(writeStream);
+        fileStream.pipe(writeStream);
     });
     
-    const stats = await fs.stat(finalFilePath);
+    console.log(`[Local Storage] 档案流式传输完成: ${fileName}, 大小: ${size} bytes`);
+    
     const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
     
     console.log(`[Local Storage] 正在将档案资讯写入资料库: ${fileName}`);
@@ -64,8 +59,8 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
         message_id: messageId,
         fileName,
         mimetype,
-        size: stats.size,
-        file_id: relativeFilePath, // **关键：现在储存的是相对路径**
+        size: size, // 使用流传输过程中计算的大小
+        file_id: relativeFilePath,
         thumb_file_id: null,
         date: Date.now(),
     }, folderId, userId, 'local');
@@ -124,40 +119,32 @@ async function remove(files, folders, userId) {
 // **修正：递回清理空目录的辅助函数**
 async function removeEmptyDirsRecursive(directoryPath, userBaseDir) {
     try {
-        // **关键修正**: 在尝试读取目录前，先检查它是否存在。
-        // 这可以防止因其他清理操作已删除该目录而产生的错误日志。
         if (!fsSync.existsSync(directoryPath)) {
             return;
         }
 
-        // 安全检查，确保不会删除到使用者目录之外
         if (!directoryPath.startsWith(userBaseDir) || directoryPath === userBaseDir) return;
 
         let currentPath = directoryPath;
-        // 循环向上清理，每次循环也检查路径是否存在，更加保险
         while (currentPath !== userBaseDir && fsSync.existsSync(currentPath)) {
             const files = await fs.readdir(currentPath);
             if (files.length === 0) {
                 await fs.rmdir(currentPath);
                 currentPath = path.dirname(currentPath);
             } else {
-                break; // 如果目录不为空，则停止
+                break;
             }
         }
     } catch (error) {
-        // 初始的存在性检查应该能避免大多数 ENOENT 错误，
-        // 但保留 catch 以处理其他潜在的文件系统问题（如权限错误）。
     }
 }
 
 async function getUrl(file_id, userId) {
-    // URL 保持不变，但 server.js 中的路由将处理这个相对路径
     const userDir = path.join(UPLOAD_DIR, String(userId));
     const finalFilePath = path.join(userDir, file_id);
     return finalFilePath;
 }
 
-// **新增：为本地储存提供 stream 方法**
 function stream(file_id, userId) {
     const userDir = path.join(UPLOAD_DIR, String(userId));
     const finalFilePath = path.join(userDir, file_id);
