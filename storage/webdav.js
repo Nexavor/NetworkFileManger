@@ -3,6 +3,7 @@ const data = require('../data.js');
 const db = require('../database.js');
 const crypto = require('crypto');
 const fsp = require('fs').promises;
+const fs = require('fs'); // *** 关键修正：引入原生 'fs' 以使用 createReadStream ***
 const path = require('path');
 
 // 这个 client 将只用于写入和删除等非流式操作
@@ -50,40 +51,58 @@ async function getFolderPath(folderId, userId) {
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
+// **重构：上传逻辑改为流式**
 async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
+    console.log(`[WebDAV Storage] 开始处理上传: ${fileName} (暂存: ${tempFilePath})`);
     const client = getClient();
     const folderPath = await getFolderPath(folderId, userId);
     const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
-    
+    console.log(`[WebDAV Storage] 目标 WebDAV 路径: ${remotePath}`);
+
     if (folderPath && folderPath !== "/") {
         try {
+            console.log(`[WebDAV Storage] 确保远端目录存在: ${folderPath}`);
             await client.createDirectory(folderPath, { recursive: true });
         } catch (e) {
             if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
                  throw new Error(`建立 WebDAV 目录失败 (${e.response.status}): ${e.message}`);
             }
+            // 忽略“Method Not Allowed”或“Not Implemented”错误，因为某些服务器不支持重复建立目录
         }
     }
+    
+    // **核心修改：使用流式上传**
+    console.log(`[WebDAV Storage] 建立档案读取流: ${tempFilePath}`);
+    const readStream = fs.createReadStream(tempFilePath);
+    
+    // 获取文件大小以供写入资料库
+    const stats = await fsp.stat(tempFilePath);
 
-    const fileBuffer = await fsp.readFile(tempFilePath);
-    const success = await client.putFileContents(remotePath, fileBuffer, { overwrite: true });
+    console.log(`[WebDAV Storage] 开始将档案流上传至 ${remotePath}`);
+    const success = await client.putFileContents(remotePath, readStream, { 
+      overwrite: true,
+      contentLength: stats.size // 提供档案大小
+    });
 
     if (!success) {
+        console.error(`[WebDAV Storage] putFileContents 操作返回 false`);
         throw new Error('WebDAV putFileContents 操作失败');
     }
+    console.log(`[WebDAV Storage] 档案流式上传成功`);
 
-    const stat = await client.stat(remotePath);
     const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
 
+    console.log(`[WebDAV Storage] 正在将档案资讯写入资料库: ${fileName}`);
     const dbResult = await data.addFile({
         message_id: messageId,
         fileName,
         mimetype,
-        size: stat.size,
+        size: stats.size, // 使用先前获取的大小
         file_id: remotePath,
-        date: new Date(stat.lastmod).getTime(),
+        date: Date.now(),
     }, folderId, userId, 'webdav');
     
+    console.log(`[WebDAV Storage] 档案 ${fileName} 成功储存至 WebDAV 并记录到资料库。`);
     return { success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId };
 }
 
