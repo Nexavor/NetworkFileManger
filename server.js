@@ -287,6 +287,7 @@ app.post('/upload', requireLogin, (req, res) => {
         fileProcessingPromises.push(promise);
     });
 
+    // --- *** 关键修正：移除 processFile 函数中冗余的 try-catch *** ---
     async function processFile(stream, filename, mimeType, index) {
         // 等待所有字段解析完成
         await new Promise(res => {
@@ -308,7 +309,6 @@ app.post('/upload', requireLogin, (req, res) => {
         let currentFileName = pathParts.pop() || filename;
         const folderPathParts = pathParts;
         
-        // --- *** 关键修正：移除冗余的 try-catch 块 *** ---
         const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
 
         if (action === 'overwrite') {
@@ -473,14 +473,14 @@ app.get('/api/folder/:id', requireLogin, async (req, res) => {
         const contents = await data.getFolderContents(folderId, req.session.userId);
         const path = await data.getFolderPath(folderId, req.session.userId);
         res.json({ contents, path });
-    } catch (error) { res.status(500).json({ success: false, message: '读取资料夹内容失败。' }); }
+    } catch (error) { res.status(500).json({ success: false, message: '读取资料夾内容失败。' }); }
 });
 
 app.post('/api/folder', requireLogin, async (req, res) => {
     const { name, parentId } = req.body;
     const userId = req.session.userId;
     if (!name || !parentId) {
-        return res.status(400).json({ success: false, message: '缺少资料夹名称或父 ID。' });
+        return res.status(400).json({ success: false, message: '缺少资料夾名称或父 ID。' });
     }
     
     try {
