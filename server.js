@@ -4,7 +4,7 @@ const session = require('express-session');
 const Busboy = require('busboy'); // 引入 busboy
 const path = require('path');
 const axios = require('axios');
-const archiver = 'archiver';
+const archiver = require('archiver');
 const bcrypt = require('bcrypt');
 const fs = require('fs');
 const fsp = require('fs').promises;
@@ -141,86 +141,84 @@ app.post('/upload', requireLogin, (req, res) => {
     const storage = storageManager.getStorage();
     const busboy = Busboy({ headers: req.headers });
 
-    let initialFolderId;
-    let resolutions = {};
-    let caption = '';
-    const fileProcessingPromises = [];
-
+    const fields = {};
+    const filesToProcess = [];
+    
     busboy.on('field', (fieldname, val) => {
-        console.log(`[Busboy] 收到字段: ${fieldname} = ${val}`);
-        if (fieldname === 'folderId') {
-            initialFolderId = parseInt(val, 10);
-        } else if (fieldname === 'resolutions') {
-            resolutions = JSON.parse(val);
-        } else if (fieldname === 'caption') {
-            caption = val;
-        }
+        fields[fieldname] = val;
     });
 
     busboy.on('file', (fieldname, fileStream, fileInfo) => {
+        // busboy v1.x fileInfo has filename, encoding, mimeType
         const { filename, encoding, mimeType } = fileInfo;
+        
+        // 关键修正：确保从 fileInfo 中获取正确的档名（现在应该包含了 webkitRelativePath）
         const decodedFilename = decodeURIComponent(Buffer.from(filename, 'latin1').toString('utf8'));
         console.log(`[Busboy] 开始接收文件流: ${decodedFilename}, MimeType: ${mimeType}`);
 
-        const processFile = async () => {
-            try {
-                // 等待 folderId 被解析
-                if (typeof initialFolderId === 'undefined') {
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                }
-
-                const action = resolutions[decodedFilename] || 'upload';
-
-                if (action === 'skip') {
-                    console.log(`[Server] 侦测到 'skip' 操作，消耗并跳过文件流: ${decodedFilename}`);
-                    fileStream.resume(); // 消耗掉流，防止请求挂起
-                    return;
-                }
-
-                const pathParts = decodedFilename.split('/');
-                let finalFilename = pathParts.pop() || decodedFilename;
-                const folderPathParts = pathParts;
-                
-                console.log(`[Server] 解析路径... 档名: ${finalFilename}, 目标子路径:`, folderPathParts);
-                const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
-                console.log(`[Server] 解析后最终资料夹ID: ${targetFolderId}`);
-
-                if (action === 'overwrite') {
-                    const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                    if (existingItem) {
-                        console.log(`[Server] 侦测到 'overwrite' 操作，删除已存在项目: ${finalFilename} (ID: ${existingItem.id})`);
-                        await data.unifiedDelete(existingItem.id, existingItem.type, userId);
-                    }
-                } else if (action === 'rename') {
-                    const originalFileName = finalFilename;
-                    finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
-                    console.log(`[Server] 侦测到 'rename' 操作，新档名为: ${finalFilename} (原档名: ${originalFileName})`);
-                } else {
-                     const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                     if (conflict) {
-                        console.log(`[Server] 侦测到冲突且无解决方案，消耗并跳过文件流: ${finalFilename}`);
-                        fileStream.resume();
-                        return;
-                     }
-                }
-
-                console.log(`[Server] 调用储存引擎 [${storage.type}] 上传文件流: ${finalFilename}`);
-                // **核心修改：直接传递文件流**
-                await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
-                console.log(`[Server] 储存引擎处理完成: ${finalFilename}`);
-
-            } catch (err) {
-                console.error(`[Server] 处理文件 ${decodedFilename} 时发生错误:`, err);
-                fileStream.resume(); // 确保流被消耗
-                // 将错误抛出，以便 Promise.allSettled 能捕获到
-                throw err;
-            }
-        };
-        fileProcessingPromises.push(processFile());
+        filesToProcess.push({
+            fileStream,
+            decodedFilename,
+            mimeType
+        });
     });
 
     busboy.on('finish', async () => {
-        console.log('[Busboy] 所有字段和文件流接收完成，等待处理程序...');
+        console.log('[Busboy] 所有字段和文件流接收完成，开始处理...');
+        const fileProcessingPromises = [];
+        const initialFolderId = parseInt(fields.folderId, 10);
+        const resolutions = JSON.parse(fields.resolutions || '{}');
+        const caption = fields.caption || '';
+        
+        if (isNaN(initialFolderId)) {
+            return res.status(400).json({ success: false, message: '无效的目标资料夹' });
+        }
+
+        for (const file of filesToProcess) {
+            const processFile = async () => {
+                const { fileStream, decodedFilename, mimeType } = file;
+                try {
+                    const action = resolutions[decodedFilename] || 'upload';
+
+                    if (action === 'skip') {
+                        console.log(`[Server] 侦测到 'skip' 操作，消耗并跳过文件流: ${decodedFilename}`);
+                        fileStream.resume();
+                        return;
+                    }
+
+                    const pathParts = decodedFilename.split('/');
+                    let finalFilename = pathParts.pop() || decodedFilename;
+                    const folderPathParts = pathParts;
+                    
+                    const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
+
+                    if (action === 'overwrite') {
+                        const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
+                        if (existingItem) {
+                            await data.unifiedDelete(existingItem.id, existingItem.type, userId);
+                        }
+                    } else if (action === 'rename') {
+                        const originalFileName = finalFilename;
+                        finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
+                        console.log(`[Server] 侦测到 'rename' 操作，新档名为: ${finalFilename} (原档名: ${originalFileName})`);
+                    } else {
+                         const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
+                         if (conflict) {
+                            console.log(`[Server] 侦测到冲突且无解决方案，消耗并跳过文件流: ${finalFilename}`);
+                            fileStream.resume();
+                            return;
+                         }
+                    }
+                    await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
+                } catch (err) {
+                    console.error(`[Server] 处理文件 ${decodedFilename} 时发生错误:`, err);
+                    fileStream.resume();
+                    throw err;
+                }
+            };
+            fileProcessingPromises.push(processFile());
+        }
+
         const results = await Promise.allSettled(fileProcessingPromises);
         
         const failures = results.filter(r => r.status === 'rejected');
@@ -292,7 +290,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
     } catch (error) {
         res.status(500).json({ success: false, message: '伺服器内部错误: ' + error.message });
     } finally {
-        if (fsSync.existsSync(tempFilePath)) {
+        if (fs.existsSync(tempFilePath)) {
             await fsp.unlink(tempFilePath).catch(err => {});
         }
     }
@@ -619,7 +617,7 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
             return res.status(404).send('找不到任何可下载的档案');
         }
         
-        const archive = archiver('zip', { zlib: { level: 9 } });
+        const archive = require('archiver')('zip', { zlib: { level: 9 } });
         res.attachment('download.zip');
         archive.pipe(res);
 
