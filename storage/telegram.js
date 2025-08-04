@@ -10,11 +10,10 @@ const crypto = require('crypto');
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 const TMP_DIR = path.join(__dirname, '..', 'data', 'tmp');
 
-// upload 函数的第一个参数改为 fileStream
+// upload 函数的第一个参数改回 fileStream
 async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '') {
   console.log(`[Telegram Storage] 开始处理流式上传: ${fileName}`);
   
-  // 为 Telegram 创建一个唯一的临时文件
   const tempFileName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}-${fileName}`;
   const tempFilePath = path.join(TMP_DIR, tempFileName);
 
@@ -25,7 +24,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
         fileStream.pipe(writeStream);
         writeStream.on('finish', resolve);
         writeStream.on('error', reject);
-        fileStream.on('error', reject);
+        fileStream.on('error', reject); // 捕获源流的错误
     });
     console.log(`[Telegram Storage] 档案已暂存至: ${tempFilePath}`);
 
