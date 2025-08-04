@@ -50,7 +50,8 @@ async function getFolderPath(folderId, userId) {
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
-async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
+// 将 tempFilePath 改为 fileStream
+async function upload(fileStream, fileName, mimetype, userId, folderId) {
     const client = getClient();
     const folderPath = await getFolderPath(folderId, userId);
     const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
@@ -65,8 +66,8 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
         }
     }
 
-    const fileBuffer = await fsp.readFile(tempFilePath);
-    const success = await client.putFileContents(remotePath, fileBuffer, { overwrite: true });
+    // 直接将流传递给 putFileContents
+    const success = await client.putFileContents(remotePath, fileStream, { overwrite: true });
 
     if (!success) {
         throw new Error('WebDAV putFileContents 操作失败');
