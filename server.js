@@ -266,7 +266,6 @@ app.post('/upload', requireLogin, (req, res) => {
 
     let busboy;
     try {
-        // *** 核心修正：移除 'new' 关键字 ***
         busboy = Busboy({ headers: req.headers });
     } catch (e) {
         console.error('[Server] Busboy 初始化失败:', e);
@@ -278,9 +277,9 @@ app.post('/upload', requireLogin, (req, res) => {
         formFields[fieldname] = val;
     });
 
-    busboy.on('file', (fieldname, fileStream, filename, encoding, mimetype) => {
-        const decodedFilename = decodeURIComponent(escape(filename));
-        console.log(`[Server] Busboy 开始接收档案流: ${decodedFilename} (MIME: ${mimetype})`);
+    busboy.on('file', (fieldname, fileStream, { filename, encoding, mimeType }) => {
+        const decodedFilename = decodeURIComponent(filename);
+        console.log(`[Server] Busboy 开始接收档案流: ${decodedFilename} (MIME: ${mimeType})`);
 
         const filePromise = new Promise(async (resolve, reject) => {
             try {
@@ -350,7 +349,7 @@ app.post('/upload', requireLogin, (req, res) => {
                 });
                 
                 console.log(`[Server] 调用储存引擎 [${storage.type}] 上传档案流: ${fileName}`);
-                const result = await storage.upload(fileStream, fileName, mimetype, () => fileSize, userId, targetFolderId, formFields.caption || '');
+                const result = await storage.upload(fileStream, fileName, mimeType, () => fileSize, userId, targetFolderId, formFields.caption || '');
                 console.log(`[Server] 储存引擎处理完成: ${fileName}`);
                 resolve(result);
 
