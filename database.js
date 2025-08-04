@@ -77,8 +77,9 @@ function createDependentTables() {
             }
         });
 
+        // --- *** 关键修正：将 message_id 的型态从 INTEGER 改为 TEXT *** ---
         db.run(`CREATE TABLE IF NOT EXISTS files (
-            message_id INTEGER PRIMARY KEY,
+            message_id TEXT PRIMARY KEY,
             fileName TEXT NOT NULL,
             mimetype TEXT,
             file_id TEXT NOT NULL,
@@ -97,7 +98,7 @@ function createDependentTables() {
             if (err) {
                 console.error("[DB-ERROR] 建立 'files' 表失败:", err.message);
             } else {
-                console.log("[DB] 'files' 表已确认存在。");
+                console.log("[DB] 'files' 表已确认存在 (message_id 型态已确认为 TEXT)。");
                 console.log('[DB] 资料库结构初始化完成。');
                 checkAndCreateAdmin();
             }
