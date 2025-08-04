@@ -1,5 +1,3 @@
-// storage/telegram.js
-
 require('dotenv').config();
 const axios = require('axios');
 const FormData = require('form-data');
@@ -8,16 +6,18 @@ const fs = require('fs'); // 引入 fs 模组
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 
-// *** 关键修正: 将 upload 函数的第一个参数从 tempFilePath 改为 fileBuffer ***
-async function upload(fileBuffer, fileName, mimetype, userId, folderId, caption = '') {
-  console.log(`[Telegram Storage] 开始上传档案: ${fileName} (来自记忆体 Buffer)`);
+// 将 upload 函数的第一个参数从 fileBuffer 改为 tempFilePath
+async function upload(tempFilePath, fileName, mimetype, userId, folderId, caption = '') {
+  console.log(`[Telegram Storage] 开始上传档案: ${fileName} 到暂存路径: ${tempFilePath}`);
   try {
     const formData = new FormData();
     formData.append('chat_id', process.env.CHANNEL_ID);
     formData.append('caption', caption || fileName);
     
-    // *** 关键修正: 直接将 Buffer 附加到表单中 ***
-    formData.append('document', fileBuffer, { filename: fileName });
+    // 从临时文件路径创建可读流并添加到表单中
+    console.log(`[Telegram Storage] 建立档案读取流: ${tempFilePath}`);
+    const fileStream = fs.createReadStream(tempFilePath);
+    formData.append('document', fileStream, { filename: fileName });
 
     console.log(`[Telegram Storage] 正在发送档案到 Telegram API...`);
     const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
@@ -52,3 +52,48 @@ async function upload(fileBuffer, fileName, mimetype, userId, folderId, caption 
     return { success: false, error: { description: errorDescription }};
   }
 }
+
+async function remove(files, userId) {
+    const messageIds = files.map(f => f.message_id);
+    const results = { success: [], failure: [] };
+    if (!Array.isArray(messageIds) || messageIds.length === 0) return results;
+
+    for (const messageId of messageIds) {
+        try {
+            const res = await axios.post(`${TELEGRAM_API}/deleteMessage`, {
+                chat_id: process.env.CHANNEL_ID,
+                message_id: messageId,
+            });
+            if (res.data.ok || (res.data.description && res.data.description.includes("message to delete not found"))) {
+                results.success.push(messageId);
+            } else {
+                results.failure.push({ id: messageId, reason: res.data.description });
+            }
+        } catch (error) {
+            const reason = error.response ? error.response.data.description : error.message;
+            if (reason.includes("message to delete not found")) {
+                results.success.push(messageId);
+            } else {
+                results.failure.push({ id: messageId, reason });
+            }
+        }
+    }
+
+    if (results.success.length > 0) {
+        await data.deleteFilesByIds(results.success, userId);
+    }
+    
+    return results;
+}
+
+async function getUrl(file_id) {
+  if (!file_id || typeof file_id !== 'string') return null;
+  const cleaned_file_id = file_id.trim();
+  try {
+    const response = await axios.get(`${TELEGRAM_API}/getFile`, { params: { file_id: cleaned_file_id } });
+    if (response.data.ok) return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${response.data.result.file_path}`;
+  } catch (error) { console.error("获取文件链接失败:", error.response?.data?.description || error.message); }
+  return null;
+}
+
+module.exports = { upload, remove, getUrl, type: 'telegram' };
