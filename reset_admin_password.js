@@ -1,4 +1,3 @@
-require('dotenv').config(); // 确保 .env 文件被加载
 const sqlite3 = require('sqlite3');
 const bcrypt = require('bcrypt');
 const path = require('path');
@@ -11,10 +10,6 @@ const ADMIN_USERNAME = process.env.ADMIN_USER || 'admin';
 const DB_PATH = path.join(__dirname, 'data', 'file-manager.db');
 // --- 配置区结束 ---
 
-// --- 新增日志 ---
-console.log(`[RESET-TOOL] 目标管理员: ${ADMIN_USERNAME}`);
-console.log(`[RESET-TOOL] 目标资料库: ${DB_PATH}`);
-
 const db = new sqlite3.Database(DB_PATH, (err) => {
     if (err) {
         console.error('\x1b[31m%s\x1b[0m', `[错误] 无法连接到资料库: ${DB_PATH}`);
@@ -22,7 +17,6 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
         console.log('请确认您的专案路径是否正确，以及 `data/file-manager.db` 档案是否存在。');
         return;
     }
-    console.log('[RESET-TOOL] 成功连接到资料库。');
 });
 
 const rl = readline.createInterface({
@@ -43,16 +37,11 @@ async function findUser(username) {
     });
 }
 
-// --- 新增功能：为新管理员创建根目录 ---
 async function createRootFolder(userId) {
     return new Promise((resolve, reject) => {
         const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
         db.run(sql, ['/', null, userId], function (err) {
-            if (err) {
-                 console.error('\x1b[31m%s\x1b[0m', `[错误] 为新管理员 (ID: ${userId}) 建立根目录失败:`, err.message);
-                 return reject(err);
-            }
-            console.log(`[RESET-TOOL] 已为新管理员 (ID: ${userId}) 成功建立根目录。`);
+            if (err) return reject(err);
             resolve();
         });
     });
@@ -71,16 +60,13 @@ async function resetOrCreateAdmin() {
     }
 
     try {
-        console.log('[RESET-TOOL] 正在生成密码杂凑...');
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(newPassword, salt);
-        console.log('[RESET-TOOL] 密码杂凑已生成。');
 
         const existingUser = await findUser(ADMIN_USERNAME);
 
         if (existingUser) {
             // --- 使用者存在，更新密码 ---
-            console.log(`[RESET-TOOL] 找到已存在的使用者 [${ADMIN_USERNAME}]，正在更新密码...`);
             const sql = `UPDATE users SET password = ?, is_admin = 1 WHERE id = ?`;
             db.run(sql, [hashedPassword, existingUser.id], function(err) {
                 if (err) {
@@ -93,7 +79,6 @@ async function resetOrCreateAdmin() {
             });
         } else {
             // --- 使用者不存在，建立新管理员 ---
-            console.log(`[RESET-TOOL] 使用者 [${ADMIN_USERNAME}] 不存在，正在建立新的管理员帐号...`);
             const insertSql = `INSERT INTO users (username, password, is_admin) VALUES (?, ?, 1)`;
             db.run(insertSql, [ADMIN_USERNAME, hashedPassword], async function(err) {
                 if (err) {
@@ -103,7 +88,6 @@ async function resetOrCreateAdmin() {
                     return;
                 }
                 const newUserId = this.lastID;
-                console.log(`[RESET-TOOL] 新管理员已建立 (ID: ${newUserId})。`);
                 
                 // 为新管理员建立根目录
                 await createRootFolder(newUserId);
