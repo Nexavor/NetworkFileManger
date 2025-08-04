@@ -1,7 +1,8 @@
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
-const data = require('../data.js'); // 依赖 data.js 来获取路径
+const data = require('../data.js');
+const crypto = require('crypto');
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
 
@@ -9,47 +10,58 @@ const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
 async function setup() {
     try {
         await fs.mkdir(UPLOAD_DIR, { recursive: true });
-        console.log('[Local Storage] 上传目录已确认存在:', UPLOAD_DIR);
+        console.log('[调试日志][Local] 上传目录已确认存在:', UPLOAD_DIR);
     } catch (e) {
-        console.error('[Local Storage] 建立上传目录失败:', e);
+        console.error('[调试日志][Local] 建立上传目录失败:', e);
     }
 }
 setup();
 
-// **重构：上传逻辑**
-// 现在改为纯流式上传
+
+/**
+ * [重构] 使用流式传输将档案储存到本地伺服器。
+ * @param {string} tempFilePath - Multer 暂存盘案的完整路径。
+ * @param {string} fileName - 档案的原始名称。
+ * @param {string} mimetype - 档案的MIME类型。
+ * @param {number} userId - 使用者ID。
+ * @param {number} folderId - 目标资料夹ID。
+ * @returns {Promise<object>} 上传结果。
+ */
 async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
-    console.log(`[Local Storage] 开始处理上传: ${fileName} (暂存: ${tempFilePath})`);
+    console.log(`[调试日志][Local] 开始处理本地上传: ${fileName}`);
+    console.log(`[调试日志][Local] 暂存路径: ${tempFilePath}`);
     const userDir = path.join(UPLOAD_DIR, String(userId));
     
-    // 获取目标资料夾的完整相对路径
+    // 取得目标资料夹的完整相对路径
     const folderPathParts = await data.getFolderPath(folderId, userId);
+    // 从路径中移除根目录'/'部分，以建立正确的相对路径
     const relativeFolderPath = path.join(...folderPathParts.slice(1).map(p => p.name)); 
     const finalFolderPath = path.join(userDir, relativeFolderPath);
 
     // 建立目标目录
-    console.log(`[Local Storage] 确保目标目录存在: ${finalFolderPath}`);
+    console.log(`[调试日志][Local] 确保目标目录存在: ${finalFolderPath}`);
     await fs.mkdir(finalFolderPath, { recursive: true });
 
     const finalFilePath = path.join(finalFolderPath, fileName);
-    const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/'); // 储存相对路径
-    console.log(`[Local Storage] 最终档案路径: ${finalFilePath}`);
+    const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/'); // 储存相对路径并统一分隔符
+    console.log(`[调试日志][Local] 最终档案储存路径: ${finalFilePath}`);
+    console.log(`[调试日志][Local] 资料库记录相对路径: ${relativeFilePath}`);
 
-    // **核心修改：使用流式传输**
+    // 使用流式传输移动档案，避免占用大量记忆体
     await new Promise((resolve, reject) => {
         const readStream = fsSync.createReadStream(tempFilePath);
         const writeStream = fsSync.createWriteStream(finalFilePath);
         
         readStream.on('error', (err) => {
-            console.error(`[Local Storage] 读取暂存盘案流失败: ${tempFilePath}`, err);
+            console.error(`[调试日志][Local] 读取暂存盘案流失败: ${tempFilePath}`, err);
             reject(err);
         });
         writeStream.on('error', (err) => {
-            console.error(`[Local Storage] 写入最终档案流失败: ${finalFilePath}`, err);
+            console.error(`[调试日志][Local] 写入最终档案流失败: ${finalFilePath}`, err);
             reject(err);
         });
         writeStream.on('finish', () => {
-            console.log(`[Local Storage] 档案流式传输完成: ${fileName}`);
+            console.log(`[调试日志][Local] 档案流式传输完成: ${fileName}`);
             resolve();
         });
         
@@ -57,38 +69,39 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
     });
     
     const stats = await fs.stat(finalFilePath);
-    const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
+    console.log(`[调试日志][Local] 取得档案状态成功, 大小: ${stats.size} bytes`);
     
-    console.log(`[Local Storage] 正在将档案资讯写入资料库: ${fileName}`);
+    // 使用更可靠的方式产生唯一 ID
+    const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
+    
+    console.log(`[调试日志][Local] 正在将档案资讯写入资料库, Message ID: ${messageId}`);
     const dbResult = await data.addFile({
         message_id: messageId,
         fileName,
         mimetype,
         size: stats.size,
-        file_id: relativeFilePath, // **关键：现在储存的是相对路径**
-        thumb_file_id: null,
+        file_id: relativeFilePath, // 关键：现在储存的是相对路径
+        thumb_file_id: null, // 本地储存没有原生缩图
         date: Date.now(),
     }, folderId, userId, 'local');
     
-    console.log(`[Local Storage] 档案 ${fileName} 成功储存至本地并记录到资料库。`);
+    console.log(`[调试日志][Local] 档案 ${fileName} 成功储存至本地并记录到资料库。`);
     return { success: true, message: '文件已储存至本地。', fileId: dbResult.fileId };
 }
 
 
-// **重构：删除逻辑**
-// 现在会删除实体档案，并清理空的父目录
 async function remove(files, folders, userId) {
     const results = { success: true, errors: [] };
     const userDir = path.join(UPLOAD_DIR, String(userId));
-    const parentDirs = new Set(); // 用于后续清理
+    const parentDirs = new Set(); 
 
     // 删除档案
     for (const file of files) {
         try {
-            const filePath = path.join(userDir, file.file_id); // file_id 是相对路径
+            const filePath = path.join(userDir, file.file_id);
             if (fsSync.existsSync(filePath)) {
                 parentDirs.add(path.dirname(filePath));
-                await fs.unlink(filePath);
+                await fsp.unlink(filePath);
             }
         } catch (error) {
             const errorMessage = `删除本地文件 [${file.file_id}] 失败: ${error.message}`;
@@ -100,11 +113,10 @@ async function remove(files, folders, userId) {
     // 删除资料夹
     for (const folder of folders) {
         try {
-            // folder.path 也是相对路径
             const folderPath = path.join(userDir, folder.path);
             if (fsSync.existsSync(folderPath)) {
                 parentDirs.add(path.dirname(folderPath));
-                 await fs.rm(folderPath, { recursive: true, force: true });
+                 await fsp.rm(folderPath, { recursive: true, force: true });
             }
         } catch (error) {
             const errorMessage = `删除本地资料夹 [${folder.path}] 失败: ${error.message}`;
@@ -121,43 +133,35 @@ async function remove(files, folders, userId) {
     return results;
 }
 
-// **修正：递回清理空目录的辅助函数**
 async function removeEmptyDirsRecursive(directoryPath, userBaseDir) {
     try {
-        // **关键修正**: 在尝试读取目录前，先检查它是否存在。
-        // 这可以防止因其他清理操作已删除该目录而产生的错误日志。
         if (!fsSync.existsSync(directoryPath)) {
             return;
         }
 
-        // 安全检查，确保不会删除到使用者目录之外
         if (!directoryPath.startsWith(userBaseDir) || directoryPath === userBaseDir) return;
 
         let currentPath = directoryPath;
-        // 循环向上清理，每次循环也检查路径是否存在，更加保险
         while (currentPath !== userBaseDir && fsSync.existsSync(currentPath)) {
-            const files = await fs.readdir(currentPath);
+            const files = await fsp.readdir(currentPath);
             if (files.length === 0) {
-                await fs.rmdir(currentPath);
+                await fsp.rmdir(currentPath);
                 currentPath = path.dirname(currentPath);
             } else {
-                break; // 如果目录不为空，则停止
+                break;
             }
         }
     } catch (error) {
-        // 初始的存在性检查应该能避免大多数 ENOENT 错误，
-        // 但保留 catch 以处理其他潜在的文件系统问题（如权限错误）。
+        // 忽略可能的竞争条件错误
     }
 }
 
 async function getUrl(file_id, userId) {
-    // URL 保持不变，但 server.js 中的路由将处理这个相对路径
     const userDir = path.join(UPLOAD_DIR, String(userId));
     const finalFilePath = path.join(userDir, file_id);
     return finalFilePath;
 }
 
-// **新增：为本地储存提供 stream 方法**
 function stream(file_id, userId) {
     const userDir = path.join(UPLOAD_DIR, String(userId));
     const finalFilePath = path.join(userDir, file_id);
