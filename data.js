@@ -984,22 +984,38 @@ async function resolvePathToFolderId(startFolderId, pathParts, userId) {
     for (const part of pathParts) {
         if (!part) continue;
 
-        let folder = await new Promise((resolve, reject) => {
-            const sql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
-            db.get(sql, [part, currentParentId, userId], (err, row) => err ? reject(err) : resolve(row));
+        // 首先尝试直接插入新资料夹
+        const newFolderId = await new Promise((resolve, reject) => {
+            const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
+            db.run(sql, [part, currentParentId, userId], function(err) {
+                if (err) {
+                    // 如果错误是唯一性约束失败，代表资料夹已被其他并发操作建立
+                    if (err.message.includes('UNIQUE')) {
+                        resolve(null); // 回传 null 表示需要后续查询
+                    } else {
+                        reject(err); // 若是其他错误，则抛出
+                    }
+                } else {
+                    resolve(this.lastID); // 插入成功，回传新的 ID
+                }
+            });
         });
 
-        if (folder) {
-            currentParentId = folder.id;
+        if (newFolderId) {
+            // 如果我们成功建立了新资料夹，就使用新的 ID
+            currentParentId = newFolderId;
         } else {
-            const newFolder = await new Promise((resolve, reject) => {
-                const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
-                db.run(sql, [part, currentParentId, userId], function(err) {
+            // 如果插入失败因为资料夹已存在，我们就查询它的 ID
+            const existingFolder = await new Promise((resolve, reject) => {
+                const sql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
+                db.get(sql, [part, currentParentId, userId], (err, row) => {
                     if (err) return reject(err);
-                    resolve({ id: this.lastID });
+                    // 理论上此时必定能找到，否则表示有更严重的问题
+                    if (!row) return reject(new Error(`在发生 UNIQUE 错误后，仍找不到资料夹 '${part}'。`));
+                    resolve(row);
                 });
             });
-            currentParentId = newFolder.id;
+            currentParentId = existingFolder.id;
         }
     }
     return currentParentId;
