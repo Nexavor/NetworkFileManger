@@ -177,10 +177,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     
         const formData = new FormData();
+        // --- *** 关键修正 开始 *** ---
+        // 将 webkitRelativePath 作为第三个参数（档名）传递，以便伺服器能够解析资料夹结构
         fileObjects.forEach(file => {
-            formData.append('files', file);
-            formData.append('relativePaths', file.webkitRelativePath || file.name);
+            formData.append('files', file, file.webkitRelativePath || file.name);
         });
+        // 不再需要独立的 relativePaths 栏位
+        // --- *** 关键修正 结束 *** ---
         
         formData.append('folderId', targetFolderId);
         formData.append('resolutions', JSON.stringify(resolutions)); // 将解决方案发送给服务器
@@ -952,7 +955,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 const { fileConflicts, folderConflicts } = conflictCheckRes.data;
     
-                // 为了能递归检查，需获取目标资料夹中子资料夹的 ID
+                // 为了能递归检查，需获取目标资料夾中子资料夾的 ID
                 const destFolderContentsRes = await axios.get(`/api/folder/${currentTargetFolderId}`);
                 const destFolderMap = new Map(destFolderContentsRes.data.contents.folders.map(f => [f.name, f.id]));
     
@@ -1115,4 +1118,3 @@ document.addEventListener('DOMContentLoaded', () => {
         window.addEventListener('resize', checkScreenWidthAndCollapse);
     }
 });
-
