@@ -1,8 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
-// const multer = require('multer'); // 不再需要 multer 进行磁盘存储
-const busboy = require('connect-busboy'); // 引入 busboy
+const busboy = require('connect-busboy'); 
 const path = require('path');
 const axios = require('axios');
 const archiver = require('archiver');
@@ -16,34 +15,31 @@ const storageManager = require('./storage');
 
 const app = express();
 
-// --- 暂存文件目录与清理 ---
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
 async function cleanupTempDir() {
     try {
         if (!fs.existsSync(TMP_DIR)) {
             await fsp.mkdir(TMP_DIR, { recursive: true });
+            console.log(`[SERVER] 暂存目录已建立: ${TMP_DIR}`);
             return;
         }
+        console.log(`[SERVER] 正在清理暂存目录: ${TMP_DIR}`);
         const files = await fsp.readdir(TMP_DIR);
         for (const file of files) {
             try {
                 await fsp.unlink(path.join(TMP_DIR, file));
             } catch (err) {
-                // 在生产环境中，这类非致命警告可以被移除或记录到专门的日志文件
+                 console.warn(`[SERVER-WARN] 清理暂存档案失败 (可能已被移除): ${file}`, err.message);
             }
         }
+        console.log(`[SERVER] 暂存目录清理完成。`);
     } catch (error) {
-        console.error(`[严重错误] 清理暂存目录失败: ${TMP_DIR}。`, error);
+        console.error(`[SERVER-FATAL] 清理暂存目录失败: ${TMP_DIR}。`, error);
     }
 }
 cleanupTempDir();
 
-// 不再需要 multer 的磁盘存储配置
-// const diskStorage = multer.diskStorage({
-//   destination: (req, res, cb) => cb(null, TMP_DIR)
-// });
-// const upload = multer({ storage: diskStorage, limits: { fileSize: 1000 * 1024 * 1024 } });
 const PORT = process.env.PORT || 8100;
 
 app.use(session({
@@ -63,25 +59,27 @@ app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-// 使用 busboy 中间件
 app.use(busboy({
-    highWaterMark: 2 * 1024 * 1024, // 设置缓冲区大小
+    highWaterMark: 2 * 1024 * 1024, 
 }));
 
 
 // --- 中介软体 ---
-// 不再需要 fixFileNameEncoding，因为 busboy 会处理编码
-// const fixFileNameEncoding = (req, res, next) => { ... };
-
 function requireLogin(req, res, next) {
-  if (req.session.loggedIn) return next();
+  if (req.session.loggedIn) {
+      console.log(`[AUTH] User ID ${req.session.userId} 已登入，授权存取 ${req.originalUrl}`);
+      return next();
+  }
+  console.warn(`[AUTH-WARN] 未登入的使用者尝试存取 ${req.originalUrl}，重新导向到登入页面。`);
   res.redirect('/login');
 }
 
 function requireAdmin(req, res, next) {
     if (req.session.loggedIn && req.session.isAdmin) {
+        console.log(`[AUTH-ADMIN] 管理员 ID ${req.session.userId} 已登入，授权存取 ${req.originalUrl}`);
         return next();
     }
+    console.error(`[AUTH-ERROR] 存取被拒: User ID ${req.session.userId} 尝试存取管理员页面 ${req.originalUrl}`);
     res.status(403).send('权限不足');
 }
 
@@ -91,24 +89,31 @@ app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views/regi
 app.get('/editor', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/editor.html')));
 
 app.post('/login', async (req, res) => {
+    const { username } = req.body;
+    console.log(`[LOGIN] 使用者 [${username}] 尝试登入...`);
     try {
-        const user = await data.findUserByName(req.body.username);
+        const user = await data.findUserByName(username);
         if (user && await bcrypt.compare(req.body.password, user.password)) {
             req.session.loggedIn = true;
             req.session.userId = user.id;
             req.session.isAdmin = !!user.is_admin;
+            console.log(`[LOGIN-SUCCESS] 使用者 [${username}] (ID: ${user.id}, Admin: ${!!user.is_admin}) 登入成功。`);
             res.redirect('/');
         } else {
+            console.warn(`[LOGIN-FAIL] 使用者 [${username}] 登入失败：帐号或密码错误。`);
             res.status(401).send('帐号或密码错误');
         }
     } catch(error) {
+        console.error(`[LOGIN-ERROR] 登入时发生伺服器错误 for user [${username}]:`, error);
         res.status(500).send('登入时发生错误');
     }
 });
 
 app.post('/register', async (req, res) => {
     const { username, password } = req.body;
+    console.log(`[REGISTER] 新使用者 [${username}] 尝试注册...`);
     if (!username || !password) {
+        console.warn(`[REGISTER-FAIL] 使用者 [${username}] 注册失败：未提供帐号或密码。`);
         return res.status(400).send('请提供使用者名称和密码');
     }
     try {
@@ -117,39 +122,64 @@ app.post('/register', async (req, res) => {
         const newUser = await data.createUser(username, hashedPassword);
         await data.createFolder('/', null, newUser.id);
         await fsp.mkdir(path.join(__dirname, 'data', 'uploads', String(newUser.id)), { recursive: true });
+        console.log(`[REGISTER-SUCCESS] 新使用者 [${username}] (ID: ${newUser.id}) 注册成功并已建立根目录。`);
         res.redirect('/login');
     } catch (error) {
+        console.error(`[REGISTER-ERROR] 注册失败 for user [${username}]:`, error.message);
         res.status(500).send('注册失败，使用者名称可能已被使用。');
     }
 });
 
 app.get('/logout', (req, res) => {
+    const userId = req.session.userId;
     req.session.destroy(err => {
         if (err) {
+            console.error(`[LOGOUT-ERROR] 登出时发生错误 for User ID ${userId}:`, err);
             return res.redirect('/');
         }
         res.clearCookie('connect.sid');
+        console.log(`[LOGOUT] User ID ${userId} 已成功登出。`);
         res.redirect('/login');
     });
 });
 
 app.get('/', requireLogin, (req, res) => {
+    console.log(`[ROUTE] User ID ${req.session.userId} 存取根目录，正在查询其根资料夹...`);
     db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [req.session.userId], (err, rootFolder) => {
         if (err || !rootFolder) {
-            // Attempt to create root folder if missing for some reason
+            console.warn(`[ROUTE-WARN] User ID ${req.session.userId} 找不到根目录，尝试重新建立...`);
             data.createFolder('/', null, req.session.userId)
-                .then(newRoot => res.redirect(`/folder/${newRoot.id}`))
-                .catch(() => res.status(500).send("找不到您的根目录，也无法建立。"));
+                .then(newRoot => {
+                     console.log(`[ROUTE] 为 User ID ${req.session.userId} 成功建立根目录，ID: ${newRoot.id}`);
+                     res.redirect(`/folder/${newRoot.id}`);
+                })
+                .catch((creationErr) => {
+                    console.error(`[ROUTE-ERROR] 无法为 User ID ${req.session.userId} 建立根目录:`, creationErr);
+                    res.status(500).send("找不到您的根目录，也无法建立。");
+                });
             return;
         }
+        console.log(`[ROUTE] User ID ${req.session.userId} 的根目录为 ID: ${rootFolder.id}，正在重新导向...`);
         res.redirect(`/folder/${rootFolder.id}`);
     });
 });
-app.get('/folder/:id', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/manager.html')));
-app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/shares.html')));
-app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
+app.get('/folder/:id', requireLogin, (req, res) => {
+    console.log(`[ROUTE] User ID ${req.session.userId} 正在载入资料夹页面 for folder ID: ${req.params.id}`);
+    res.sendFile(path.join(__dirname, 'views/manager.html'));
+});
+app.get('/shares-page', requireLogin, (req, res) => {
+    console.log(`[ROUTE] User ID ${req.session.userId} 存取分享管理页面。`);
+    res.sendFile(path.join(__dirname, 'views/shares.html'));
+});
+app.get('/admin', requireAdmin, (req, res) => {
+    console.log(`[ROUTE-ADMIN] 管理员 ID ${req.session.userId} 存取管理后台。`);
+    res.sendFile(path.join(__dirname, 'views/admin.html'));
+});
 
-app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
+app.get('/scan', requireAdmin, (req, res) => {
+    console.log(`[ROUTE-ADMIN] 管理员 ID ${req.session.userId} 存取扫描页面。`);
+    res.sendFile(path.join(__dirname, 'views/scan.html'));
+});
 
 // --- API 端点 ---
 app.post('/api/user/change-password', requireLogin, async (req, res) => {
@@ -294,11 +324,13 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
 // --- **重构 /upload 路由为纯流式处理** ---
 app.post('/upload', requireLogin, (req, res) => {
     if (!req.busboy) {
+        console.error('[UPLOAD-ERROR] Busboy 中介软体未初始化。');
         return res.status(400).json({ success: false, message: '文件上传错误：缺少 busboy 实例。' });
     }
 
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
+    console.log(`[UPLOAD] User ID ${userId} 开始上传，使用储存模式: ${storage.type}`);
     const fields = {};
     const fileProcessingPromises = [];
     
@@ -309,13 +341,13 @@ app.post('/upload', requireLogin, (req, res) => {
     });
 
     req.busboy.on('field', (fieldname, val) => {
+        console.log(`[UPLOAD-BUSBOY] 收到栏位: ${fieldname} = ${val.substring(0, 100)}...`);
         if (fieldname === 'relativePaths') {
             if (!fields.relativePaths) fields.relativePaths = [];
             fields.relativePaths.push(val);
         } else {
             fields[fieldname] = val;
         }
-        // 当 folderId 被解析时，立即解决 Promise
         if (fieldname === 'folderId') {
             resolveFolderId(val);
         }
@@ -323,24 +355,28 @@ app.post('/upload', requireLogin, (req, res) => {
 
     req.busboy.on('file', (fieldname, fileStream, fileInfo) => {
         const { filename, mimeType } = fileInfo;
+        console.log(`[UPLOAD-BUSBOY] 开始接收档案: ${filename} (${mimeType})`);
         
         const filePromise = (async () => {
-            // 等待 folderId 被解析
             const initialFolderIdStr = await folderIdPromise;
             if (!initialFolderIdStr) {
+                console.error("[UPLOAD-ERROR] 请求中缺少 folderId。");
                 throw new Error("请求中缺少 folderId。");
             }
             const initialFolderId = parseInt(initialFolderIdStr, 10);
+            console.log(`[UPLOAD-PROCESS] 档案 [${filename}] 的目标根目录 ID: ${initialFolderId}`);
 
-            // 其余的字段现在应该是可用的了
             const resolutions = fields.resolutions ? JSON.parse(fields.resolutions) : {};
             const relativePaths = fields.relativePaths || [];
             
             const relativePath = relativePaths.find(p => path.basename(p) === filename) || filename;
             const action = resolutions[relativePath] || 'upload';
 
+            console.log(`[UPLOAD-PROCESS] 档案 [${filename}] 的相对路径: ${relativePath}, 冲突解决策略: ${action}`);
+
             if (action === 'skip') {
-                fileStream.resume(); // 消耗掉流，防止请求挂起
+                console.log(`[UPLOAD-PROCESS] 策略为 'skip'，跳过档案 [${filename}]`);
+                fileStream.resume(); 
                 return { skipped: true };
             }
 
@@ -353,18 +389,23 @@ app.post('/upload', requireLogin, (req, res) => {
             if (action === 'overwrite') {
                 const existingItem = await data.findItemInFolder(finalFileName, targetFolderId, userId);
                 if (existingItem) {
+                    console.log(`[UPLOAD-PROCESS] 策略为 'overwrite'，删除已存在项目 [${finalFileName}] (ID: ${existingItem.id})`);
                     await data.unifiedDelete(existingItem.id, existingItem.type, userId);
                 }
             } else if (action === 'rename') {
+                const oldName = finalFileName;
                 finalFileName = await data.findAvailableName(finalFileName, targetFolderId, userId, false);
+                console.log(`[UPLOAD-PROCESS] 策略为 'rename'，档案 [${oldName}] 将重新命名为 [${finalFileName}]`);
             } else {
                 const conflict = await data.findItemInFolder(finalFileName, targetFolderId, userId);
                 if (conflict) {
-                    fileStream.resume(); // 消耗掉流
+                    console.log(`[UPLOAD-PROCESS] 发现冲突且无解决策略，跳过档案 [${finalFileName}]`);
+                    fileStream.resume();
                     return { skipped: true };
                 }
             }
-
+            
+            console.log(`[UPLOAD-PROCESS] 开始将档案 [${finalFileName}] 的流传输到储存后端...`);
             return storage.upload(fileStream, finalFileName, mimeType, userId, targetFolderId, fields.caption || '');
         })();
         
@@ -372,10 +413,12 @@ app.post('/upload', requireLogin, (req, res) => {
     });
 
     req.busboy.on('finish', async () => {
+        console.log('[UPLOAD-BUSBOY] 所有栏位与档案接收完毕，等待处理完成...');
         try {
             const results = await Promise.all(fileProcessingPromises);
             const successfulUploads = results.filter(r => r && r.success);
             const skippedCount = results.filter(r => r && r.skipped).length;
+            console.log(`[UPLOAD-FINISH] 上传完成。成功: ${successfulUploads.length}, 跳过: ${skippedCount}`);
 
             if (successfulUploads.length === 0 && skippedCount > 0) {
                 res.json({ success: true, skippedAll: true, message: '所有文件因冲突而被跳过。' });
@@ -383,13 +426,13 @@ app.post('/upload', requireLogin, (req, res) => {
                 res.json({ success: true, results: successfulUploads });
             }
         } catch (error) {
+            console.error('[UPLOAD-ERROR] 处理上传时发生严重错误:', error);
             res.status(500).json({ success: false, message: '处理上传时发生错误: ' + error.message });
         }
     });
 
-    // 错误处理
     req.busboy.on('error', (err) => {
-        console.error('Busboy error:', err);
+        console.error('[UPLOAD-BUSBOY-ERROR] Busboy 解析错误:', err);
         if (!res.headersSent) {
             res.status(500).json({ success: false, message: '解析上传数据时出错。' });
         }
@@ -575,7 +618,7 @@ app.post('/api/folder', requireLogin, async (req, res) => {
 
         res.json(result);
     } catch (error) {
-         res.status(500).json({ success: false, message: error.message || '处理资料夹时发生错误。' });
+         res.status(500).json({ success: false, message: error.message || '处理资料夾时发生错误。' });
     }
 });
 
@@ -1092,5 +1135,6 @@ app.get('/share/download/:folderToken/:fileId', async (req, res) => {
 
 
 // 延长伺服器超时时间以支援大档案上传
-const server = app.listen(PORT, () => console.log(`✅ 伺服器已在 http://localhost:${PORT} 上运行`));
-server.setTimeout(30 * 60 * 1000); // 设定为 30 分钟
+const server = app.listen(PORT, () => console.log(`[SERVER] ✅ 伺服器已在 http://localhost:${PORT} 上运行`));
+server.setTimeout(30 * 60 * 1000);
+console.log(`[SERVER] 伺服器超时时间已设定为 30 分钟。`);
