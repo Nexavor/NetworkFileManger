@@ -148,7 +148,7 @@ app.post('/upload', requireLogin, (req, res) => {
 
     const fileProcessingPromises = [];
     const collectedFiles = [];
-    const collectedPaths = [];
+    let collectedPaths = [];
 
     busboy.on('field', (fieldname, val) => {
         console.log(`[Busboy] 收到字段: ${fieldname}=${val}`);
@@ -159,7 +159,8 @@ app.post('/upload', requireLogin, (req, res) => {
         } else if (fieldname === 'caption') {
             caption = val;
         } else if (fieldname === 'relativePaths') {
-            collectedPaths.push(val);
+             // **修正：路径现在是单一的逗号分隔字串**
+            collectedPaths = val.split(',');
         }
     });
 
