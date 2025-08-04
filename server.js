@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
-const Busboy = require('busboy'); // 引入 busboy
+const Busboy = require('busboy');
 const path = require('path');
 const axios = require('axios');
 const archiver = require('archiver');
@@ -134,17 +134,17 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- 重构后的上传路由 ---
+// --- 终极修正版上传路由 ---
 app.post('/upload', requireLogin, (req, res) => {
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
     const busboy = Busboy({ headers: req.headers });
 
-    const fields = { relativePaths: [] }; // 初始化 relativePaths 为阵列
-    const filesToProcess = [];
-    
+    const fields = { relativePaths: [] };
+    const fileProcessingPromises = [];
+    let fileCounter = 0; // 用于将档案与路径对应
+
     busboy.on('field', (fieldname, val) => {
-        // *** 关键修正：如果栏位是 relativePaths，就将值推入阵列 ***
         if (fieldname === 'relativePaths') {
             fields.relativePaths.push(val);
         } else {
@@ -153,89 +153,83 @@ app.post('/upload', requireLogin, (req, res) => {
     });
 
     busboy.on('file', (fieldname, fileStream, fileInfo) => {
-        const { filename, encoding, mimeType } = fileInfo;
-        filesToProcess.push({
-            fileStream,
-            originalFilename: filename, // 保留原始档名以供参考
-            mimeType
+        const currentFileIndex = fileCounter;
+        fileCounter++;
+
+        // 将处理每个档案的逻辑封装成一个 Promise
+        const p = new Promise(async (resolve, reject) => {
+            try {
+                // 等待所有非档案栏位都接收完毕
+                busboy.on('fieldsLimit', () => {
+                     reject(new Error('超过栏位数量限制'));
+                });
+                
+                // 确保我们在开始处理前已经获得了所有栏位
+                // 这是一个小技巧，透过一个事件来等待栏位解析
+                if (!fields.folderId) {
+                    await new Promise(resolveWait => busboy.once('field', resolveWait));
+                }
+
+                const initialFolderId = parseInt(fields.folderId, 10);
+                if (isNaN(initialFolderId)) {
+                    return reject(new Error('无效的目标资料夹ID'));
+                }
+                
+                const resolutions = JSON.parse(fields.resolutions || '{}');
+                const caption = fields.caption || '';
+                const relativePath = fields.relativePaths[currentFileIndex];
+                
+                if (!relativePath) {
+                    return reject(new Error(`找不到索引为 ${currentFileIndex} 的相对路径`));
+                }
+
+                const action = resolutions[relativePath] || 'upload';
+
+                if (action === 'skip') {
+                    fileStream.resume();
+                    return resolve({ status: 'skipped', path: relativePath });
+                }
+
+                const pathParts = relativePath.split('/');
+                let finalFilename = pathParts.pop() || relativePath;
+                const folderPathParts = pathParts;
+
+                const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
+                
+                if (action === 'overwrite') {
+                    const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
+                    if (existingItem) await data.unifiedDelete(existingItem.id, existingItem.type, userId);
+                } else if (action === 'rename') {
+                    finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
+                } else {
+                    const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
+                    if (conflict) {
+                        fileStream.resume();
+                        return resolve({ status: 'skipped_conflict', path: relativePath });
+                    }
+                }
+
+                await storage.upload(fileStream, finalFilename, fileInfo.mimeType, userId, targetFolderId, caption);
+                resolve({ status: 'success', path: relativePath });
+
+            } catch (err) {
+                fileStream.resume(); // 确保消耗掉资料流
+                reject(err);
+            }
         });
+        
+        fileProcessingPromises.push(p);
     });
 
     busboy.on('finish', async () => {
-        const initialFolderId = parseInt(fields.folderId, 10);
-        if (isNaN(initialFolderId)) {
-            return res.status(400).json({ success: false, message: '无效的目标资料夹' });
-        }
-        
-        // 确保收到的档案数量和路径数量一致
-        if (filesToProcess.length !== fields.relativePaths.length) {
-            return res.status(400).json({ success: false, message: '档案和路径资讯不匹配' });
-        }
-
-        const resolutions = JSON.parse(fields.resolutions || '{}');
-        const caption = fields.caption || '';
-        
-        const fileProcessingPromises = filesToProcess.map((file, index) => {
-            return (async () => {
-                const { fileStream, mimeType } = file;
-                // *** 关键修正：从 fields.relativePaths 阵列中按顺序取得对应的路径 ***
-                const relativePath = fields.relativePaths[index];
-                
-                try {
-                    const action = resolutions[relativePath] || 'upload';
-
-                    if (action === 'skip') {
-                        fileStream.resume(); // 消耗掉资料流
-                        return; // 跳过此档案
-                    }
-                    
-                    // 从相对路径解析资料夹和档名
-                    const pathParts = relativePath.split('/');
-                    let finalFilename = pathParts.pop() || relativePath;
-                    const folderPathParts = pathParts;
-                    
-                    // 解析或建立所需的资料夹结构，并取得最终的目标资料夹 ID
-                    const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
-
-                    // 根据冲突解决策略处理
-                    if (action === 'overwrite') {
-                        const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                        if (existingItem) {
-                            await data.unifiedDelete(existingItem.id, existingItem.type, userId);
-                        }
-                    } else if (action === 'rename') {
-                        finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
-                    } else { // 'upload'
-                         const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                         if (conflict) {
-                            fileStream.resume(); // 发生冲突且无解决方案，跳过
-                            return;
-                         }
-                    }
-                    
-                    await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
-
-                } catch (err) {
-                    console.error(`[Server] 处理文件 ${relativePath} 时发生错误:`, err);
-                    fileStream.resume(); // 确保即使出错也消耗掉资料流
-                    throw err; // 抛出错误，让 Promise.allSettled 捕捉
-                }
-            })();
-        });
-        
-        // 等待所有档案处理完成
-        const results = await Promise.allSettled(fileProcessingPromises);
-        
-        const failures = results.filter(r => r.status === 'rejected');
-        if (failures.length > 0) {
-            console.error(`[Server] ${failures.length} 个文件上传失败`);
-            res.status(500).json({ success: false, message: '部分或全部文件上传失败。' });
-        } else {
-            console.log('[Server] 所有文件处理成功');
+        try {
+            await Promise.all(fileProcessingPromises);
             res.json({ success: true, message: '上传完成' });
+        } catch (error) {
+            res.status(500).json({ success: false, message: '上传过程中发生错误: ' + error.message });
         }
     });
-
+    
     busboy.on('error', (err) => {
         console.error('[Busboy] 发生解析错误:', err);
         req.unpipe(busboy);
@@ -245,10 +239,9 @@ app.post('/upload', requireLogin, (req, res) => {
     req.pipe(busboy);
 });
 
-
-// --- API 端点 ---
 // ... (其他 API 端点保持不变) ...
 
+// --- API 端点 ---
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
     const userId = req.session.userId;
@@ -300,7 +293,6 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         }
     }
 });
-// ... (其他 API 端点保持不变) ...
 app.get('/api/file-info/:id', requireLogin, async (req, res) => {
     try {
         const fileId = parseInt(req.params.id, 10);
