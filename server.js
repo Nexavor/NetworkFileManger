@@ -245,24 +245,23 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
 });
 
 
-// --- *** 最终健壮版上传路由 *** ---
+// --- 上传路由 ---
 app.post('/upload', requireLogin, (req, res) => {
     console.log('[Server] /upload 路由启动 (健壮模式)');
     
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
     const fields = {};
-    const tempFilePromises = []; // 用于追踪临时文件的写入过程
+    const tempFilePromises = []; 
 
     const busboy = Busboy({
         headers: req.headers,
         limits: {
-            fileSize: 50 * 1024 * 1024 // 50MB
+            fileSize: 50 * 1024 * 1024
         }
     });
 
     busboy.on('field', (key, value) => {
-        // 使用 busboy 的 'parts' 事件来确保字段和文件按顺序处理
         if (key === 'relativePaths') {
             if (!fields.relativePaths) fields.relativePaths = [];
             fields.relativePaths.push(value);
@@ -281,9 +280,7 @@ app.post('/upload', requireLogin, (req, res) => {
             
             fileStream.on('limit', () => {
                 const err = new Error(`文件大小超出 50MB 限制: ${filename}`);
-                err.isLimit = true;
-                // 中断写入并删除不完整的文件
-                writeStream.destroy(err); 
+                writeStream.destroy();
                 fs.unlink(tempFilePath, () => reject(err));
             });
 
@@ -298,10 +295,7 @@ app.post('/upload', requireLogin, (req, res) => {
             });
             
             writeStream.on('error', (err) => {
-                // 如果是大小限制的错误，就不要重复 reject
-                if (!err.isLimit) {
-                    fs.unlink(tempFilePath, () => reject(err));
-                }
+                fs.unlink(tempFilePath, () => reject(err));
             });
 
             fileStream.pipe(writeStream);
@@ -313,16 +307,13 @@ app.post('/upload', requireLogin, (req, res) => {
     busboy.on('finish', async () => {
         console.log('[Server] Busboy 解析完成，开始处理暂存文件。');
         try {
-            // 1. 等待所有文件都写入临时目录
             const completedFiles = await Promise.all(tempFilePromises);
 
-            // 2. 依次处理所有成功的临时文件
             const initialFolderId = parseInt(fields.folderId, 10);
             const resolutions = fields.resolutions ? JSON.parse(fields.resolutions) : {};
             let relativePaths = fields.relativePaths || [];
 
-            // 如果没有传来 relativePaths，就用文件名自己组一个
-            if(relativePaths.length === 0) {
+            if(relativePaths.length === 0 && completedFiles.length > 0) {
                 relativePaths = completedFiles.map(f => f.filename);
             }
 
@@ -349,11 +340,15 @@ app.post('/upload', requireLogin, (req, res) => {
                         if (await data.findItemInFolder(currentFileName, targetFolderId, userId)) continue;
                     }
 
-                    // 调用 storage 模块，传入临时文件路径
                     await storage.upload(tempFilePath, currentFileName, mimeType, userId, targetFolderId, fields.caption || '');
                 } finally {
-                    // 3. 确保删除临时文件
-                    await fsp.unlink(tempFilePath).catch(e => console.error(`[Server] 清理暂存文件失败: ${tempFilePath}`, e));
+                    // *** 最终修正 ***
+                    // 清理临时文件，并忽略“文件不存在”的错误 (因为它可能已被移动)
+                    await fsp.unlink(tempFilePath).catch(e => {
+                        if (e.code !== 'ENOENT') {
+                            console.error(`[Server] 清理暂存文件时发生意外错误: ${tempFilePath}`, e);
+                        }
+                    });
                 }
             }
             
@@ -362,7 +357,6 @@ app.post('/upload', requireLogin, (req, res) => {
 
         } catch (error) {
             console.error('[Server] /upload Busboy finish 处理错误:', error);
-            // 如果是文件大小限制的错误，返回 413 状态码
             const status = error.message.includes('50MB') ? 413 : 500;
             res.status(status).json({ success: false, message: '处理上传时发生错误: ' + error.message });
         }
