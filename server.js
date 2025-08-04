@@ -135,9 +135,9 @@ app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
 
-// --- 修正后的纯流式上传路由 ---
+// --- *** 关键修正：重构 /upload 路由 *** ---
 app.post('/upload', requireLogin, (req, res) => {
-    console.log('[Server] /upload 路由启动，开始处理纯流式上传请求');
+    console.log('[Server] /upload 路由启动，开始处理上传请求');
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
     const busboy = Busboy({ headers: req.headers });
@@ -145,95 +145,103 @@ app.post('/upload', requireLogin, (req, res) => {
     let initialFolderId;
     let resolutions = {};
     let caption = '';
+
     const fileProcessingPromises = [];
-    const pathQueue = []; // **关键修正：用于存储路径的队列**
+    const collectedFiles = [];
+    const collectedPaths = [];
 
     busboy.on('field', (fieldname, val) => {
-        console.log(`[Busboy] 收到字段: ${fieldname}`);
+        console.log(`[Busboy] 收到字段: ${fieldname}=${val}`);
         if (fieldname === 'folderId') {
             initialFolderId = parseInt(val, 10);
         } else if (fieldname === 'resolutions') {
             resolutions = JSON.parse(val);
         } else if (fieldname === 'caption') {
             caption = val;
-        } else if (fieldname === 'relativePaths') { // **关键修正：将所有路径存入队列**
-            pathQueue.push(val);
+        } else if (fieldname === 'relativePaths') {
+            collectedPaths.push(val);
         }
     });
 
     busboy.on('file', (fieldname, fileStream, fileInfo) => {
         const { filename, encoding, mimeType } = fileInfo;
         const decodedFilename = decodeURIComponent(Buffer.from(filename, 'latin1').toString('utf8'));
-        console.log(`[Busboy] 开始接收文件流: ${decodedFilename}`);
-
-        // **关键修正：从队列中取出一个路径**
-        const relativePath = pathQueue.shift() || decodedFilename;
-        console.log(`[Busboy] 为文件 ${decodedFilename} 匹配到路径: ${relativePath}`);
-
-
-        const processFile = async () => {
-            try {
-                // 等待 folderId 被解析
-                if (typeof initialFolderId === 'undefined') {
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                }
-                
-                const action = resolutions[relativePath] || 'upload';
-
-                if (action === 'skip') {
-                    console.log(`[Server] 侦测到 'skip' 操作，消耗并跳过文件流: ${relativePath}`);
-                    fileStream.resume();
-                    return { status: 'skipped', file: relativePath };
-                }
-
-                const pathParts = relativePath.split('/');
-                let finalFilename = pathParts.pop() || relativePath;
-                const folderPathParts = pathParts;
-                
-                console.log(`[Server] 解析路径... 档名: ${finalFilename}, 目标子路径:`, folderPathParts);
-                const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
-                console.log(`[Server] 解析后最终资料夹ID: ${targetFolderId}`);
-
-                if (action === 'overwrite') {
-                    const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                    if (existingItem) {
-                        console.log(`[Server] 侦测到 'overwrite' 操作，删除已存在项目: ${finalFilename} (ID: ${existingItem.id})`);
-                        await data.unifiedDelete(existingItem.id, existingItem.type, userId);
-                    }
-                } else if (action === 'rename') {
-                    const originalFileName = finalFilename;
-                    finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
-                    console.log(`[Server] 侦测到 'rename' 操作，新档名为: ${finalFilename} (原档名: ${originalFileName})`);
-                } else {
-                     const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                     if (conflict) {
-                        console.log(`[Server] 侦测到冲突且无解决方案，消耗并跳过文件流: ${finalFilename}`);
-                        fileStream.resume();
-                        return { status: 'skipped', file: relativePath };
-                     }
-                }
-
-                console.log(`[Server] 调用储存引擎 [${storage.type}] 上传文件流: ${finalFilename}`);
-                await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
-                console.log(`[Server] 储存引擎处理完成: ${finalFilename}`);
-                return { status: 'uploaded', file: relativePath };
-
-            } catch (err) {
-                console.error(`[Server] 处理文件 ${relativePath} 时发生错误:`, err);
-                fileStream.resume();
-                throw err; // 将错误抛出，以便 Promise.allSettled 能捕获
-            }
-        };
-        fileProcessingPromises.push(processFile());
+        console.log(`[Busboy] 开始收集文件流: ${decodedFilename}`);
+        collectedFiles.push({ fileStream, filename: decodedFilename, mimeType });
     });
 
     busboy.on('finish', async () => {
-        console.log('[Busboy] 所有字段和文件流接收完成，等待处理程序...');
+        console.log(`[Busboy] 所有部分接收完成。收集到 ${collectedFiles.length} 个文件和 ${collectedPaths.length} 个路径。`);
+
+        if (collectedFiles.length !== collectedPaths.length) {
+            console.error('[Server] 文件数量与路径数量不匹配!');
+            return res.status(400).json({ success: false, message: '文件和路径数量不匹配。' });
+        }
+
+        for (let i = 0; i < collectedFiles.length; i++) {
+            const file = collectedFiles[i];
+            const relativePath = collectedPaths[i];
+
+            const processFile = async () => {
+                try {
+                    const { fileStream, filename, mimeType } = file;
+                     console.log(`[Server] 开始处理文件: ${filename}，路径: ${relativePath}`);
+
+                    const action = resolutions[relativePath] || 'upload';
+
+                    if (action === 'skip') {
+                        console.log(`[Server] 侦测到 'skip' 操作，消耗并跳过文件流: ${relativePath}`);
+                        fileStream.resume();
+                        return { status: 'skipped', file: relativePath };
+                    }
+
+                    const pathParts = relativePath.split('/');
+                    let finalFilename = pathParts.pop() || filename;
+                    const folderPathParts = pathParts;
+
+                    console.log(`[Server] 解析路径... 档名: ${finalFilename}, 目标子路径:`, folderPathParts);
+                    const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
+                    console.log(`[Server] 解析后最终资料夹ID: ${targetFolderId} for path ${relativePath}`);
+
+                    if (action === 'overwrite') {
+                        const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
+                        if (existingItem) {
+                            console.log(`[Server] 侦测到 'overwrite' 操作，删除已存在项目: ${finalFilename} (ID: ${existingItem.id})`);
+                            await data.unifiedDelete(existingItem.id, existingItem.type, userId);
+                        }
+                    } else if (action === 'rename') {
+                        const originalFileName = finalFilename;
+                        finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
+                        console.log(`[Server] 侦测到 'rename' 操作，新档名为: ${finalFilename} (原档名: ${originalFileName})`);
+                    } else {
+                         const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
+                         if (conflict) {
+                            console.log(`[Server] 侦测到冲突且无解决方案，消耗并跳过文件流: ${finalFilename}`);
+                            fileStream.resume();
+                            return { status: 'skipped', file: relativePath };
+                         }
+                    }
+
+                    console.log(`[Server] 调用储存引擎 [${storage.type}] 上传文件流: ${finalFilename}`);
+                    await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
+                    console.log(`[Server] 储存引擎处理完成: ${finalFilename}`);
+                    return { status: 'uploaded', file: relativePath };
+
+                } catch (err) {
+                    console.error(`[Server] 处理文件 ${relativePath} 时发生错误:`, err);
+                    file.fileStream.resume();
+                    throw err; 
+                }
+            };
+            fileProcessingPromises.push(processFile());
+        }
+
         const results = await Promise.allSettled(fileProcessingPromises);
         
         const failures = results.filter(r => r.status === 'rejected');
         if (failures.length > 0) {
             console.error(`[Server] ${failures.length} 个文件上传失败`);
+            failures.forEach(f => console.error(f.reason));
             res.status(500).json({ success: false, message: '部分或全部文件上传失败。' });
         } else {
             const skippedCount = results.filter(r => r.value.status === 'skipped').length;
