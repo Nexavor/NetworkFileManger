@@ -2,35 +2,35 @@ require('dotenv').config();
 const axios = require('axios');
 const FormData = require('form-data');
 const data = require('../data.js');
-const fs = require('fs'); // 引入 fs 模组
+// fs 模组不再需要，因为我们直接接收流
+// const fs = require('fs');
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 
-// 将 upload 函数的第一个参数从 fileBuffer 改为 tempFilePath
-async function upload(tempFilePath, fileName, mimetype, userId, folderId, caption = '') {
-  console.log(`[Telegram Storage] 开始上传档案: ${fileName} 到暂存路径: ${tempFilePath}`);
+// 将第一个参数从 tempFilePath 更改为 fileStream
+async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '') {
+  console.log(`[Telegram Storage] 开始处理文件流上传: ${fileName}`);
   try {
     const formData = new FormData();
     formData.append('chat_id', process.env.CHANNEL_ID);
     formData.append('caption', caption || fileName);
     
-    // 从临时文件路径创建可读流并添加到表单中
-    console.log(`[Telegram Storage] 建立档案读取流: ${tempFilePath}`);
-    const fileStream = fs.createReadStream(tempFilePath);
+    // 直接使用传入的 fileStream
+    console.log(`[Telegram Storage] 将文件流添加到表单数据中: ${fileName}`);
     formData.append('document', fileStream, { filename: fileName });
 
-    console.log(`[Telegram Storage] 正在发送档案到 Telegram API...`);
+    console.log(`[Telegram Storage] 正在发送文件到 Telegram API...`);
     const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
         headers: formData.getHeaders() 
     });
 
     if (res.data.ok) {
-        console.log(`[Telegram Storage] Telegram API 成功接收档案: ${fileName}`);
+        console.log(`[Telegram Storage] Telegram API 成功接收文件: ${fileName}`);
         const result = res.data.result;
         const fileData = result.document || result.video || result.audio || result.photo;
 
         if (fileData && fileData.file_id) {
-            console.log(`[Telegram Storage] 正在将档案资讯写入资料库, File ID: ${fileData.file_id}`);
+            console.log(`[Telegram Storage] 正在将文件资讯写入资料库, File ID: ${fileData.file_id}`);
             await data.addFile({
               message_id: result.message_id,
               fileName,
@@ -49,6 +49,10 @@ async function upload(tempFilePath, fileName, mimetype, userId, folderId, captio
   } catch (error) {
     const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
     console.error(`[Telegram Storage] 上传过程中发生严重错误: ${errorDescription}`);
+    // 确保在出错时消耗流以防止请求挂起
+    if (fileStream && typeof fileStream.resume === 'function') {
+        fileStream.resume();
+    }
     return { success: false, error: { description: errorDescription }};
   }
 }
