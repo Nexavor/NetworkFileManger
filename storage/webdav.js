@@ -1,12 +1,10 @@
 const { createClient } = require('webdav');
 const data = require('../data.js');
 const db = require('../database.js');
-const crypto = require('crypto');
 const fsp = require('fs').promises;
 const fs = require('fs');
 const path = require('path');
 
-const TMP_DIR = path.join(__dirname, '..', 'data', 'tmp');
 let client = null;
 
 function getWebdavConfig() {
@@ -50,40 +48,33 @@ async function getFolderPath(folderId, userId) {
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
-// **重构：上传逻辑改为接收流**
-async function upload(fileStream, fileName, mimetype, userId, folderId) {
-    console.log(`[WebDAV Storage] 开始处理流式上传: ${fileName}`);
-    const client = getClient();
+// **最终版：上传逻辑接收 tempFilePath**
+async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
+    console.log(`[WebDAV Storage] 开始处理上传: ${fileName} (来源: ${tempFilePath})`);
     
-    const tempFileName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}-${fileName}`;
-    const tempFilePath = path.join(TMP_DIR, tempFileName);
+    const client = getClient();
+    const folderPath = await getFolderPath(folderId, userId);
+    // 使用 path.posix 来确保在任何系统上都使用 / 作为分隔符
+    const remotePath = path.posix.join(folderPath, fileName);
+    console.log(`[WebDAV Storage] 目标 WebDAV 路径: ${remotePath}`);
 
     try {
-        await new Promise((resolve, reject) => {
-            const writeStream = fs.createWriteStream(tempFilePath);
-            fileStream.pipe(writeStream);
-            writeStream.on('finish', resolve);
-            writeStream.on('error', reject);
-            fileStream.on('error', reject);
-        });
-        const stats = await fsp.stat(tempFilePath);
-        console.log(`[WebDAV Storage] 档案已暂存至: ${tempFilePath}, 大小: ${stats.size}`);
-
-        const folderPath = await getFolderPath(folderId, userId);
-        const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
-        console.log(`[WebDAV Storage] 目标 WebDAV 路径: ${remotePath}`);
-
         if (folderPath && folderPath !== "/") {
             try {
                 await client.createDirectory(folderPath, { recursive: true });
             } catch (e) {
+                // 忽略“目录已存在”或“方法不允许”的错误
                 if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
                      throw new Error(`建立 WebDAV 目录失败 (${e.response.status}): ${e.message}`);
                 }
             }
         }
         
+        // **核心逻辑：从 tempFilePath 获取文件大小和创建读取流**
+        const stats = await fsp.stat(tempFilePath);
         const readStream = fs.createReadStream(tempFilePath);
+
+        console.log(`[WebDAV Storage] 开始将档案流上传至 ${remotePath}`);
         const success = await client.putFileContents(remotePath, readStream, { 
           overwrite: true,
           contentLength: stats.size
@@ -94,7 +85,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
         }
         console.log(`[WebDAV Storage] 档案流式上传成功`);
 
-        const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
+        const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
 
         const dbResult = await data.addFile({
             message_id: messageId,
@@ -106,13 +97,14 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
         }, folderId, userId, 'webdav');
         
         return { success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId };
-    } finally {
-        if (fs.existsSync(tempFilePath)) {
-            await fsp.unlink(tempFilePath).catch(err => console.warn(`[WebDAV Storage] 删除暂存文件失败: ${tempFilePath}`, err.message));
-        }
+    } catch (error) {
+        console.error(`[WebDAV Storage] 上传过程中发生严重错误: ${error.message}`);
+        throw new Error(`上传至 WebDAV 失败: ${error.message}`);
     }
 }
 
+
+// --- 以下函数保持不变 ---
 
 async function remove(files, folders, userId) {
     const client = getClient();
