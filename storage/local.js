@@ -1,7 +1,7 @@
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
-const data = require('./data.js'); // 依赖 data.js 来获取路径
+const data = require('../data.js'); // 依赖 data.js 来获取路径
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
 
@@ -148,3 +148,4 @@ function stream(file_id, userId) {
 }
 
 module.exports = { upload, remove, getUrl, stream, type: 'local' };
+
