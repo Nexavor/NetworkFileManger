@@ -2,26 +2,26 @@ require('dotenv').config();
 const axios = require('axios');
 const FormData = require('form-data');
 const data = require('../data.js');
+const fs = require('fs'); // 引入 fs 模组
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 
-// upload 函数重构为直接接收 fileStream
-async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '', fileSize) {
-  console.log(`[Telegram Storage] 开始通过流上传档案: ${fileName}`);
+// 将 upload 函数的第一个参数从 fileBuffer 改为 tempFilePath
+async function upload(tempFilePath, fileName, mimetype, userId, folderId, caption = '') {
+  console.log(`[Telegram Storage] 开始上传档案: ${fileName} 到暂存路径: ${tempFilePath}`);
   try {
     const formData = new FormData();
     formData.append('chat_id', process.env.CHANNEL_ID);
     formData.append('caption', caption || fileName);
     
-    // 直接将档案流附加到表单数据中
-    console.log(`[Telegram Storage] 将档案流附加到表单数据`);
-    formData.append('document', fileStream, { filename: fileName, knownLength: fileSize });
+    // 从临时文件路径创建可读流并添加到表单中
+    console.log(`[Telegram Storage] 建立档案读取流: ${tempFilePath}`);
+    const fileStream = fs.createReadStream(tempFilePath);
+    formData.append('document', fileStream, { filename: fileName });
 
     console.log(`[Telegram Storage] 正在发送档案到 Telegram API...`);
     const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
-        headers: formData.getHeaders(),
-        maxContentLength: Infinity, // 对大文件很重要
-        maxBodyLength: Infinity     // 对大文件很重要
+        headers: formData.getHeaders() 
     });
 
     if (res.data.ok) {
@@ -31,7 +31,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
 
         if (fileData && fileData.file_id) {
             console.log(`[Telegram Storage] 正在将档案资讯写入资料库, File ID: ${fileData.file_id}`);
-            const dbResult = await data.addFile({
+            await data.addFile({
               message_id: result.message_id,
               fileName,
               mimetype: fileData.mime_type || mimetype,
@@ -41,7 +41,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
               date: Date.now(),
             }, folderId, userId, 'telegram');
             console.log(`[Telegram Storage] 资料库写入成功: ${fileName}`);
-            return { success: true, data: res.data, fileId: dbResult.fileId };
+            return { success: true, data: res.data, fileId: result.message_id };
         }
     }
     console.error(`[Telegram Storage] Telegram API 返回错误:`, res.data);
@@ -49,12 +49,6 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
   } catch (error) {
     const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
     console.error(`[Telegram Storage] 上传过程中发生严重错误: ${errorDescription}`);
-    // 为调试添加更详细的错误日志
-    if (error.response) {
-      console.error('[Telegram Storage] 错误状态:', error.response.status);
-      console.error('[Telegram Storage] 错误标头:', error.response.headers);
-      console.error('[Telegram Storage] 错误资料:', error.response.data);
-    }
     return { success: false, error: { description: errorDescription }};
   }
 }
