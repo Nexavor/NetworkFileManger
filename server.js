@@ -15,7 +15,7 @@ const storageManager = require('./storage');
 
 const app = express();
 
-// --- 暂存文件目录与清理 (现在主要用于非上传操作，例如文字编辑) ---
+// --- 暂存文件目录与清理 ---
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
 async function cleanupTempDir() {
@@ -136,89 +136,94 @@ app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, '
 
 // --- 重构后的上传路由 ---
 app.post('/upload', requireLogin, (req, res) => {
-    console.log('[Server] /upload 路由启动，开始处理上传请求');
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
     const busboy = Busboy({ headers: req.headers });
 
-    const fields = {};
+    const fields = { relativePaths: [] }; // 初始化 relativePaths 为阵列
     const filesToProcess = [];
     
     busboy.on('field', (fieldname, val) => {
-        fields[fieldname] = val;
+        // *** 关键修正：如果栏位是 relativePaths，就将值推入阵列 ***
+        if (fieldname === 'relativePaths') {
+            fields.relativePaths.push(val);
+        } else {
+            fields[fieldname] = val;
+        }
     });
 
     busboy.on('file', (fieldname, fileStream, fileInfo) => {
-        // busboy v1.x fileInfo has filename, encoding, mimeType
         const { filename, encoding, mimeType } = fileInfo;
-        
-        // 关键修正：确保从 fileInfo 中获取正确的档名（现在应该包含了 webkitRelativePath）
-        const decodedFilename = decodeURIComponent(Buffer.from(filename, 'latin1').toString('utf8'));
-        console.log(`[Busboy] 开始接收文件流: ${decodedFilename}, MimeType: ${mimeType}`);
-
         filesToProcess.push({
             fileStream,
-            decodedFilename,
+            originalFilename: filename, // 保留原始档名以供参考
             mimeType
         });
     });
 
     busboy.on('finish', async () => {
-        console.log('[Busboy] 所有字段和文件流接收完成，开始处理...');
-        const fileProcessingPromises = [];
         const initialFolderId = parseInt(fields.folderId, 10);
-        const resolutions = JSON.parse(fields.resolutions || '{}');
-        const caption = fields.caption || '';
-        
         if (isNaN(initialFolderId)) {
             return res.status(400).json({ success: false, message: '无效的目标资料夹' });
         }
+        
+        // 确保收到的档案数量和路径数量一致
+        if (filesToProcess.length !== fields.relativePaths.length) {
+            return res.status(400).json({ success: false, message: '档案和路径资讯不匹配' });
+        }
 
-        for (const file of filesToProcess) {
-            const processFile = async () => {
-                const { fileStream, decodedFilename, mimeType } = file;
+        const resolutions = JSON.parse(fields.resolutions || '{}');
+        const caption = fields.caption || '';
+        
+        const fileProcessingPromises = filesToProcess.map((file, index) => {
+            return (async () => {
+                const { fileStream, mimeType } = file;
+                // *** 关键修正：从 fields.relativePaths 阵列中按顺序取得对应的路径 ***
+                const relativePath = fields.relativePaths[index];
+                
                 try {
-                    const action = resolutions[decodedFilename] || 'upload';
+                    const action = resolutions[relativePath] || 'upload';
 
                     if (action === 'skip') {
-                        console.log(`[Server] 侦测到 'skip' 操作，消耗并跳过文件流: ${decodedFilename}`);
-                        fileStream.resume();
-                        return;
+                        fileStream.resume(); // 消耗掉资料流
+                        return; // 跳过此档案
                     }
-
-                    const pathParts = decodedFilename.split('/');
-                    let finalFilename = pathParts.pop() || decodedFilename;
+                    
+                    // 从相对路径解析资料夹和档名
+                    const pathParts = relativePath.split('/');
+                    let finalFilename = pathParts.pop() || relativePath;
                     const folderPathParts = pathParts;
                     
+                    // 解析或建立所需的资料夹结构，并取得最终的目标资料夹 ID
                     const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
 
+                    // 根据冲突解决策略处理
                     if (action === 'overwrite') {
                         const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                         if (existingItem) {
                             await data.unifiedDelete(existingItem.id, existingItem.type, userId);
                         }
                     } else if (action === 'rename') {
-                        const originalFileName = finalFilename;
                         finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
-                        console.log(`[Server] 侦测到 'rename' 操作，新档名为: ${finalFilename} (原档名: ${originalFileName})`);
-                    } else {
+                    } else { // 'upload'
                          const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                          if (conflict) {
-                            console.log(`[Server] 侦测到冲突且无解决方案，消耗并跳过文件流: ${finalFilename}`);
-                            fileStream.resume();
+                            fileStream.resume(); // 发生冲突且无解决方案，跳过
                             return;
                          }
                     }
+                    
                     await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
-                } catch (err) {
-                    console.error(`[Server] 处理文件 ${decodedFilename} 时发生错误:`, err);
-                    fileStream.resume();
-                    throw err;
-                }
-            };
-            fileProcessingPromises.push(processFile());
-        }
 
+                } catch (err) {
+                    console.error(`[Server] 处理文件 ${relativePath} 时发生错误:`, err);
+                    fileStream.resume(); // 确保即使出错也消耗掉资料流
+                    throw err; // 抛出错误，让 Promise.allSettled 捕捉
+                }
+            })();
+        });
+        
+        // 等待所有档案处理完成
         const results = await Promise.allSettled(fileProcessingPromises);
         
         const failures = results.filter(r => r.status === 'rejected');
@@ -393,7 +398,7 @@ app.post('/api/folder', requireLogin, async (req, res) => {
     const { name, parentId } = req.body;
     const userId = req.session.userId;
     if (!name || !parentId) {
-        return res.status(400).json({ success: false, message: '缺少资料夹名称或父 ID。' });
+        return res.status(400).json({ success: false, message: '缺少资料夾名称或父 ID。' });
     }
     
     try {
