@@ -16,18 +16,16 @@ async function setup() {
 }
 setup();
 
-// **重构：上传逻辑**
-// 现在直接接收一个可读流 (fileStream)
-async function upload(fileStream, fileName, mimetype, userId, folderId) {
-    console.log(`[Local Storage] 开始处理流式上传: ${fileName}`);
+// **修正：上传逻辑**
+// 参数改回接收 tempFilePath (文件路径字符串)
+async function upload(tempFilePath, fileName, mimetype, userId, folderId) {
+    console.log(`[Local Storage] 开始处理上传: ${fileName} (暂存: ${tempFilePath})`);
     const userDir = path.join(UPLOAD_DIR, String(userId));
     
-    // 获取目标资料夾的完整相对路径
     const folderPathParts = await data.getFolderPath(folderId, userId);
     const relativeFolderPath = path.join(...folderPathParts.slice(1).map(p => p.name)); 
     const finalFolderPath = path.join(userDir, relativeFolderPath);
 
-    // 建立目标目录
     console.log(`[Local Storage] 确保目标目录存在: ${finalFolderPath}`);
     await fs.mkdir(finalFolderPath, { recursive: true });
 
@@ -35,23 +33,28 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
     const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/');
     console.log(`[Local Storage] 最终档案路径: ${finalFilePath}`);
 
-    const writeStream = fsSync.createWriteStream(finalFilePath);
-    let size = 0;
-    fileStream.on('data', (chunk) => {
-        size += chunk.length;
-    });
-
-    // **核心修改：使用 Promise 来等待流完成**
+    // **核心修正：从传入的 tempFilePath 创建读取流**
     await new Promise((resolve, reject) => {
-        writeStream.on('finish', resolve);
-        writeStream.on('error', reject);
-        fileStream.on('error', reject); // 捕获读取流的错误
+        const readStream = fsSync.createReadStream(tempFilePath);
+        const writeStream = fsSync.createWriteStream(finalFilePath);
         
-        fileStream.pipe(writeStream);
+        readStream.on('error', (err) => {
+            console.error(`[Local Storage] 读取暂存盘案流失败: ${tempFilePath}`, err);
+            reject(err);
+        });
+        writeStream.on('error', (err) => {
+            console.error(`[Local Storage] 写入最终档案流失败: ${finalFilePath}`, err);
+            reject(err);
+        });
+        writeStream.on('finish', () => {
+            console.log(`[Local Storage] 档案流式传输完成: ${fileName}`);
+            resolve();
+        });
+        
+        readStream.pipe(writeStream);
     });
     
-    console.log(`[Local Storage] 档案流式传输完成: ${fileName}, 大小: ${size} bytes`);
-    
+    const stats = await fs.stat(finalFilePath);
     const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
     
     console.log(`[Local Storage] 正在将档案资讯写入资料库: ${fileName}`);
@@ -59,7 +62,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
         message_id: messageId,
         fileName,
         mimetype,
-        size: size, // 使用流传输过程中计算的大小
+        size: stats.size,
         file_id: relativeFilePath,
         thumb_file_id: null,
         date: Date.now(),
@@ -70,17 +73,15 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
 }
 
 
-// **重构：删除逻辑**
-// 现在会删除实体档案，并清理空的父目录
+// remove, getUrl, stream 等其他函数无需修改
 async function remove(files, folders, userId) {
     const results = { success: true, errors: [] };
     const userDir = path.join(UPLOAD_DIR, String(userId));
-    const parentDirs = new Set(); // 用于后续清理
+    const parentDirs = new Set(); 
 
-    // 删除档案
     for (const file of files) {
         try {
-            const filePath = path.join(userDir, file.file_id); // file_id 是相对路径
+            const filePath = path.join(userDir, file.file_id);
             if (fsSync.existsSync(filePath)) {
                 parentDirs.add(path.dirname(filePath));
                 await fs.unlink(filePath);
@@ -92,10 +93,8 @@ async function remove(files, folders, userId) {
         }
     }
 
-    // 删除资料夹
     for (const folder of folders) {
         try {
-            // folder.path 也是相对路径
             const folderPath = path.join(userDir, folder.path);
             if (fsSync.existsSync(folderPath)) {
                 parentDirs.add(path.dirname(folderPath));
@@ -108,7 +107,6 @@ async function remove(files, folders, userId) {
         }
     }
     
-    // 清理可能变为空的父目录
     for (const dir of parentDirs) {
         await removeEmptyDirsRecursive(dir, userDir);
     }
@@ -116,7 +114,6 @@ async function remove(files, folders, userId) {
     return results;
 }
 
-// **修正：递回清理空目录的辅助函数**
 async function removeEmptyDirsRecursive(directoryPath, userBaseDir) {
     try {
         if (!fsSync.existsSync(directoryPath)) {
