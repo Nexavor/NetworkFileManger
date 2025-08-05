@@ -144,7 +144,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const notificationContainer = isDrag ? null : uploadNotificationArea;
 
-        // 检查超大文件
         const oversizedFiles = Array.from(files).filter(file => file.size > MAX_TELEGRAM_SIZE);
         if (oversizedFiles.length > 0) {
             const fileNames = oversizedFiles.map(f => `"${f.name}"`).join(', ');
@@ -152,9 +151,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // 准备文件列表以进行存在性检查
         const filesToCheck = Array.from(files).map(file => ({
-            // 如果是文件夹上传，使用 webkitRelativePath，否则使用文件名
             relativePath: file.webkitRelativePath || file.name 
         }));
 
@@ -168,11 +165,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     
         const resolutions = {};
-        // 找出存在冲突的文件
         const conflicts = existenceData.filter(f => f.exists).map(f => f.relativePath);
         
         if (conflicts.length > 0) {
-            // 调用统一的冲突处理函数
             const conflictResult = await handleConflict(conflicts, '档案');
             if (conflictResult.aborted) {
                 showNotification('上传操作已取消。', 'info', notificationContainer);
@@ -181,16 +176,18 @@ document.addEventListener('DOMContentLoaded', () => {
             Object.assign(resolutions, conflictResult.resolutions);
         }
 
-        // 构建 FormData 进行上传
         const formData = new FormData();
+        const relativePathsArray = [];
+
         Array.from(files).forEach(file => {
             formData.append('files', file);
-            // 确保每个文件都附加其相对路径
-            formData.append('relativePaths', file.webkitRelativePath || file.name);
+            relativePathsArray.push(file.webkitRelativePath || file.name);
         });
         
         formData.append('folderId', targetFolderId);
         formData.append('resolutions', JSON.stringify(resolutions));
+        // --- *** 关键修正：发送单个 JSON 字符串而不是多个字段 *** ---
+        formData.append('relativePathsJSON', JSON.stringify(relativePathsArray));
 
         if (!isDrag) {
             const captionInput = document.getElementById('uploadCaption');
@@ -586,12 +583,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (uploadForm) {
         uploadForm.addEventListener('submit', (e) => {
             e.preventDefault();
+            // 优先处理文件夹上传，如果文件夹有文件，则忽略单文件选择
             const filesToProcess = folderInput.files.length > 0 ? folderInput.files : fileInput.files;
             const targetFolderId = folderSelect.value;
             uploadFiles(Array.from(filesToProcess), targetFolderId, false);
         });
     }
-    
+
     if (dropZone) {
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             dropZone.addEventListener(eventName, (e) => {
@@ -860,7 +858,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (deleteBtn) {
         deleteBtn.addEventListener('click', async () => {
             if (selectedItems.size === 0) return;
-            if (!confirm(`确定要删除这 ${selectedItems.size} 个项目吗？\n注意：删除资料夾将会一并删除其所有内容！`)) return;
+            if (!confirm(`确定要删除这 ${selectedItems.size} 个项目吗？\n注意：删除资料夹将会一并删除其所有内容！`)) return;
             const filesToDelete = [], foldersToDelete = [];
             selectedItems.forEach((item, id) => {
                 if (item.type === 'file') filesToDelete.push(parseInt(id));
