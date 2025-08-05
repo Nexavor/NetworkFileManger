@@ -76,7 +76,7 @@ async function getFileLink(file_id) {
   try {
     const response = await axios.get(`${TELEGRAM_API}/getFile`, { params: { file_id: cleaned_file_id } });
     if (response.data.ok) return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${response.data.result.file_path}`;
-  } catch (error) { console.error("获取文件链接失败:", error.response?.data?.description || error.message); }
+  } catch (error) { /* console.error("获取文件链接失败:", error.response?.data?.description || error.message); */ }
   return null;
 }
 
