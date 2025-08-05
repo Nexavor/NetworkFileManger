@@ -1,3 +1,4 @@
+// nexavor/networkfilemanger/NetworkFileManger-43f0ea7b6335ba475c463557b9462ec7e432d14b/server.js
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
@@ -192,7 +193,7 @@ app.post('/upload', requireLogin, (req, res) => {
                 const relativePath = relativePaths[i];
 
                 const { buffer, mimeType } = fileData;
-                const decodedFilename = decodeURIComponent(Buffer.from(relativePath, 'latin1').toString('utf8'));
+                const decodedFilename = Buffer.from(relativePath, 'latin1').toString('utf8');
                 console.log(`[Server] 开始处理已缓冲的文件 #${i}: ${decodedFilename}`);
 
                 const action = resolutions[decodedFilename] || 'upload';
