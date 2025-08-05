@@ -139,7 +139,10 @@ app.post('/upload', requireLogin, (req, res) => {
     console.log('[Server] /upload 路由启动，开始处理上传请求');
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
-    const busboy = Busboy({ headers: req.headers });
+    const busboy = Busboy({ 
+        headers: req.headers,
+        defParamCharset: 'utf8' // **关键修正：确保表单字段被正确解码**
+    });
 
     const fields = {};
     const fileBuffers = []; // 按接收顺序存储文件信息和 buffer
@@ -151,8 +154,12 @@ app.post('/upload', requireLogin, (req, res) => {
     });
 
     busboy.on('file', (fieldname, fileStream, fileInfo) => {
-        const { filename, encoding, mimeType } = fileInfo;
-        console.log(`[Busboy] 开始缓冲文件流: ${filename}`);
+        let { filename, encoding, mimeType } = fileInfo;
+        
+        // **关键修正：强制将档名从 latin1 转回 utf8，解决 busboy 的解码问题**
+        filename = Buffer.from(filename, 'latin1').toString('utf8');
+
+        console.log(`[Busboy] 开始缓冲文件流 (已修正档名): ${filename}`);
         const chunks = [];
         const filePromise = new Promise((resolve, reject) => {
             fileStream.on('data', (chunk) => {
@@ -163,7 +170,7 @@ app.post('/upload', requireLogin, (req, res) => {
                 console.log(`[Busboy] 文件流缓冲完成: ${filename}, 大小: ${buffer.length} bytes`);
                 fileBuffers.push({
                     buffer,
-                    filename,
+                    filename, // 使用修正后的档名
                     mimeType
                 });
                 resolve();
@@ -193,7 +200,9 @@ app.post('/upload', requireLogin, (req, res) => {
                 const relativePath = relativePaths[i];
 
                 const { buffer, mimeType } = fileData;
-                const decodedFilename = Buffer.from(relativePath, 'latin1').toString('utf8');
+                
+                // **关键修正：此处不再需要解码，因为 defParamCharset 应该已经处理好**
+                const decodedFilename = relativePath;
                 console.log(`[Server] 开始处理已缓冲的文件 #${i}: ${decodedFilename}`);
 
                 const action = resolutions[decodedFilename] || 'upload';
