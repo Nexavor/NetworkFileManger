@@ -310,18 +310,30 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
     const currentPath = path.join(pathPrefix, sourceItem.name).replace(/\\/g, '/');
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
     
+    // *** 关键修正：重构冲突解决逻辑 ***
     let resolutionAction = resolutions[currentPath];
-
     if (!resolutionAction) {
-        if (isMerging && existingItemInTarget) {
-            resolutionAction = (itemType === 'folder' && existingItemInTarget.type === 'folder') ? 'merge' : 'overwrite';
-        } else if (existingItemInTarget) {
-            resolutionAction = 'skip';
+        if (isMerging) {
+            if (existingItemInTarget) {
+                resolutionAction = (itemType === 'folder' && existingItemInTarget.type === 'folder')
+                    ? 'merge'
+                    : 'overwrite';
+            } else {
+                resolutionAction = 'move';
+            }
         } else {
-            resolutionAction = 'move';
+            if (existingItemInTarget) {
+                resolutionAction = 'skip';
+            } else {
+                resolutionAction = 'move';
+            }
         }
     }
-    if (resolutionAction === 'skip_default') resolutionAction = 'skip';
+    
+    // 兼容旧的 skip_default
+    if (resolutionAction === 'skip_default') {
+        resolutionAction = 'skip';
+    }
 
     console.log(`[Data] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
 
