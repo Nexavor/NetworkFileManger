@@ -343,6 +343,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
     
     let resolutionAction;
+
     if (isMerging) {
         resolutionAction = (itemType === 'folder' && existingItemInTarget?.type === 'folder') ? 'merge' : 'overwrite';
     } else {
@@ -355,6 +356,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         case 'skip':
             report.skipped++;
             return report;
+
         case 'rename':
             const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
             if (itemType === 'folder') {
@@ -365,6 +367,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             }
             report.moved++;
             return report;
+
         case 'overwrite':
             if (existingItemInTarget) {
                 await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
@@ -372,6 +375,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
             report.moved++;
             return report;
+
         case 'merge':
             if (itemType !== 'folder' || existingItemInTarget?.type !== 'folder') {
                  if(existingItemInTarget) await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
@@ -382,7 +386,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             
             const { folders: childFolders, files: childFiles } = await getFolderContents(itemId, userId);
             let totalChildren = childFolders.length + childFiles.length;
-            let successfulChildren = 0;
+            let processedChildren = 0;
 
             const childOptions = { ...options, pathPrefix: currentPath, isMerging: true }; 
 
@@ -392,16 +396,20 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
                 report.skipped += childReport.skipped;
                 report.errors += childReport.errors;
                 report.merged += childReport.merged; 
+                
+                // 只有被移动或合并的才算成功处理
                 if (childReport.moved > 0 || childReport.merged > 0) {
-                    successfulChildren++;
+                    processedChildren++;
                 }
             }
             
-            if (successfulChildren === totalChildren && totalChildren > 0) {
+            // 只有当所有子项目都被处理（非跳过）时，才删除原文件夹
+            if (processedChildren === totalChildren) {
                 await unifiedDelete(itemId, 'folder', userId);
             }
             report.merged++;
             return report;
+
         default: // 'move'
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
             report.moved++;
