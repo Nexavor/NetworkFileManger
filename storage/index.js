@@ -19,7 +19,7 @@ function readConfig() {
             return config;
         }
     } catch (error) {
-        console.error("读取设定档失败:", error);
+        // console.error("读取设定档失败:", error);
     }
     // --- *** 关键修正：将预设值从 'telegram' 改为 'local' *** ---
     return { storageMode: 'local', webdav: {} }; 
@@ -34,7 +34,7 @@ function writeConfig(config) {
         }
         return true;
     } catch (error) {
-        console.error("写入设定档失败:", error);
+        // console.error("写入设定档失败:", error);
         return false;
     }
 }
