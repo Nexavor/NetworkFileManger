@@ -96,7 +96,20 @@ function searchItems(query, userId) {
             ORDER BY name ASC`;
 
         const sqlFiles = `
-            SELECT *, message_id as id, fileName as name, 'file' as type
+            SELECT 
+                message_id as id, 
+                fileName as name, 
+                mimetype, 
+                file_id, 
+                thumb_file_id, 
+                size, 
+                date, 
+                share_token, 
+                share_expires_at, 
+                folder_id, 
+                user_id, 
+                storage_type, 
+                'file' as type
             FROM files
             WHERE fileName LIKE ? AND user_id = ?
             ORDER BY date DESC`;
@@ -108,7 +121,7 @@ function searchItems(query, userId) {
             contents.folders = folders;
             db.all(sqlFiles, [searchQuery, userId], (err, files) => {
                 if (err) return reject(err);
-                contents.files = files.map(f => ({ ...f, message_id: f.id }));
+                contents.files = files; // No .map() needed
                 resolve(contents);
             });
         });
@@ -178,10 +191,20 @@ async function getAllDescendantFolderIds(folderId, userId) {
 function getFolderContents(folderId, userId) {
     return new Promise((resolve, reject) => {
         const sqlFolders = `SELECT id, name, parent_id, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ? ORDER BY name ASC`;
-        // --- *** 关键修正 开始 *** ---
-        // 明确列出所有需要的栏位，并移除不必要的 `*` 和 `.map()` 操作。
-        // 这可以避免因栏位名称冲突或 sqlite 驱动程式的意外行为而导致 'id' 被错误覆盖的问题。
-        const sqlFiles = `SELECT message_id as id, fileName, mimetype, file_id, thumb_file_id, size, date, share_token, share_expires_at, folder_id, user_id, storage_type, fileName as name, 'file' as type 
+        const sqlFiles = `SELECT 
+                            message_id as id, 
+                            fileName as name, 
+                            mimetype, 
+                            file_id, 
+                            thumb_file_id, 
+                            size, 
+                            date, 
+                            share_token, 
+                            share_expires_at, 
+                            folder_id, 
+                            user_id, 
+                            storage_type, 
+                            'file' as type 
                           FROM files 
                           WHERE folder_id = ? AND user_id = ? 
                           ORDER BY name ASC`;
@@ -191,12 +214,10 @@ function getFolderContents(folderId, userId) {
             contents.folders = folders;
             db.all(sqlFiles, [folderId, userId], (err, files) => {
                 if (err) return reject(err);
-                // 直接赋值，因为 SQL 查询已经处理了所有别名
                 contents.files = files;
                 resolve(contents);
             });
         });
-        // --- *** 关键修正 结束 *** ---
     });
 }
 
@@ -322,7 +343,6 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
     
     let resolutionAction;
 
-    // 1. 强制继承合并状态，这是最高优先级
     if (isMerging) {
         if (existingItemInTarget) {
             resolutionAction = (itemType === 'folder' && existingItemInTarget.type === 'folder') ? 'merge' : 'overwrite';
@@ -330,11 +350,9 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             resolutionAction = 'move';
         }
     }
-    // 2. 如果不是在合并过程中，检查是否有用户指定的解决方案
     else if (resolutions && resolutions[currentPath]) {
         resolutionAction = resolutions[currentPath];
     }
-    // 3. 最后，应用预设行为
     else {
         if (existingItemInTarget) {
             resolutionAction = 'skip';
@@ -343,7 +361,6 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         }
     }
     
-    // 兼容旧的 skip_default 值
     if (resolutionAction === 'skip_default') {
         resolutionAction = 'skip';
     }
@@ -407,8 +424,13 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             }
             
             for (const childFile of childFiles) {
-                console.log(`[Data] moveItem: 递回移动子档案 "${childFile.name}" (ID: ${childFile.id})`);
-                const childReport = await moveItem(childFile.id, 'file', existingItemInTarget.id, userId, childOptions);
+                // --- *** 关键修正 开始 *** ---
+                // 此处确保我们使用从 getFolderContents 中获得的正确的档案 ID (别名为 id)
+                // 而不是可能存在于上层范围中的 itemId。
+                const correctFileId = childFile.id;
+                console.log(`[Data] moveItem: 递回移动子档案 "${childFile.name}" (ID: ${correctFileId})`);
+                const childReport = await moveItem(correctFileId, 'file', existingItemInTarget.id, userId, childOptions);
+                // --- *** 关键修正 结束 *** ---
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
                 report.errors += childReport.errors;
