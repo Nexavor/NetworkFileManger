@@ -9,9 +9,9 @@ const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
 async function setup() {
     try {
         await fsp.mkdir(UPLOAD_DIR, { recursive: true });
-        console.log('[Local Storage] 上传目录已确认存在:', UPLOAD_DIR);
+        // console.log('[Local Storage] 上传目录已确认存在:', UPLOAD_DIR);
     } catch (e) {
-        console.error('[Local Storage] 建立上传目录失败:', e);
+        // console.error('[Local Storage] 建立上传目录失败:', e);
     }
 }
 setup();
@@ -19,7 +19,7 @@ setup();
 // **重构：上传逻辑**
 // 现在改为纯流式上传，直接接收 fileStream
 async function upload(fileStream, fileName, mimetype, userId, folderId) {
-    console.log(`[Local Storage] 开始处理上传流: ${fileName}`);
+    // console.log(`[Local Storage] 开始处理上传流: ${fileName}`);
     const userDir = path.join(UPLOAD_DIR, String(userId));
     
     // 获取目标资料夾的完整相对路径
@@ -29,28 +29,28 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
     const finalFolderPath = path.join(userDir, relativeFolderPath);
 
     // 建立目标目录
-    console.log(`[Local Storage] 确保目标目录存在: ${finalFolderPath}`);
+    // console.log(`[Local Storage] 确保目标目录存在: ${finalFolderPath}`);
     await fsp.mkdir(finalFolderPath, { recursive: true });
 
     const finalFilePath = path.join(finalFolderPath, fileName);
     // 储存相对路径时，确保使用 POSIX 风格的斜线
     const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/');
-    console.log(`[Local Storage] 最终档案路径: ${finalFilePath}`);
+    // console.log(`[Local Storage] 最终档案路径: ${finalFilePath}`);
 
     // **核心修改：直接将传入的流写入最终文件**
     await new Promise((resolve, reject) => {
         const writeStream = fs.createWriteStream(finalFilePath);
         
         fileStream.on('error', (err) => {
-            console.error(`[Local Storage] 读取来源档案流失败: ${fileName}`, err);
+            // console.error(`[Local Storage] 读取来源档案流失败: ${fileName}`, err);
             reject(err);
         });
         writeStream.on('error', (err) => {
-            console.error(`[Local Storage] 写入最终档案流失败: ${finalFilePath}`, err);
+            // console.error(`[Local Storage] 写入最终档案流失败: ${finalFilePath}`, err);
             reject(err);
         });
         writeStream.on('finish', () => {
-            console.log(`[Local Storage] 档案流式传输完成: ${fileName}`);
+            // console.log(`[Local Storage] 档案流式传输完成: ${fileName}`);
             resolve();
         });
         
@@ -61,7 +61,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
     const stats = await fsp.stat(finalFilePath);
     const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
     
-    console.log(`[Local Storage] 正在将档案资讯写入资料库: ${fileName}`);
+    // console.log(`[Local Storage] 正在将档案资讯写入资料库: ${fileName}`);
     const dbResult = await data.addFile({
         message_id: messageId,
         fileName,
@@ -72,7 +72,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
         date: Date.now(),
     }, folderId, userId, 'local');
     
-    console.log(`[Local Storage] 档案 ${fileName} 成功储存至本地并记录到资料库。`);
+    // console.log(`[Local Storage] 档案 ${fileName} 成功储存至本地并记录到资料库。`);
     return { success: true, message: '文件已储存至本地。', fileId: dbResult.fileId };
 }
 
