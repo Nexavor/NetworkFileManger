@@ -1,10 +1,10 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
-const Busboy = require('busboy'); // 引入 busboy
+const Busboy = require('busboy');
 const path = require('path');
 const axios = require('axios');
-const archiver = 'archiver';
+const archiver = require('archiver');
 const bcrypt = require('bcrypt');
 const fs = require('fs');
 const fsp = require('fs').promises;
@@ -15,7 +15,6 @@ const storageManager = require('./storage');
 
 const app = express();
 
-// --- 暂存文件目录与清理 (现在主要用于非上传操作，例如文字编辑) ---
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
 async function cleanupTempDir() {
@@ -134,7 +133,6 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- 重构后的上传路由 ---
 app.post('/upload', requireLogin, (req, res) => {
     console.log('[Server] /upload 路由启动，开始处理上传请求');
     const userId = req.session.userId;
@@ -144,40 +142,47 @@ app.post('/upload', requireLogin, (req, res) => {
     let initialFolderId;
     let resolutions = {};
     let caption = '';
+    const relativePaths = [];
+    let fileIndex = 0;
     const fileProcessingPromises = [];
+    let allSkipped = true;
 
     busboy.on('field', (fieldname, val) => {
-        console.log(`[Busboy] 收到字段: ${fieldname} = ${val}`);
+        console.log(`[Busboy] 收到字段: ${fieldname}`);
         if (fieldname === 'folderId') {
             initialFolderId = parseInt(val, 10);
         } else if (fieldname === 'resolutions') {
             resolutions = JSON.parse(val);
         } else if (fieldname === 'caption') {
             caption = val;
+        } else if (fieldname === 'relativePaths') {
+            relativePaths.push(val);
         }
     });
 
     busboy.on('file', (fieldname, fileStream, fileInfo) => {
+        const currentFileIndex = fileIndex++;
         const { filename, encoding, mimeType } = fileInfo;
-        const decodedFilename = decodeURIComponent(Buffer.from(filename, 'latin1').toString('utf8'));
+        const relativePath = relativePaths[currentFileIndex] || filename; 
+        const decodedFilename = decodeURIComponent(Buffer.from(relativePath, 'latin1').toString('utf8'));
+        
         console.log(`[Busboy] 开始接收文件流: ${decodedFilename}, MimeType: ${mimeType}`);
 
         const processFile = async () => {
             try {
-                // 等待 folderId 被解析
                 if (typeof initialFolderId === 'undefined') {
-                    await new Promise(resolve => setTimeout(resolve, 100));
+                     await new Promise(resolve => setTimeout(resolve, 100));
                 }
 
                 const action = resolutions[decodedFilename] || 'upload';
 
                 if (action === 'skip') {
                     console.log(`[Server] 侦测到 'skip' 操作，消耗并跳过文件流: ${decodedFilename}`);
-                    fileStream.resume(); // 消耗掉流，防止请求挂起
+                    fileStream.resume();
                     return;
                 }
 
-                const pathParts = decodedFilename.split('/');
+                const pathParts = decodedFilename.split('/').filter(p => p);
                 let finalFilename = pathParts.pop() || decodedFilename;
                 const folderPathParts = pathParts;
                 
@@ -203,16 +208,15 @@ app.post('/upload', requireLogin, (req, res) => {
                         return;
                      }
                 }
-
+                
+                allSkipped = false;
                 console.log(`[Server] 调用储存引擎 [${storage.type}] 上传文件流: ${finalFilename}`);
-                // **核心修改：直接传递文件流**
                 await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
                 console.log(`[Server] 储存引擎处理完成: ${finalFilename}`);
 
             } catch (err) {
                 console.error(`[Server] 处理文件 ${decodedFilename} 时发生错误:`, err);
-                fileStream.resume(); // 确保流被消耗
-                // 将错误抛出，以便 Promise.allSettled 能捕获到
+                fileStream.resume();
                 throw err;
             }
         };
@@ -229,7 +233,7 @@ app.post('/upload', requireLogin, (req, res) => {
             res.status(500).json({ success: false, message: '部分或全部文件上传失败。' });
         } else {
             console.log('[Server] 所有文件处理成功');
-            res.json({ success: true, message: '上传完成' });
+            res.json({ success: true, message: '上传完成', skippedAll: allSkipped });
         }
     });
 
@@ -242,10 +246,7 @@ app.post('/upload', requireLogin, (req, res) => {
     req.pipe(busboy);
 });
 
-
 // --- API 端点 ---
-// ... (其他 API 端点保持不变) ...
-
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
     const userId = req.session.userId;
@@ -259,7 +260,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
 
     try {
         await fsp.writeFile(tempFilePath, content, 'utf8');
-        const fileStream = fs.createReadStream(tempFilePath); // 创建流
+        const fileStream = fs.createReadStream(tempFilePath);
         let result;
 
         if (mode === 'edit' && fileId) {
@@ -270,7 +271,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                 if (fileName !== originalFile.fileName) {
                     const conflict = await data.checkFullConflict(fileName, originalFile.folder_id, userId);
                     if (conflict) {
-                        return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
+                        return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
                     }
                 }
                 
@@ -282,7 +283,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         } else if (mode === 'create' && folderId) {
              const conflict = await data.checkFullConflict(fileName, folderId, userId);
             if (conflict) {
-                return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
+                return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
             }
             result = await storage.upload(fileStream, fileName, 'text/plain', userId, folderId);
         } else {
@@ -292,12 +293,11 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
     } catch (error) {
         res.status(500).json({ success: false, message: '伺服器内部错误: ' + error.message });
     } finally {
-        if (fsSync.existsSync(tempFilePath)) {
+        if (fs.existsSync(tempFilePath)) {
             await fsp.unlink(tempFilePath).catch(err => {});
         }
     }
 });
-// ... (其他 API 端点保持不变) ...
 app.get('/api/file-info/:id', requireLogin, async (req, res) => {
     try {
         const fileId = parseInt(req.params.id, 10);
@@ -401,7 +401,7 @@ app.post('/api/folder', requireLogin, async (req, res) => {
     try {
         const conflict = await data.checkFullConflict(name, parentId, userId);
         if (conflict) {
-            return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
+            return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
         }
 
         const result = await data.createFolder(name, parentId, userId);
@@ -421,7 +421,7 @@ app.post('/api/folder', requireLogin, async (req, res) => {
 
         res.json(result);
     } catch (error) {
-         res.status(500).json({ success: false, message: error.message || '处理资料夹时发生错误。' });
+         res.status(500).json({ success: false, message: error.message || '处理资料夾时发生错误。' });
     }
 });
 
@@ -619,7 +619,7 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
             return res.status(404).send('找不到任何可下载的档案');
         }
         
-        const archive = archiver('zip', { zlib: { level: 9 } });
+        const archive = require('archiver')('zip', { zlib: { level: 9 } });
         res.attachment('download.zip');
         archive.pipe(res);
 
