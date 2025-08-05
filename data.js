@@ -1,3 +1,4 @@
+// nexavor/networkfilemanger/NetworkFileManger-4d69a7613e679a96c120521baede91c8da3c68d1/data.js
 const db = require('./database.js');
 const crypto = require('crypto');
 const path = require('path');
@@ -177,19 +178,28 @@ async function getAllDescendantFolderIds(folderId, userId) {
 function getFolderContents(folderId, userId) {
     return new Promise((resolve, reject) => {
         const sqlFolders = `SELECT id, name, parent_id, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ? ORDER BY name ASC`;
-        const sqlFiles = `SELECT *, message_id as id, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? ORDER BY name ASC`;
+        // --- *** 关键修正 开始 *** ---
+        // 明确列出所有需要的栏位，并移除不必要的 `*` 和 `.map()` 操作。
+        // 这可以避免因栏位名称冲突或 sqlite 驱动程式的意外行为而导致 'id' 被错误覆盖的问题。
+        const sqlFiles = `SELECT message_id as id, fileName, mimetype, file_id, thumb_file_id, size, date, share_token, share_expires_at, folder_id, user_id, storage_type, fileName as name, 'file' as type 
+                          FROM files 
+                          WHERE folder_id = ? AND user_id = ? 
+                          ORDER BY name ASC`;
         let contents = { folders: [], files: [] };
         db.all(sqlFolders, [folderId, userId], (err, folders) => {
             if (err) return reject(err);
             contents.folders = folders;
             db.all(sqlFiles, [folderId, userId], (err, files) => {
                 if (err) return reject(err);
-                contents.files = files.map(f => ({ ...f, message_id: f.id }));
+                // 直接赋值，因为 SQL 查询已经处理了所有别名
+                contents.files = files;
                 resolve(contents);
             });
         });
+        // --- *** 关键修正 结束 *** ---
     });
 }
+
 
 async function getFilesRecursive(folderId, userId, currentPath = '') {
     let allFiles = [];
