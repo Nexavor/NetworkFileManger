@@ -288,13 +288,11 @@ function getAllFolders(userId) {
     });
 }
 
-// *** 关键修正：重构 moveItem 以正确处理 ID 和路径 ***
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}`);
-    const { resolutions = {}, pathPrefix = '' } = options;
+    const { resolutions = {}, pathPrefix = '', isMerging = false } = options; // 添加 isMerging 标志
     const report = { moved: 0, skipped: 0, errors: 0 };
-    
-    // **修正：使用一个更明确的查询，只获取特定类型的项目**
+
     const sourceItem = await new Promise((resolve, reject) => {
         const table = itemType === 'folder' ? 'folders' : 'files';
         const idColumn = itemType === 'folder' ? 'id' : 'message_id';
@@ -308,11 +306,23 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         console.error(`[Data] moveItem: 找不到来源项目 ID ${itemId} (类型: ${itemType})`);
         return report;
     }
-    
+
     const currentPath = path.join(pathPrefix, sourceItem.name).replace(/\\/g, '/');
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
-    const resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
+    
+    // --- 修正的冲突解决逻辑 ---
+    let resolutionAction = resolutions[currentPath];
+    if (!resolutionAction) {
+        if (isMerging && existingItemInTarget) {
+            // 如果父资料夹正在合并，则子资料夹冲突时也合并，档案冲突时则覆盖
+            resolutionAction = (itemType === 'folder' && existingItemInTarget.type === 'folder') ? 'merge' : 'overwrite';
+        } else {
+            // 否则，使用预设行为（存在即跳过）
+            resolutionAction = existingItemInTarget ? 'skip_default' : 'move';
+        }
+    }
     console.log(`[Data] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
+
 
     switch (resolutionAction) {
         case 'skip':
@@ -336,8 +346,9 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
 
         case 'overwrite':
             if (!existingItemInTarget) {
-                console.warn(`[Data] moveItem: 尝试覆盖但目标项目 "${currentPath}" 不存在，跳过。`);
-                report.skipped++;
+                console.warn(`[Data] moveItem: 尝试覆盖但目标项目 "${currentPath}" 不存在，将直接移动。`);
+                await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
+                report.moved++;
                 return report;
             }
             console.log(`[Data] moveItem: 覆盖目标项目 "${currentPath}" (ID: ${existingItemInTarget.id}, 类型: ${existingItemInTarget.type})`);
@@ -348,19 +359,22 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
 
         case 'merge':
             if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') {
-                console.warn(`[Data] moveItem: 尝试合并但目标项目 "${currentPath}" 不是资料夹，跳过。`);
-                report.skipped++;
+                console.warn(`[Data] moveItem: 尝试合并但目标或来源不是资料夹，将直接覆盖。`);
+                if(existingItemInTarget) await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
+                await moveItems([], [itemId], targetFolderId, userId);
+                report.moved++;
                 return report;
             }
             
             console.log(`[Data] moveItem: 合并资料夹 "${currentPath}" 到目标资料夹 ID ${existingItemInTarget.id}`);
-            // **修正：使用 getFolderContents 分别处理档案和资料夹**
             const { folders: childFolders, files: childFiles } = await getFolderContents(itemId, userId);
             let allChildrenProcessedSuccessfully = true;
 
+            const childOptions = { ...options, pathPrefix: currentPath, isMerging: true }; // 往下传递 isMerging 标志
+
             for (const childFolder of childFolders) {
                 console.log(`[Data] moveItem: 递回移动子资料夹 "${childFolder.name}" (ID: ${childFolder.id})`);
-                const childReport = await moveItem(childFolder.id, 'folder', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
+                const childReport = await moveItem(childFolder.id, 'folder', existingItemInTarget.id, userId, childOptions);
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
                 report.errors += childReport.errors;
@@ -371,7 +385,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             
             for (const childFile of childFiles) {
                 console.log(`[Data] moveItem: 递回移动子档案 "${childFile.name}" (ID: ${childFile.id})`);
-                const childReport = await moveItem(childFile.id, 'file', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
+                const childReport = await moveItem(childFile.id, 'file', existingItemInTarget.id, userId, childOptions);
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
                 report.errors += childReport.errors;
