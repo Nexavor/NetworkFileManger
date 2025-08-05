@@ -142,7 +142,7 @@ app.post('/upload', requireLogin, (req, res) => {
     let initialFolderId;
     let resolutions = {};
     let caption = '';
-    const relativePaths = [];
+    let relativePaths = []; // 将在此处存储所有路径
     let fileIndex = 0;
     const fileProcessingPromises = [];
     let allSkipped = true;
@@ -155,23 +155,31 @@ app.post('/upload', requireLogin, (req, res) => {
             resolutions = JSON.parse(val);
         } else if (fieldname === 'caption') {
             caption = val;
-        } else if (fieldname === 'relativePaths') {
-            relativePaths.push(val);
+        } else if (fieldname === 'relativePathsJSON') { // --- *** 关键修正 *** ---
+            // 接收并解析包含所有路径的JSON字符串
+            relativePaths = JSON.parse(val);
+            console.log(`[Busboy] 已成功解析 ${relativePaths.length} 个相对路径。`);
         }
     });
 
     busboy.on('file', (fieldname, fileStream, fileInfo) => {
         const currentFileIndex = fileIndex++;
         const { filename, encoding, mimeType } = fileInfo;
+        
+        // --- *** 关键修正：从预先加载的数组中获取路径 *** ---
         const relativePath = relativePaths[currentFileIndex] || filename; 
         const decodedFilename = decodeURIComponent(Buffer.from(relativePath, 'latin1').toString('utf8'));
         
-        console.log(`[Busboy] 开始接收文件流: ${decodedFilename}, MimeType: ${mimeType}`);
+        console.log(`[Busboy] 开始接收文件流 #${currentFileIndex}: ${decodedFilename}, MimeType: ${mimeType}`);
 
         const processFile = async () => {
             try {
-                if (typeof initialFolderId === 'undefined') {
-                     await new Promise(resolve => setTimeout(resolve, 100));
+                if (typeof initialFolderId === 'undefined' || relativePaths.length === 0) {
+                     await new Promise(resolve => setTimeout(resolve, 100)); // 等待字段解析
+                }
+                
+                if (relativePaths.length <= currentFileIndex) {
+                    throw new Error(`文件流与路径信息不匹配 (文件索引: ${currentFileIndex}, 路径数量: ${relativePaths.length})`);
                 }
 
                 const action = resolutions[decodedFilename] || 'upload';
@@ -246,6 +254,7 @@ app.post('/upload', requireLogin, (req, res) => {
     req.pipe(busboy);
 });
 
+
 // --- API 端点 ---
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
@@ -271,7 +280,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                 if (fileName !== originalFile.fileName) {
                     const conflict = await data.checkFullConflict(fileName, originalFile.folder_id, userId);
                     if (conflict) {
-                        return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
+                        return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
                     }
                 }
                 
@@ -401,7 +410,7 @@ app.post('/api/folder', requireLogin, async (req, res) => {
     try {
         const conflict = await data.checkFullConflict(name, parentId, userId);
         if (conflict) {
-            return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
+            return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
         }
 
         const result = await data.createFolder(name, parentId, userId);
