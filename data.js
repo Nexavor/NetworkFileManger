@@ -310,12 +310,11 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
 
     const currentPath = path.posix.join(pathPrefix, sourceItem.name);
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
-
+    
     // 新增逻辑：在递归深层（第二级及以后），将文件夹冲突视为文件冲突
-    if (depth > 1 && itemType === 'folder' && existingItemInTarget) {
-        let action = resolutions[currentPath] || 'skip'; // 默认为跳过
+    if (depth > 0 && itemType === 'folder' && existingItemInTarget) {
+        let action = resolutions[currentPath] || 'skip_default'; 
 
-        // 第二级及以后目录的合并请求被视为跳过
         if (action === 'merge') {
             console.warn(`[Data] moveItem: 递归合并在第二级或更深层目录 [${currentPath}] 不被支持，操作将跳过此项。`);
             action = 'skip';
@@ -338,6 +337,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
                 report.moved++;
                 break;
             case 'skip':
+            case 'skip_default':
             default:
                 report.skipped++;
                 console.log(`[Data] moveItem: 跳过冲突文件夹 "${currentPath}"`);
