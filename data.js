@@ -292,7 +292,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
     console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}`);
     const { resolutions = {}, pathPrefix = '', isMerging = false } = options; // 添加 isMerging 标志
     const report = { moved: 0, skipped: 0, errors: 0 };
-
+    
     const sourceItem = await new Promise((resolve, reject) => {
         const table = itemType === 'folder' ? 'folders' : 'files';
         const idColumn = itemType === 'folder' ? 'id' : 'message_id';
@@ -306,18 +306,15 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         console.error(`[Data] moveItem: 找不到来源项目 ID ${itemId} (类型: ${itemType})`);
         return report;
     }
-
+    
     const currentPath = path.join(pathPrefix, sourceItem.name).replace(/\\/g, '/');
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
     
-    // --- 修正的冲突解决逻辑 ---
     let resolutionAction = resolutions[currentPath];
     if (!resolutionAction) {
         if (isMerging && existingItemInTarget) {
-            // 如果父资料夹正在合并，则子资料夹冲突时也合并，档案冲突时则覆盖
             resolutionAction = (itemType === 'folder' && existingItemInTarget.type === 'folder') ? 'merge' : 'overwrite';
         } else {
-            // 否则，使用预设行为（存在即跳过）
             resolutionAction = existingItemInTarget ? 'skip_default' : 'move';
         }
     }
@@ -370,7 +367,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             const { folders: childFolders, files: childFiles } = await getFolderContents(itemId, userId);
             let allChildrenProcessedSuccessfully = true;
 
-            const childOptions = { ...options, pathPrefix: currentPath, isMerging: true }; // 往下传递 isMerging 标志
+            const childOptions = { ...options, pathPrefix: currentPath, isMerging: true }; 
 
             for (const childFolder of childFolders) {
                 console.log(`[Data] moveItem: 递回移动子资料夹 "${childFolder.name}" (ID: ${childFolder.id})`);
