@@ -288,9 +288,9 @@ function getAllFolders(userId) {
     });
 }
 
-// --- *** 关键修正：重构 moveItem 以正确处理 ID 和路径 *** ---
-async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
-    console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}`);
+// --- *** 关键修正：添加 depth 参数以控制递归行为 *** ---
+async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, depth = 0) {
+    console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}, 深度: ${depth}`);
     const { resolutions = {}, pathPrefix = '' } = options;
     const report = { moved: 0, skipped: 0, errors: 0 };
 
@@ -310,6 +310,43 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
 
     const currentPath = path.posix.join(pathPrefix, sourceItem.name);
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
+
+    // 新增逻辑：在递归深层（第二级及以后），将文件夹冲突视为文件冲突
+    if (depth > 1 && itemType === 'folder' && existingItemInTarget) {
+        let action = resolutions[currentPath] || 'skip'; // 默认为跳过
+
+        // 第二级及以后目录的合并请求被视为跳过
+        if (action === 'merge') {
+            console.warn(`[Data] moveItem: 递归合并在第二级或更深层目录 [${currentPath}] 不被支持，操作将跳过此项。`);
+            action = 'skip';
+        }
+        
+        console.log(`[Data] moveItem: 侦测到深层目录冲突于 "${currentPath}", 视同文件处理，策略: "${action}"`);
+        
+        switch (action) {
+            case 'overwrite':
+                console.log(`[Data] moveItem: 覆盖目标文件夹 "${currentPath}" (ID: ${existingItemInTarget.id})`);
+                await unifiedDelete(existingItemInTarget.id, 'folder', userId);
+                await moveItems([], [itemId], targetFolderId, userId);
+                report.moved++;
+                break;
+            case 'rename':
+                const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, true);
+                 console.log(`[Data] moveItem: 重命名冲突文件夹为 "${newName}"`);
+                await renameFolder(itemId, newName, userId);
+                await moveItems([], [itemId], targetFolderId, userId);
+                report.moved++;
+                break;
+            case 'skip':
+            default:
+                report.skipped++;
+                console.log(`[Data] moveItem: 跳过冲突文件夹 "${currentPath}"`);
+                break;
+        }
+        return report;
+    }
+
+
     const resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
     console.log(`[Data] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
 
@@ -358,7 +395,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
 
             for (const childFolder of childFolders) {
                 console.log(`[Data] moveItem: 递回移动子资料夹 "${childFolder.name}" (ID: ${childFolder.id})`);
-                const childReport = await moveItem(childFolder.id, 'folder', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
+                const childReport = await moveItem(childFolder.id, 'folder', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath }, depth + 1);
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
                 report.errors += childReport.errors;
@@ -369,7 +406,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             
             for (const childFile of childFiles) {
                 console.log(`[Data] moveItem: 递回移动子档案 "${childFile.name}" (ID: ${childFile.id})`);
-                const childReport = await moveItem(childFile.id, 'file', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
+                const childReport = await moveItem(childFile.id, 'file', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath }, depth + 1);
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
                 report.errors += childReport.errors;
