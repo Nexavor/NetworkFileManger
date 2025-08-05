@@ -288,7 +288,6 @@ function getAllFolders(userId) {
     });
 }
 
-// --- *** 关键修正：添加 depth 参数以控制递归行为 *** ---
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, depth = 0) {
     console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}, 深度: ${depth}`);
     const { resolutions = {}, pathPrefix = '' } = options;
@@ -310,44 +309,14 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
 
     const currentPath = path.posix.join(pathPrefix, sourceItem.name);
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
-    
-    // 新增逻辑：在递归深层（第二级及以后），将文件夹冲突视为文件冲突
-    if (depth > 0 && itemType === 'folder' && existingItemInTarget) {
-        let action = resolutions[currentPath] || 'skip_default'; 
+    let resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
 
-        if (action === 'merge') {
-            console.warn(`[Data] moveItem: 递归合并在第二级或更深层目录 [${currentPath}] 不被支持，操作将跳过此项。`);
-            action = 'skip';
-        }
-        
-        console.log(`[Data] moveItem: 侦测到深层目录冲突于 "${currentPath}", 视同文件处理，策略: "${action}"`);
-        
-        switch (action) {
-            case 'overwrite':
-                console.log(`[Data] moveItem: 覆盖目标文件夹 "${currentPath}" (ID: ${existingItemInTarget.id})`);
-                await unifiedDelete(existingItemInTarget.id, 'folder', userId);
-                await moveItems([], [itemId], targetFolderId, userId);
-                report.moved++;
-                break;
-            case 'rename':
-                const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, true);
-                 console.log(`[Data] moveItem: 重命名冲突文件夹为 "${newName}"`);
-                await renameFolder(itemId, newName, userId);
-                await moveItems([], [itemId], targetFolderId, userId);
-                report.moved++;
-                break;
-            case 'skip':
-            case 'skip_default':
-            default:
-                report.skipped++;
-                console.log(`[Data] moveItem: 跳过冲突文件夹 "${currentPath}"`);
-                break;
-        }
-        return report;
+    // --- *** 关键修正：深度大于0时，将 'merge' 视为 'overwrite' *** ---
+    if (depth > 0 && itemType === 'folder' && existingItemInTarget && existingItemInTarget.type === 'folder' && resolutionAction === 'merge') {
+        console.log(`[Data] moveItem: 深度合并 (${depth}) 不被支持，将 "${currentPath}" 的合并操作视为覆盖处理。`);
+        resolutionAction = 'overwrite';
     }
 
-
-    const resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
     console.log(`[Data] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
 
     switch (resolutionAction) {
