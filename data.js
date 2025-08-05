@@ -290,7 +290,7 @@ function getAllFolders(userId) {
 
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}`);
-    const { resolutions = {}, pathPrefix = '', isMerging = false } = options; // 添加 isMerging 标志
+    const { resolutions = {}, pathPrefix = '', isMerging = false } = options;
     const report = { moved: 0, skipped: 0, errors: 0 };
     
     const sourceItem = await new Promise((resolve, reject) => {
@@ -311,19 +311,22 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
     
     let resolutionAction = resolutions[currentPath];
+
     if (!resolutionAction) {
         if (isMerging && existingItemInTarget) {
             resolutionAction = (itemType === 'folder' && existingItemInTarget.type === 'folder') ? 'merge' : 'overwrite';
+        } else if (existingItemInTarget) {
+            resolutionAction = 'skip';
         } else {
-            resolutionAction = existingItemInTarget ? 'skip_default' : 'move';
+            resolutionAction = 'move';
         }
     }
-    console.log(`[Data] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
+    if (resolutionAction === 'skip_default') resolutionAction = 'skip';
 
+    console.log(`[Data] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
 
     switch (resolutionAction) {
         case 'skip':
-        case 'skip_default':
             report.skipped++;
             console.log(`[Data] moveItem: 跳过项目 "${currentPath}"`);
             return report;
@@ -342,21 +345,19 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             return report;
 
         case 'overwrite':
-            if (!existingItemInTarget) {
-                console.warn(`[Data] moveItem: 尝试覆盖但目标项目 "${currentPath}" 不存在，将直接移动。`);
-                await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
-                report.moved++;
-                return report;
+            if (existingItemInTarget) {
+                console.log(`[Data] moveItem: 覆盖目标项目 "${currentPath}" (ID: ${existingItemInTarget.id}, 类型: ${existingItemInTarget.type})`);
+                await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
+            } else {
+                 console.warn(`[Data] moveItem: 尝试覆盖但目标项目 "${currentPath}" 不存在，将直接移动。`);
             }
-            console.log(`[Data] moveItem: 覆盖目标项目 "${currentPath}" (ID: ${existingItemInTarget.id}, 类型: ${existingItemInTarget.type})`);
-            await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
             report.moved++;
             return report;
 
         case 'merge':
             if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') {
-                console.warn(`[Data] moveItem: 尝试合并但目标或来源不是资料夹，将直接覆盖。`);
+                console.warn(`[Data] moveItem: 尝试合并但目标或来源不是资料夹。将执行覆盖操作。`);
                 if(existingItemInTarget) await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
                 await moveItems([], [itemId], targetFolderId, userId);
                 report.moved++;
