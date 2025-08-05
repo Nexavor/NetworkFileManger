@@ -133,67 +133,79 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
+// --- *** 关键修正：重构上传逻辑以避免并发问题 *** ---
 app.post('/upload', requireLogin, (req, res) => {
     console.log('[Server] /upload 路由启动，开始处理上传请求');
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
     const busboy = Busboy({ headers: req.headers });
 
-    let initialFolderId;
-    let resolutions = {};
-    let caption = '';
-    let relativePaths = []; // 将在此处存储所有路径
-    let fileIndex = 0;
-    const fileProcessingPromises = [];
-    let allSkipped = true;
+    const fields = {};
+    const fileBuffers = []; // 按接收顺序存储文件信息和 buffer
+    const processingPromises = [];
 
     busboy.on('field', (fieldname, val) => {
         console.log(`[Busboy] 收到字段: ${fieldname}`);
-        if (fieldname === 'folderId') {
-            initialFolderId = parseInt(val, 10);
-        } else if (fieldname === 'resolutions') {
-            resolutions = JSON.parse(val);
-        } else if (fieldname === 'caption') {
-            caption = val;
-        } else if (fieldname === 'relativePathsJSON') { // --- *** 关键修正 *** ---
-            // 接收并解析包含所有路径的JSON字符串
-            relativePaths = JSON.parse(val);
-            console.log(`[Busboy] 已成功解析 ${relativePaths.length} 个相对路径。`);
-        }
+        fields[fieldname] = val;
     });
 
     busboy.on('file', (fieldname, fileStream, fileInfo) => {
-        const currentFileIndex = fileIndex++;
         const { filename, encoding, mimeType } = fileInfo;
-        
-        // --- *** 关键修正：从预先加载的数组中获取路径 *** ---
-        const relativePath = relativePaths[currentFileIndex] || filename; 
-        const decodedFilename = decodeURIComponent(Buffer.from(relativePath, 'latin1').toString('utf8'));
-        
-        console.log(`[Busboy] 开始接收文件流 #${currentFileIndex}: ${decodedFilename}, MimeType: ${mimeType}`);
+        console.log(`[Busboy] 开始缓冲文件流: ${filename}`);
+        const chunks = [];
+        const filePromise = new Promise((resolve, reject) => {
+            fileStream.on('data', (chunk) => {
+                chunks.push(chunk);
+            });
+            fileStream.on('end', () => {
+                const buffer = Buffer.concat(chunks);
+                console.log(`[Busboy] 文件流缓冲完成: ${filename}, 大小: ${buffer.length} bytes`);
+                fileBuffers.push({
+                    buffer,
+                    filename,
+                    mimeType
+                });
+                resolve();
+            });
+            fileStream.on('error', reject);
+        });
+        processingPromises.push(filePromise);
+    });
 
-        const processFile = async () => {
-            try {
-                if (typeof initialFolderId === 'undefined' || relativePaths.length === 0) {
-                     await new Promise(resolve => setTimeout(resolve, 100)); // 等待字段解析
-                }
-                
-                if (relativePaths.length <= currentFileIndex) {
-                    throw new Error(`文件流与路径信息不匹配 (文件索引: ${currentFileIndex}, 路径数量: ${relativePaths.length})`);
-                }
+    busboy.on('finish', async () => {
+        console.log('[Busboy] 所有字段和文件流接收完成，开始处理...');
+        await Promise.all(processingPromises); // 确保所有文件都已缓冲完毕
+
+        try {
+            const initialFolderId = parseInt(fields.folderId, 10);
+            const resolutions = JSON.parse(fields.resolutions || '{}');
+            const relativePaths = JSON.parse(fields.relativePathsJSON || '[]');
+            const caption = fields.caption || '';
+            let allSkipped = true;
+            
+            if (fileBuffers.length !== relativePaths.length) {
+                throw new Error(`文件数量 (${fileBuffers.length}) 与路径数量 (${relativePaths.length}) 不匹配。`);
+            }
+
+            for (let i = 0; i < fileBuffers.length; i++) {
+                const fileData = fileBuffers[i];
+                const relativePath = relativePaths[i];
+
+                const { buffer, mimeType } = fileData;
+                const decodedFilename = decodeURIComponent(Buffer.from(relativePath, 'latin1').toString('utf8'));
+                console.log(`[Server] 开始处理已缓冲的文件 #${i}: ${decodedFilename}`);
 
                 const action = resolutions[decodedFilename] || 'upload';
 
                 if (action === 'skip') {
-                    console.log(`[Server] 侦测到 'skip' 操作，消耗并跳过文件流: ${decodedFilename}`);
-                    fileStream.resume();
-                    return;
+                    console.log(`[Server] 侦测到 'skip' 操作，跳过文件: ${decodedFilename}`);
+                    continue; // 跳过此文件
                 }
 
                 const pathParts = decodedFilename.split('/').filter(p => p);
                 let finalFilename = pathParts.pop() || decodedFilename;
                 const folderPathParts = pathParts;
-                
+
                 console.log(`[Server] 解析路径... 档名: ${finalFilename}, 目标子路径:`, folderPathParts);
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                 console.log(`[Server] 解析后最终资料夹ID: ${targetFolderId}`);
@@ -211,37 +223,29 @@ app.post('/upload', requireLogin, (req, res) => {
                 } else {
                      const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                      if (conflict) {
-                        console.log(`[Server] 侦测到冲突且无解决方案，消耗并跳过文件流: ${finalFilename}`);
-                        fileStream.resume();
-                        return;
+                        console.log(`[Server] 侦测到冲突且无解决方案，跳过文件: ${finalFilename}`);
+                        continue;
                      }
                 }
                 
                 allSkipped = false;
+                
+                // 从 buffer 创建可读流以传递给存储引擎
+                const stream = require('stream');
+                const readableStream = new stream.PassThrough();
+                readableStream.end(buffer);
+
                 console.log(`[Server] 调用储存引擎 [${storage.type}] 上传文件流: ${finalFilename}`);
-                await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
+                await storage.upload(readableStream, finalFilename, mimeType, userId, targetFolderId, caption);
                 console.log(`[Server] 储存引擎处理完成: ${finalFilename}`);
-
-            } catch (err) {
-                console.error(`[Server] 处理文件 ${decodedFilename} 时发生错误:`, err);
-                fileStream.resume();
-                throw err;
             }
-        };
-        fileProcessingPromises.push(processFile());
-    });
 
-    busboy.on('finish', async () => {
-        console.log('[Busboy] 所有字段和文件流接收完成，等待处理程序...');
-        const results = await Promise.allSettled(fileProcessingPromises);
-        
-        const failures = results.filter(r => r.status === 'rejected');
-        if (failures.length > 0) {
-            console.error(`[Server] ${failures.length} 个文件上传失败`);
-            res.status(500).json({ success: false, message: '部分或全部文件上传失败。' });
-        } else {
             console.log('[Server] 所有文件处理成功');
             res.json({ success: true, message: '上传完成', skippedAll: allSkipped });
+
+        } catch (err) {
+            console.error('[Server] 处理文件时发生严重错误:', err);
+            res.status(500).json({ success: false, message: err.message || '处理上传文件时发生内部错误。' });
         }
     });
 
@@ -253,7 +257,6 @@ app.post('/upload', requireLogin, (req, res) => {
 
     req.pipe(busboy);
 });
-
 
 // --- API 端点 ---
 app.post('/api/text-file', requireLogin, async (req, res) => {
