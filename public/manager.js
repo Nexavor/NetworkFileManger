@@ -401,7 +401,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             foldersLoaded = true;
         } catch (error) {
-            console.error('加载资料夾列表失败', error);
+            // console.error('加载资料夾列表失败', error);
         }
     };
     
@@ -709,7 +709,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     if (createFolderBtn) {
         createFolderBtn.addEventListener('click', async () => {
-            const name = prompt('请输入新资料夹的名称：');
+            const name = prompt('请输入新资料夾的名称：');
             if (name && name.trim()) {
                 try {
                     await axios.post('/api/folder', { name: name.trim(), parentId: currentFolderId });
@@ -858,7 +858,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (deleteBtn) {
         deleteBtn.addEventListener('click', async () => {
             if (selectedItems.size === 0) return;
-            if (!confirm(`确定要删除这 ${selectedItems.size} 个项目吗？\n注意：删除资料夹将会一并删除其所有内容！`)) return;
+            if (!confirm(`确定要删除这 ${selectedItems.size} 个项目吗？\n注意：删除资料夾将会一并删除其所有内容！`)) return;
             const filesToDelete = [], foldersToDelete = [];
             selectedItems.forEach((item, id) => {
                 if (item.type === 'file') filesToDelete.push(parseInt(id));
