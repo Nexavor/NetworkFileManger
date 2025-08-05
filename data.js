@@ -1,4 +1,3 @@
-// nexavor/networkfilemanger/NetworkFileManger-4d69a7613e679a96c120521baede91c8da3c68d1/data.js
 const db = require('./database.js');
 const crypto = require('crypto');
 const path = require('path');
@@ -96,20 +95,7 @@ function searchItems(query, userId) {
             ORDER BY name ASC`;
 
         const sqlFiles = `
-            SELECT 
-                message_id as id, 
-                fileName as name, 
-                mimetype, 
-                file_id, 
-                thumb_file_id, 
-                size, 
-                date, 
-                share_token, 
-                share_expires_at, 
-                folder_id, 
-                user_id, 
-                storage_type, 
-                'file' as type
+            SELECT *, message_id as id, fileName as name, 'file' as type
             FROM files
             WHERE fileName LIKE ? AND user_id = ?
             ORDER BY date DESC`;
@@ -121,7 +107,7 @@ function searchItems(query, userId) {
             contents.folders = folders;
             db.all(sqlFiles, [searchQuery, userId], (err, files) => {
                 if (err) return reject(err);
-                contents.files = files; 
+                contents.files = files.map(f => ({ ...f, message_id: f.id }));
                 resolve(contents);
             });
         });
@@ -191,36 +177,19 @@ async function getAllDescendantFolderIds(folderId, userId) {
 function getFolderContents(folderId, userId) {
     return new Promise((resolve, reject) => {
         const sqlFolders = `SELECT id, name, parent_id, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ? ORDER BY name ASC`;
-        const sqlFiles = `SELECT 
-                            message_id as id, 
-                            fileName as name, 
-                            mimetype, 
-                            file_id, 
-                            thumb_file_id, 
-                            size, 
-                            date, 
-                            share_token, 
-                            share_expires_at, 
-                            folder_id, 
-                            user_id, 
-                            storage_type, 
-                            'file' as type 
-                          FROM files 
-                          WHERE folder_id = ? AND user_id = ? 
-                          ORDER BY name ASC`;
+        const sqlFiles = `SELECT *, message_id as id, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? ORDER BY name ASC`;
         let contents = { folders: [], files: [] };
         db.all(sqlFolders, [folderId, userId], (err, folders) => {
             if (err) return reject(err);
             contents.folders = folders;
             db.all(sqlFiles, [folderId, userId], (err, files) => {
                 if (err) return reject(err);
-                contents.files = files;
+                contents.files = files.map(f => ({ ...f, message_id: f.id }));
                 resolve(contents);
             });
         });
     });
 }
-
 
 async function getFilesRecursive(folderId, userId, currentPath = '') {
     let allFiles = [];
@@ -319,12 +288,13 @@ function getAllFolders(userId) {
     });
 }
 
-// --- *** 关键修正 开始 *** ---
+// *** 关键修正：重构 moveItem 以正确处理 ID 和路径 ***
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}`);
-    const { resolutions = {}, pathPrefix = '', isMerging = false } = options;
-    const report = { moved: 0, skipped: 0, errors: 0, merged: 0 };
+    const { resolutions = {}, pathPrefix = '' } = options;
+    const report = { moved: 0, skipped: 0, errors: 0 };
     
+    // **修正：使用一个更明确的查询，只获取特定类型的项目**
     const sourceItem = await new Promise((resolve, reject) => {
         const table = itemType === 'folder' ? 'folders' : 'files';
         const idColumn = itemType === 'folder' ? 'id' : 'message_id';
@@ -341,24 +311,20 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
     
     const currentPath = path.join(pathPrefix, sourceItem.name).replace(/\\/g, '/');
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
-    
-    let resolutionAction;
-
-    if (isMerging) {
-        resolutionAction = (itemType === 'folder' && existingItemInTarget?.type === 'folder') ? 'merge' : 'overwrite';
-    } else {
-        resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip' : 'move');
-    }
-    
+    const resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
     console.log(`[Data] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
 
     switch (resolutionAction) {
         case 'skip':
+        case 'skip_default':
             report.skipped++;
+            console.log(`[Data] moveItem: 跳过项目 "${currentPath}"`);
             return report;
 
         case 'rename':
+            console.log(`[Data] moveItem: 重新命名项目 "${currentPath}"`);
             const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
+            console.log(`[Data] moveItem: 找到可用新名称 "${newName}"`);
             if (itemType === 'folder') {
                 await renameFolder(itemId, newName, userId);
                 await moveItems([], [itemId], targetFolderId, userId);
@@ -369,54 +335,68 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
             return report;
 
         case 'overwrite':
-            if (existingItemInTarget) {
-                await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
+            if (!existingItemInTarget) {
+                console.warn(`[Data] moveItem: 尝试覆盖但目标项目 "${currentPath}" 不存在，跳过。`);
+                report.skipped++;
+                return report;
             }
+            console.log(`[Data] moveItem: 覆盖目标项目 "${currentPath}" (ID: ${existingItemInTarget.id}, 类型: ${existingItemInTarget.type})`);
+            await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
             report.moved++;
             return report;
 
         case 'merge':
-            if (itemType !== 'folder' || existingItemInTarget?.type !== 'folder') {
-                 if(existingItemInTarget) await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
-                 await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
-                 report.moved++;
-                 return report;
+            if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') {
+                console.warn(`[Data] moveItem: 尝试合并但目标项目 "${currentPath}" 不是资料夹，跳过。`);
+                report.skipped++;
+                return report;
             }
             
+            console.log(`[Data] moveItem: 合并资料夹 "${currentPath}" 到目标资料夹 ID ${existingItemInTarget.id}`);
+            // **修正：使用 getFolderContents 分别处理档案和资料夹**
             const { folders: childFolders, files: childFiles } = await getFolderContents(itemId, userId);
-            let totalChildren = childFolders.length + childFiles.length;
-            let processedChildren = 0;
+            let allChildrenProcessedSuccessfully = true;
 
-            const childOptions = { ...options, pathPrefix: currentPath, isMerging: true }; 
-
-            for (const child of [...childFolders, ...childFiles]) {
-                const childReport = await moveItem(child.id, child.type, existingItemInTarget.id, userId, childOptions);
+            for (const childFolder of childFolders) {
+                console.log(`[Data] moveItem: 递回移动子资料夹 "${childFolder.name}" (ID: ${childFolder.id})`);
+                const childReport = await moveItem(childFolder.id, 'folder', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
                 report.errors += childReport.errors;
-                report.merged += childReport.merged; 
-                
-                // 只有被移动或合并的才算成功处理
-                if (childReport.moved > 0 || childReport.merged > 0) {
-                    processedChildren++;
+                if (childReport.skipped > 0 || childReport.errors > 0) {
+                    allChildrenProcessedSuccessfully = false;
                 }
             }
             
-            // 只有当所有子项目都被处理（非跳过）时，才删除原文件夹
-            if (processedChildren === totalChildren) {
-                await unifiedDelete(itemId, 'folder', userId);
+            for (const childFile of childFiles) {
+                console.log(`[Data] moveItem: 递回移动子档案 "${childFile.name}" (ID: ${childFile.id})`);
+                const childReport = await moveItem(childFile.id, 'file', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath });
+                report.moved += childReport.moved;
+                report.skipped += childReport.skipped;
+                report.errors += childReport.errors;
+                 if (childReport.skipped > 0 || childReport.errors > 0) {
+                    allChildrenProcessedSuccessfully = false;
+                }
             }
-            report.merged++;
+            
+            if (allChildrenProcessedSuccessfully) {
+                console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夹 ID ${itemId}`);
+                await unifiedDelete(itemId, 'folder', userId);
+            } else {
+                console.warn(`[Data] moveItem: 部分子项目未能成功合并，保留原始资料夹 ID ${itemId}`);
+            }
+            
             return report;
 
         default: // 'move'
+            console.log(`[Data] moveItem: 直接移动项目 "${currentPath}"`);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
             report.moved++;
             return report;
     }
 }
-// --- *** 关键修正 结束 *** ---
+
 
 async function unifiedDelete(itemId, itemType, userId) {
     const storage = require('./storage').getStorage();
