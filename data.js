@@ -288,13 +288,12 @@ function getAllFolders(userId) {
     });
 }
 
-// *** 关键修正：重构 moveItem 以正确处理 ID 和路径 ***
+// --- *** 关键修正：重构 moveItem 以正确处理 ID 和路径 *** ---
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
     console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}`);
     const { resolutions = {}, pathPrefix = '' } = options;
     const report = { moved: 0, skipped: 0, errors: 0 };
-    
-    // **修正：使用一个更明确的查询，只获取特定类型的项目**
+
     const sourceItem = await new Promise((resolve, reject) => {
         const table = itemType === 'folder' ? 'folders' : 'files';
         const idColumn = itemType === 'folder' ? 'id' : 'message_id';
@@ -308,8 +307,8 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
         console.error(`[Data] moveItem: 找不到来源项目 ID ${itemId} (类型: ${itemType})`);
         return report;
     }
-    
-    const currentPath = path.join(pathPrefix, sourceItem.name).replace(/\\/g, '/');
+
+    const currentPath = path.posix.join(pathPrefix, sourceItem.name);
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
     const resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
     console.log(`[Data] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
@@ -352,9 +351,8 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
                 report.skipped++;
                 return report;
             }
-            
+
             console.log(`[Data] moveItem: 合并资料夹 "${currentPath}" 到目标资料夹 ID ${existingItemInTarget.id}`);
-            // **修正：使用 getFolderContents 分别处理档案和资料夹**
             const { folders: childFolders, files: childFiles } = await getFolderContents(itemId, userId);
             let allChildrenProcessedSuccessfully = true;
 
@@ -384,7 +382,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
                 console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夹 ID ${itemId}`);
                 await unifiedDelete(itemId, 'folder', userId);
             } else {
-                console.warn(`[Data] moveItem: 部分子项目未能成功合并，保留原始资料夹 ID ${itemId}`);
+                 console.warn(`[Data] moveItem: 部分子项目未能成功合并，保留原始资料夹 ID ${itemId}`);
             }
             
             return report;
