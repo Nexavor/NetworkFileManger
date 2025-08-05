@@ -12,9 +12,9 @@ const DB_PATH = path.join(__dirname, 'data', 'file-manager.db');
 
 const db = new sqlite3.Database(DB_PATH, (err) => {
     if (err) {
-        console.error('\x1b[31m%s\x1b[0m', `[错误] 无法连接到资料库: ${DB_PATH}`);
-        console.error('\x1b[31m%s\x1b[0m', err.message);
-        console.log('请确认您的专案路径是否正确，以及 `data/file-manager.db` 档案是否存在。');
+        // console.error('\x1b[31m%s\x1b[0m', `[错误] 无法连接到资料库: ${DB_PATH}`);
+        // console.error('\x1b[31m%s\x1b[0m', err.message);
+        // console.log('请确认您的专案路径是否正确，以及 `data/file-manager.db` 档案是否存在。');
         return;
     }
 });
@@ -49,11 +49,11 @@ async function createRootFolder(userId) {
 
 
 async function resetOrCreateAdmin() {
-    console.log('\x1b[33m%s\x1b[0m', '--- 管理员密码重设与建立工具 ---');
+    // console.log('\x1b[33m%s\x1b[0m', '--- 管理员密码重设与建立工具 ---');
     
     const newPassword = await askQuestion(`请输入管理员 [${ADMIN_USERNAME}] 的新密码 (最少4个字元): `);
     if (!newPassword || newPassword.length < 4) {
-        console.error('\x1b[31m%s\x1b[0m', '密码长度不可少于 4 个字元。操作已取消。');
+        // console.error('\x1b[31m%s\x1b[0m', '密码长度不可少于 4 个字元。操作已取消。');
         rl.close();
         db.close();
         return;
@@ -70,9 +70,9 @@ async function resetOrCreateAdmin() {
             const sql = `UPDATE users SET password = ?, is_admin = 1 WHERE id = ?`;
             db.run(sql, [hashedPassword, existingUser.id], function(err) {
                 if (err) {
-                    console.error('\x1b[31m%s\x1b[0m', '更新密码时发生资料库错误:', err.message);
+                    // console.error('\x1b[31m%s\x1b[0m', '更新密码时发生资料库错误:', err.message);
                 } else {
-                    console.log('\x1b[32m%s\x1b[0m', `✅ 成功！使用者 "${ADMIN_USERNAME}" 的密码已被重设。`);
+                    // console.log('\x1b[32m%s\x1b[0m', `✅ 成功！使用者 "${ADMIN_USERNAME}" 的密码已被重设。`);
                 }
                 rl.close();
                 db.close();
@@ -82,7 +82,7 @@ async function resetOrCreateAdmin() {
             const insertSql = `INSERT INTO users (username, password, is_admin) VALUES (?, ?, 1)`;
             db.run(insertSql, [ADMIN_USERNAME, hashedPassword], async function(err) {
                 if (err) {
-                    console.error('\x1b[31m%s\x1b[0m', '建立新管理员时发生资料库错误:', err.message);
+                    // console.error('\x1b[31m%s\x1b[0m', '建立新管理员时发生资料库错误:', err.message);
                     rl.close();
                     db.close();
                     return;
@@ -92,14 +92,14 @@ async function resetOrCreateAdmin() {
                 // 为新管理员建立根目录
                 await createRootFolder(newUserId);
                 
-                console.log('\x1b[32m%s\x1b[0m', `✅ 成功！管理员帐号已建立并设定好密码。`);
+                // console.log('\x1b[32m%s\x1b[0m', `✅ 成功！管理员帐号已建立并设定好密码。`);
                 rl.close();
                 db.close();
             });
         }
 
     } catch (error) {
-        console.error('\x1b[31m%s\x1b[0m', '处理过程中发生未知错误:', error);
+        // console.error('\x1b[31m%s\x1b[0m', '处理过程中发生未知错误:', error);
         rl.close();
         db.close();
     }
