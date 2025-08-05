@@ -310,27 +310,30 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) 
     const currentPath = path.join(pathPrefix, sourceItem.name).replace(/\\/g, '/');
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
     
-    // *** 关键修正：重构冲突解决逻辑 ***
-    let resolutionAction = resolutions[currentPath];
-    if (!resolutionAction) {
-        if (isMerging) {
-            if (existingItemInTarget) {
-                resolutionAction = (itemType === 'folder' && existingItemInTarget.type === 'folder')
-                    ? 'merge'
-                    : 'overwrite';
-            } else {
-                resolutionAction = 'move';
-            }
+    let resolutionAction;
+
+    // 1. 强制继承合并状态，这是最高优先级
+    if (isMerging) {
+        if (existingItemInTarget) {
+            resolutionAction = (itemType === 'folder' && existingItemInTarget.type === 'folder') ? 'merge' : 'overwrite';
         } else {
-            if (existingItemInTarget) {
-                resolutionAction = 'skip';
-            } else {
-                resolutionAction = 'move';
-            }
+            resolutionAction = 'move';
+        }
+    }
+    // 2. 如果不是在合并过程中，检查是否有用户指定的解决方案
+    else if (resolutions && resolutions[currentPath]) {
+        resolutionAction = resolutions[currentPath];
+    }
+    // 3. 最后，应用预设行为
+    else {
+        if (existingItemInTarget) {
+            resolutionAction = 'skip';
+        } else {
+            resolutionAction = 'move';
         }
     }
     
-    // 兼容旧的 skip_default
+    // 兼容旧的 skip_default 值
     if (resolutionAction === 'skip_default') {
         resolutionAction = 'skip';
     }
