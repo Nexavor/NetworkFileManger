@@ -5,8 +5,11 @@ const data = require('../data.js');
 const db = require('../database.js');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs'); // 引入 fs 模组
+const fsp = fs.promises;
 
 const FILE_NAME = 'storage/telegram.js';
+const TMP_DIR = path.join(__dirname, '..', 'data', 'tmp'); // 定义暂存目录
 
 // --- 日志辅助函数 ---
 const log = (level, func, message, ...args) => {
@@ -15,16 +18,13 @@ const log = (level, func, message, ...args) => {
 };
 
 function getTelegramConfig() {
-    // --- *** 关键修正：直接从 process.env 读取设定 *** ---
     const botToken = process.env.BOT_TOKEN;
     const chatId = process.env.CHANNEL_ID;
-
     if (!botToken || !chatId) {
         throw new Error('Telegram 设定不完整，请检查 .env 档案中的 BOT_TOKEN 和 CHANNEL_ID');
     }
     return { botToken, chatId };
 }
-
 
 function getFolderPathForCaption(folderId, userId) {
     return data.getFolderPath(folderId, userId)
@@ -44,26 +44,45 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
     const config = getTelegramConfig();
     const url = `https://api.telegram.org/bot${config.botToken}/sendDocument`;
 
-    const folderPathForCaption = await getFolderPathForCaption(folderId, userId);
-    
-    // 将真实文件名加粗放在标题中，以获得最佳显示效果
-    const finalCaption = `<b>${fileName}</b>\n${caption ? `\n${caption}\n` : ''}\n#${folderPathForCaption}`;
+    // --- *** 关键修正 开始 *** ---
+    // 为了解决 axios/form-data 的串流问题，先将档案暂存到本地
+    const tempFileName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
+    const tempFilePath = path.join(TMP_DIR, tempFileName);
+    let readStreamForUpload;
 
-    // 使用一个随机、安全的文件名来上传，以绕过Telegram API对特殊字符的处理问题
-    const safeFilename = crypto.randomBytes(8).toString('hex') + path.extname(fileName);
-
-    const form = new FormData();
-    form.append('chat_id', config.chatId);
-    form.append('document', fileStream, { filename: safeFilename }); // 使用安全文件名
-    form.append('caption', finalCaption);
-    form.append('parse_mode', 'HTML');
-    form.append('disable_notification', true);
-
-    const headers = form.getHeaders();
-    
     try {
+        // 确保暂存目录存在
+        await fsp.mkdir(TMP_DIR, { recursive: true });
+
+        // 将传入的串流写入暂存档案
+        await new Promise((resolve, reject) => {
+            const writeStream = fs.createWriteStream(tempFilePath);
+            fileStream.pipe(writeStream);
+            writeStream.on('finish', resolve);
+            writeStream.on('error', reject);
+            fileStream.on('error', reject);
+        });
+
+        // 从暂存档案建立一个新的读取串流用于上传
+        readStreamForUpload = fs.createReadStream(tempFilePath);
+        // --- *** 关键修正 结束 *** ---
+
+        const folderPathForCaption = await getFolderPathForCaption(folderId, userId);
+        const finalCaption = `<b>${fileName}</b>\n${caption ? `\n${caption}\n` : ''}\n#${folderPathForCaption}`;
+        const safeFilename = crypto.randomBytes(8).toString('hex') + path.extname(fileName);
+
+        const form = new FormData();
+        form.append('chat_id', config.chatId);
+        form.append('document', readStreamForUpload, { filename: safeFilename });
+        form.append('caption', finalCaption);
+        form.append('parse_mode', 'HTML');
+        form.append('disable_notification', true);
+
+        const headers = form.getHeaders();
+        
         log('DEBUG', FUNC_NAME, `正在发送 POST 请求到 Telegram API for "${fileName}"`);
         const response = await axios.post(url, form, { headers });
+
         if (!response.data.ok) {
             log('ERROR', FUNC_NAME, `上传到 Telegram 失败 for "${fileName}": ${response.data.description}`);
             throw new Error(`上传至 Telegram 失败: ${response.data.description}`);
@@ -72,11 +91,11 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
         log('INFO', FUNC_NAME, `文件成功上传到 Telegram: "${fileName}"`);
         const messageId = response.data.result.message_id;
         const fileInfo = response.data.result.document;
-        const thumbInfo = response.data.result.document.thumb;
+        const thumbInfo = fileInfo.thumb;
 
         const dbResult = await data.addFile({
             message_id: messageId,
-            fileName: fileName, // 在数据库中储存真实的、未修改的文件名
+            fileName: fileName,
             mimetype: fileInfo.mime_type,
             file_id: fileInfo.file_id,
             thumb_file_id: thumbInfo ? thumbInfo.file_id : null,
@@ -97,6 +116,16 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             throw new Error(`上传至 Telegram 失败: ${error.response.data.description || error.message}`);
         }
         throw error;
+    } finally {
+        // --- *** 关键修正 开始 *** ---
+        // 确保在操作结束后（无论成功或失败）都删除暂存档案
+        if (readStreamForUpload) {
+            readStreamForUpload.destroy();
+        }
+        if (fs.existsSync(tempFilePath)) {
+            await fsp.unlink(tempFilePath).catch(err => log('WARN', FUNC_NAME, `无法删除暂存档案 ${tempFilePath}:`, err));
+        }
+        // --- *** 关键修正 结束 *** ---
     }
 }
 
