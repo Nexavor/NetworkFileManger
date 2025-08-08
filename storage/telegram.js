@@ -1,9 +1,11 @@
-require('dotenv').config();
+// storage/telegram.js
 const axios = require('axios');
 const FormData = require('form-data');
 const data = require('../data.js');
+const db = require('../database.js');
+const crypto = require('crypto');
+const path = require('path');
 
-const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 const FILE_NAME = 'storage/telegram.js';
 
 // --- 日志辅助函数 ---
@@ -12,107 +14,133 @@ const log = (level, func, message, ...args) => {
     console.log(`[${timestamp}] [${level}] [${FILE_NAME}:${func}] - ${message}`, ...args);
 };
 
+function getTelegramConfig() {
+    const storageManager = require('./index'); 
+    const config = storageManager.readConfig();
+    if (!config.telegram || !config.telegram.botToken || !config.telegram.chatId) {
+        throw new Error('Telegram 设定不完整');
+    }
+    return config.telegram;
+}
+
+function getFolderPathForCaption(folderId, userId) {
+    return data.getFolderPath(folderId, userId)
+        .then(pathParts => {
+            return pathParts.map(p => p.name.replace(/_/g, ' '))
+                           .join('/')
+                           .replace(/^\//, '')
+                           .replace(/ /g, '_') 
+                           .replace(/\//g, ' #');
+        });
+}
+
 async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '') {
     const FUNC_NAME = 'upload';
     log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 Telegram...`);
-  
-    return new Promise(async (resolve, reject) => {
-        try {
-            const formData = new FormData();
-            formData.append('chat_id', process.env.CHANNEL_ID);
-            formData.append('caption', caption || fileName);
-            formData.append('document', fileStream, { filename: fileName });
-            
-            // 关键：监听输入流的错误，防止它静默失败
-            fileStream.on('error', err => {
-                log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for "${fileName}":`, err);
-                reject(new Error(`输入文件流中断: ${err.message}`));
-            });
 
-            log('DEBUG', FUNC_NAME, `正在发送 POST 请求到 Telegram API for "${fileName}"`);
-            const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
-                headers: formData.getHeaders(),
-                maxContentLength: Infinity,
-                maxBodyLength: Infinity,
-            });
-            log('DEBUG', FUNC_NAME, `收到 Telegram API 的响应 for "${fileName}"`);
+    const config = getTelegramConfig();
+    const url = `https://api.telegram.org/bot${config.botToken}/sendDocument`;
 
-            if (res.data.ok) {
-                const result = res.data.result;
-                const fileData = result.document || result.video || result.audio || result.photo;
+    const folderPathForCaption = await getFolderPathForCaption(folderId, userId);
+    
+    // --- *** 关键修正 开始 *** ---
+    // 将真实文件名加粗放在标题中，以获得最佳显示效果
+    const finalCaption = `<b>${fileName}</b>\n${caption ? `\n${caption}\n` : ''}\n#${folderPathForCaption}`;
 
-                if (fileData && fileData.file_id) {
-                    log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: "${fileName}"`);
-                    const dbResult = await data.addFile({
-                      message_id: result.message_id,
-                      fileName,
-                      mimetype: fileData.mime_type || mimetype,
-                      size: fileData.file_size,
-                      file_id: fileData.file_id,
-                      thumb_file_id: fileData.thumb ? fileData.thumb.file_id : null,
-                      date: Date.now(),
-                    }, folderId, userId, 'telegram');
-                    log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
-                    resolve({ success: true, data: res.data, fileId: dbResult.fileId });
-                } else {
-                     reject(new Error('Telegram API 响应成功，但缺少 file_id'));
-                }
-            } else {
-                 reject(new Error(res.data.description || 'Telegram API 返回失败'));
-            }
-        } catch (error) {
-            const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
-            log('ERROR', FUNC_NAME, `上传到 Telegram 失败 for "${fileName}": ${errorDescription}`);
-            // 确保流在任何错误情况下都被消耗掉
-            if (fileStream && typeof fileStream.resume === 'function') {
-                fileStream.resume();
-            }
-            reject(new Error(`上传至 Telegram 失败: ${errorDescription}`));
+    // 使用一个随机、安全的文件名来上传，以绕过Telegram API对特殊字符的处理问题
+    const safeFilename = crypto.randomBytes(8).toString('hex') + path.extname(fileName);
+    // --- *** 关键修正 结束 *** ---
+
+    const form = new FormData();
+    form.append('chat_id', config.chatId);
+    form.append('document', fileStream, { filename: safeFilename }); // 使用安全文件名
+    form.append('caption', finalCaption);
+    form.append('parse_mode', 'HTML');
+    form.append('disable_notification', true);
+
+    const headers = form.getHeaders();
+    
+    try {
+        log('DEBUG', FUNC_NAME, `正在发送 POST 请求到 Telegram API for "${fileName}"`);
+        const response = await axios.post(url, form, { headers });
+        if (!response.data.ok) {
+            log('ERROR', FUNC_NAME, `上传到 Telegram 失败 for "${fileName}": ${response.data.description}`);
+            throw new Error(`上传至 Telegram 失败: ${response.data.description}`);
         }
-    });
+
+        log('INFO', FUNC_NAME, `文件成功上传到 Telegram: "${fileName}"`);
+        const messageId = response.data.result.message_id;
+        const fileInfo = response.data.result.document;
+        const thumbInfo = response.data.result.document.thumb;
+
+        const dbResult = await data.addFile({
+            message_id: messageId,
+            fileName: fileName, // 在数据库中储存真实的、未修改的文件名
+            mimetype: fileInfo.mime_type,
+            file_id: fileInfo.file_id,
+            thumb_file_id: thumbInfo ? thumbInfo.file_id : null,
+            date: response.data.result.date * 1000,
+            size: fileInfo.file_size
+        }, folderId, userId, 'telegram');
+
+        log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
+        return { success: true, message: '档案已上传至 Telegram。', fileId: dbResult.id };
+
+    } catch (error) {
+        log('ERROR', FUNC_NAME, `上传请求失败 for "${fileName}":`, error.message);
+        if (fileStream && typeof fileStream.resume === 'function') {
+            fileStream.resume();
+        }
+        if (error.response) {
+            log('ERROR', FUNC_NAME, 'Telegram API 响应:', error.response.data);
+            throw new Error(`上传至 Telegram 失败: ${error.response.data.description || error.message}`);
+        }
+        throw error;
+    }
 }
 
-async function remove(files, userId) {
-    const messageIds = files.map(f => f.message_id);
-    const results = { success: [], failure: [] };
-    if (!Array.isArray(messageIds) || messageIds.length === 0) return results;
+async function remove(files) {
+    const config = getTelegramConfig();
+    const results = { success: true, errors: [] };
 
-    for (const messageId of messageIds) {
+    for (const file of files) {
         try {
-            const res = await axios.post(`${TELEGRAM_API}/deleteMessage`, {
-                chat_id: process.env.CHANNEL_ID,
-                message_id: messageId,
+            const url = `https://api.telegram.org/bot${config.botToken}/deleteMessage`;
+            await axios.post(url, {
+                chat_id: config.chatId,
+                message_id: file.message_id,
             });
-            if (res.data.ok || (res.data.description && res.data.description.includes("message to delete not found"))) {
-                results.success.push(messageId);
-            } else {
-                results.failure.push({ id: messageId, reason: res.data.description });
-            }
         } catch (error) {
-            const reason = error.response ? error.response.data.description : error.message;
-            if (reason.includes("message to delete not found")) {
-                results.success.push(messageId);
-            } else {
-                results.failure.push({ id: messageId, reason });
+            if (error.response && error.response.status === 400 && error.response.data.description.includes("message to delete not found")) {
+                continue;
             }
+            const errorMessage = `从 Telegram 删除档案 [${file.fileName}] 失败: ${error.message}`;
+            results.errors.push(errorMessage);
+            results.success = false;
         }
     }
-
-    if (results.success.length > 0) {
-        await data.deleteFilesByIds(results.success, userId);
-    }
-    
     return results;
 }
 
 async function getUrl(file_id) {
-  if (!file_id || typeof file_id !== 'string') return null;
-  const cleaned_file_id = file_id.trim();
-  try {
-    const response = await axios.get(`${TELEGRAM_API}/getFile`, { params: { file_id: cleaned_file_id } });
-    if (response.data.ok) return `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${response.data.result.file_path}`;
-  } catch (error) { /* console.error("获取文件链接失败:", error.response?.data?.description || error.message); */ }
-  return null;
+    const config = getTelegramConfig();
+    const url = `https://api.telegram.org/bot${config.botToken}/getFile`;
+    const response = await axios.post(url, { file_id });
+    if (response.data.ok) {
+        return `https://api.telegram.org/file/bot${config.botToken}/${response.data.result.file_path}`;
+    }
+    return null;
 }
 
-module.exports = { upload, remove, getUrl, type: 'telegram' };
+// Telegram 储存不需要 stream 函数
+async function stream(file_id) {
+    throw new Error('Telegram storage does not support direct streaming.');
+}
+
+module.exports = {
+    upload,
+    remove,
+    getUrl,
+    stream,
+    type: 'telegram'
+};
