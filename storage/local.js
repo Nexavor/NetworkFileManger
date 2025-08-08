@@ -4,18 +4,25 @@ const path = require('path');
 const data = require('../data.js');
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
+const FILE_NAME = 'storage/local.js';
+
+// --- 日志辅助函数 ---
+const log = (level, func, message, ...args) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] [${level}] [${FILE_NAME}:${func}] - ${message}`, ...args);
+};
 
 async function setup() {
     try {
         await fsp.mkdir(UPLOAD_DIR, { recursive: true });
-    } catch (e) {
-        // console.error('[Local Storage] 建立上传目录失败:', e);
-    }
+    } catch (e) {}
 }
 setup();
 
-// **核心修改：第一个参数现在是 fileStream**
 async function upload(fileStream, fileName, mimetype, userId, folderId) {
+    const FUNC_NAME = 'upload';
+    log('INFO', FUNC_NAME, `开始上传文件: ${fileName} 到本地储存...`);
+    
     const userDir = path.join(UPLOAD_DIR, String(userId));
     
     const folderPathParts = await data.getFolderPath(folderId, userId);
@@ -27,32 +34,55 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
     const finalFilePath = path.join(finalFolderPath, fileName);
     const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/');
 
-    // **核心修改：直接将传入的流写入最终文件**
-    await new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
+        log('DEBUG', FUNC_NAME, `创建写入流到: ${finalFilePath}`);
         const writeStream = fs.createWriteStream(finalFilePath);
-        fileStream.pipe(writeStream);
-        writeStream.on('finish', resolve);
-        writeStream.on('error', reject);
-        fileStream.on('error', (err) => { // 监听输入流的错误
+
+        fileStream.on('error', err => {
+            log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for ${fileName}:`, err);
             writeStream.close();
             reject(err);
         });
+
+        writeStream.on('pipe', () => {
+            log('DEBUG', FUNC_NAME, `输入流已接入 (pipe) 写入流 for ${fileName}`);
+        });
+        writeStream.on('drain', () => {
+            log('DEBUG', FUNC_NAME, `写入流 'drain' 事件触发 for ${fileName}。可以继续写入。`);
+        });
+        writeStream.on('finish', async () => {
+            log('INFO', FUNC_NAME, `文件写入磁盘完成 (finish): ${fileName}`);
+            try {
+                const stats = await fsp.stat(finalFilePath);
+                log('DEBUG', FUNC_NAME, `获取文件状态成功，大小: ${stats.size}`);
+                const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
+                
+                log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: ${fileName}`);
+                const dbResult = await data.addFile({
+                    message_id: messageId,
+                    fileName,
+                    mimetype,
+                    size: stats.size,
+                    file_id: relativeFilePath,
+                    thumb_file_id: null,
+                    date: Date.now(),
+                }, folderId, userId, 'local');
+                
+                log('INFO', FUNC_NAME, `文件 ${fileName} 已成功存入资料库。`);
+                resolve({ success: true, message: '文件已储存至本地。', fileId: dbResult.fileId });
+            } catch (err) {
+                 log('ERROR', FUNC_NAME, `写入资料库时发生错误 for ${fileName}:`, err);
+                 reject(err);
+            }
+        });
+        writeStream.on('error', err => {
+            log('ERROR', FUNC_NAME, `写入流 (writeStream) 发生错误 for ${fileName}:`, err);
+            reject(err);
+        });
+        
+        log('DEBUG', FUNC_NAME, `正在将输入流 pipe 到写入流 for ${fileName}`);
+        fileStream.pipe(writeStream);
     });
-    
-    const stats = await fsp.stat(finalFilePath);
-    const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
-    
-    const dbResult = await data.addFile({
-        message_id: messageId,
-        fileName,
-        mimetype,
-        size: stats.size,
-        file_id: relativeFilePath,
-        thumb_file_id: null,
-        date: Date.now(),
-    }, folderId, userId, 'local');
-    
-    return { success: true, message: '文件已储存至本地。', fileId: dbResult.fileId };
 }
 
 
