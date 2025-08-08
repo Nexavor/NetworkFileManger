@@ -20,8 +20,8 @@ const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
 // --- 日志辅助函数 ---
 const log = (level, file, func, message, ...args) => {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] [${level}] [${file}:${func}] - ${message}`, ...args);
+    // const timestamp = new Date().toISOString();
+    // console.log(`[${timestamp}] [${level}] [${file}:${func}] - ${message}`, ...args);
 };
 
 async function cleanupTempDir() {
