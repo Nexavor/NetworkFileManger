@@ -1,4 +1,3 @@
-// nexavor/networkfilemanger/NetworkFileManger-3e4f0de892876353b30de887fe2e2c15874ed343/storage/telegram.js
 require('dotenv').config();
 const axios = require('axios');
 const FormData = require('form-data');
@@ -10,55 +9,52 @@ const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 
 // 将第一个参数从 tempFilePath 更改为 fileStream
 async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '') {
-  // 将整个操作包装在一个 Promise 中，以便可以监听流的错误事件
-  return new Promise(async (resolve, reject) => {
-    // 如果来源流发生错误，则拒绝整个 Promise
-    fileStream.on('error', err => {
-        reject(new Error(`来源档案流发生错误: ${err.message}`));
+  // console.log(`[Telegram Storage] 开始处理文件流上传: ${fileName}`);
+  try {
+    const formData = new FormData();
+    formData.append('chat_id', process.env.CHANNEL_ID);
+    formData.append('caption', caption || fileName);
+    
+    // 直接使用传入的 fileStream
+    // console.log(`[Telegram Storage] 将文件流添加到表单数据中: ${fileName}`);
+    formData.append('document', fileStream, { filename: fileName });
+
+    // console.log(`[Telegram Storage] 正在发送文件到 Telegram API...`);
+    const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
+        headers: formData.getHeaders() 
     });
 
-    try {
-      const formData = new FormData();
-      formData.append('chat_id', process.env.CHANNEL_ID);
-      formData.append('caption', caption || fileName);
-      
-      // 直接使用传入的 fileStream
-      formData.append('document', fileStream, { filename: fileName });
+    if (res.data.ok) {
+        // console.log(`[Telegram Storage] Telegram API 成功接收文件: ${fileName}`);
+        const result = res.data.result;
+        const fileData = result.document || result.video || result.audio || result.photo;
 
-      const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
-          headers: formData.getHeaders() 
-      });
-
-      if (res.data.ok) {
-          const result = res.data.result;
-          const fileData = result.document || result.video || result.audio || result.photo;
-
-          if (fileData && fileData.file_id) {
-              await data.addFile({
-                message_id: result.message_id,
-                fileName,
-                mimetype: fileData.mime_type || mimetype,
-                size: fileData.file_size,
-                file_id: fileData.file_id,
-                thumb_file_id: fileData.thumb ? fileData.thumb.file_id : null,
-                date: Date.now(),
-              }, folderId, userId, 'telegram');
-              resolve({ success: true, data: res.data, fileId: result.message_id });
-          } else {
-             // 这种情况理论上不应该发生，但作为保障
-             reject(new Error('Telegram API 返回成功，但未找到文件资料。'));
-          }
-      } else {
-        // 处理 Telegram 返回的特定错误讯息
-        reject(new Error(`Telegram API 错误: ${res.data.description || '未知错误'}`));
-      }
-    } catch (error) {
-      const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
-      // 在发生错误时，确保消耗掉流以防止请求挂起
-      fileStream.resume(); 
-      reject(new Error(`上传失败: ${errorDescription}`));
+        if (fileData && fileData.file_id) {
+            // console.log(`[Telegram Storage] 正在将文件资讯写入资料库, File ID: ${fileData.file_id}`);
+            await data.addFile({
+              message_id: result.message_id,
+              fileName,
+              mimetype: fileData.mime_type || mimetype,
+              size: fileData.file_size,
+              file_id: fileData.file_id,
+              thumb_file_id: fileData.thumb ? fileData.thumb.file_id : null,
+              date: Date.now(),
+            }, folderId, userId, 'telegram');
+            // console.log(`[Telegram Storage] 资料库写入成功: ${fileName}`);
+            return { success: true, data: res.data, fileId: result.message_id };
+        }
     }
-  });
+    // console.error(`[Telegram Storage] Telegram API 返回错误:`, res.data);
+    return { success: false, error: res.data };
+  } catch (error) {
+    const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
+    // console.error(`[Telegram Storage] 上传过程中发生严重错误: ${errorDescription}`);
+    // 确保在出错时消耗流以防止请求挂起
+    if (fileStream && typeof fileStream.resume === 'function') {
+        fileStream.resume();
+    }
+    return { success: false, error: { description: errorDescription }};
+  }
 }
 
 async function remove(files, userId) {
