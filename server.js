@@ -134,7 +134,6 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- *** 关键修正 开始 *** ---
 app.post('/upload', requireLogin, (req, res) => {
     const FUNC_NAME = '/upload';
     const FILE_NAME = 'server.js';
@@ -157,19 +156,18 @@ app.post('/upload', requireLogin, (req, res) => {
         const uploadPromises = [];
 
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
-            // 关键修正: 使用 fieldname (它包含了 webkitRelativePath) 而不是 fileInfo.filename 来重建路径。
             const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
             log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 发现文件流: "${relativePath}" (原始文件名: "${fileInfo.filename}")，立即处理。`);
             
             const fileUploadPromise = (async () => {
                 const { mimeType } = fileInfo;
-                const action = resolutions[relativePath] || 'upload'; // 使用 relativePath 作为 key
+                const action = resolutions[relativePath] || 'upload';
                 log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 文件 "${relativePath}" 的处理动作是: ${action}`);
 
                 if (action === 'skip') {
                     log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 跳过文件: "${relativePath}"`);
                     fileStream.resume();
-                    return { skipped: true };
+                    return { skipped: true }; // 关键修正: 返回跳过状态
                 }
 
                 const pathParts = relativePath.split('/').filter(p => p);
@@ -193,14 +191,13 @@ app.post('/upload', requireLogin, (req, res) => {
                     if (conflict) {
                         log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 发现冲突且无解决方案，跳过文件: "${finalFilename}"`);
                         fileStream.resume();
-                        return { skipped: true };
+                        return { skipped: true }; // 关键修正: 返回跳过状态
                     }
                 }
                 
-                // 注意：传递给 storage.upload 的是 finalFilename，而不是完整的 relativePath
                 await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '');
                 log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 储存引擎成功处理了文件: "${finalFilename}"`);
-                return { skipped: false };
+                return { skipped: false }; // 关键修正: 返回成功状态
             })().catch(err => {
                 log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 处理文件 "${relativePath}" 时发生严重错误:`, err);
                 fileStream.resume();
@@ -209,12 +206,28 @@ app.post('/upload', requireLogin, (req, res) => {
             uploadPromises.push(fileUploadPromise);
         });
 
+        // --- *** 关键修正 开始 *** ---
         busboy.on('finish', async () => {
             log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 'finish' 事件触发。等待所有上传任务完成...`);
-            await Promise.all(uploadPromises);
-            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 所有上传任务完成。发送成功响应。`);
-            res.json({ success: true, message: '上传完成' });
+            try {
+                const results = await Promise.all(uploadPromises);
+                log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 所有上传任务完成。发送成功响应。`);
+
+                const allSkipped = results.length > 0 && results.every(r => r.skipped);
+
+                if (allSkipped) {
+                     res.json({ success: true, skippedAll: true, message: '所有文件都因冲突而被跳过' });
+                } else {
+                     res.json({ success: true, message: '上传完成' });
+                }
+            } catch (error) {
+                log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 等待上传任务完成时发生错误:`, error);
+                if (!res.headersSent) {
+                    res.status(500).json({ success: false, message: `上传任务执行失败: ${error.message}` });
+                }
+            }
         });
+        // --- *** 关键修正 结束 *** ---
 
         busboy.on('error', (err) => {
             log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 发生错误:`, err);
@@ -231,7 +244,6 @@ app.post('/upload', requireLogin, (req, res) => {
         res.status(400).json({ success: false, message: `请求预处理失败: ${err.message}` });
     }
 });
-// --- *** 关键修正 结束 *** ---
 
 // --- API 端点 ---
 app.post('/api/text-file', requireLogin, async (req, res) => {
