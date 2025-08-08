@@ -15,13 +15,16 @@ const log = (level, func, message, ...args) => {
 };
 
 function getTelegramConfig() {
-    const storageManager = require('./index'); 
-    const config = storageManager.readConfig();
-    if (!config.telegram || !config.telegram.botToken || !config.telegram.chatId) {
-        throw new Error('Telegram 设定不完整');
+    // --- *** 关键修正：直接从 process.env 读取设定 *** ---
+    const botToken = process.env.BOT_TOKEN;
+    const chatId = process.env.CHANNEL_ID;
+
+    if (!botToken || !chatId) {
+        throw new Error('Telegram 设定不完整，请检查 .env 档案中的 BOT_TOKEN 和 CHANNEL_ID');
     }
-    return config.telegram;
+    return { botToken, chatId };
 }
+
 
 function getFolderPathForCaption(folderId, userId) {
     return data.getFolderPath(folderId, userId)
@@ -43,13 +46,11 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
 
     const folderPathForCaption = await getFolderPathForCaption(folderId, userId);
     
-    // --- *** 关键修正 开始 *** ---
     // 将真实文件名加粗放在标题中，以获得最佳显示效果
     const finalCaption = `<b>${fileName}</b>\n${caption ? `\n${caption}\n` : ''}\n#${folderPathForCaption}`;
 
     // 使用一个随机、安全的文件名来上传，以绕过Telegram API对特殊字符的处理问题
     const safeFilename = crypto.randomBytes(8).toString('hex') + path.extname(fileName);
-    // --- *** 关键修正 结束 *** ---
 
     const form = new FormData();
     form.append('chat_id', config.chatId);
