@@ -5,10 +5,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 
 const UPLOAD_DIR = path.resolve(__dirname, 'data', 'uploads');
-// --- *** 关键修正 开始 *** ---
-// 新增一个 Set 来作为锁，防止并发在数据库中创建同一个目录
 const creatingFolders = new Set();
-// --- *** 关键修正 结束 *** ---
 
 
 function createUser(username, hashedPassword) {
@@ -989,7 +986,7 @@ async function findOrCreateFolderByPath(fullPath, userId) {
 }
 
 // --- *** 关键修正 开始 *** ---
-// 重构 resolvePathToFolderId 函数以包含锁机制
+// 重构 resolvePathToFolderId 函数以包含锁和原子化数据库操作
 async function resolvePathToFolderId(startFolderId, pathParts, userId) {
     let currentParentId = startFolderId;
 
@@ -1002,37 +999,32 @@ async function resolvePathToFolderId(startFolderId, pathParts, userId) {
             await new Promise(resolve => setTimeout(resolve, 50));
         }
 
-        let folder = await new Promise((resolve, reject) => {
-            const sql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
-            db.get(sql, [part, currentParentId, userId], (err, row) => err ? reject(err) : resolve(row));
-        });
-
-        if (folder) {
-            currentParentId = folder.id;
-        } else {
-            creatingFolders.add(lockId);
-            try {
-                // 再次检查，以防在获得锁之前目录已被创建
-                let raceFolder = await new Promise((resolve, reject) => {
-                    const sql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
-                    db.get(sql, [part, currentParentId, userId], (err, row) => err ? reject(err) : resolve(row));
-                });
-
-                if (raceFolder) {
-                    currentParentId = raceFolder.id;
-                } else {
-                    const newFolder = await new Promise((resolve, reject) => {
-                        const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
-                        db.run(sql, [part, currentParentId, userId], function(err) {
-                            if (err) return reject(err);
-                            resolve({ id: this.lastID });
+        creatingFolders.add(lockId);
+        try {
+            const foundId = await new Promise((resolve, reject) => {
+                db.serialize(() => {
+                    const selectSql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
+                    db.get(selectSql, [part, currentParentId, userId], (err, row) => {
+                        if (err) {
+                            return reject(err);
+                        }
+                        if (row) {
+                            return resolve(row.id);
+                        }
+                        
+                        const insertSql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
+                        db.run(insertSql, [part, currentParentId, userId], function(err) {
+                            if (err) {
+                                return reject(err);
+                            }
+                            resolve(this.lastID);
                         });
                     });
-                    currentParentId = newFolder.id;
-                }
-            } finally {
-                creatingFolders.delete(lockId);
-            }
+                });
+            });
+            currentParentId = foundId;
+        } finally {
+            creatingFolders.delete(lockId);
         }
     }
     return currentParentId;
