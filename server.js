@@ -134,7 +134,7 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- *** 加入详细日志的上传逻辑 *** ---
+// --- *** 修正乱码和上传卡住问题的最终方案 *** ---
 app.post('/upload', requireLogin, (req, res) => {
     const FUNC_NAME = '/upload';
     const FILE_NAME = 'server.js';
@@ -143,110 +143,93 @@ app.post('/upload', requireLogin, (req, res) => {
 
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
-    const busboy = Busboy({ headers: req.headers, defParamCharset: 'utf8' });
+    const busboy = Busboy({ headers: req.headers });
 
     const fields = {};
+    const pendingFiles = [];
     const uploadPromises = [];
     
-    let fieldsReady = false;
-    const pendingFiles = [];
-
-    const processPendingFiles = () => {
-        log('DEBUG', FILE_NAME, `${FUNC_NAME}:processPendingFiles`, `[${reqId}] 开始处理 ${pendingFiles.length} 个暂存的文件流。`);
-        for (const fileData of pendingFiles) {
-            handleFileStream(fileData.fileStream, fileData.fileInfo);
-        }
-        pendingFiles.length = 0; // 清空暂存列表
-    };
-    
-    const handleFileStream = (fileStream, fileInfo) => {
-        let { filename } = fileInfo;
-        filename = Buffer.from(filename, 'latin1').toString('utf8');
-        log('INFO', FILE_NAME, `${FUNC_NAME}:handleFileStream`, `[${reqId}] 开始处理文件流: ${filename}`);
-
-        const fileUploadPromise = (async () => {
-            const { mimeType } = fileInfo;
-            const initialFolderId = parseInt(fields.folderId, 10);
-            const resolutions = JSON.parse(fields.resolutions || '{}');
-            const caption = fields.caption || '';
-            
-            const currentFileRelativePath = filename;
-            const action = resolutions[currentFileRelativePath] || 'upload';
-            log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 文件 ${filename} 的处理动作是: ${action}`);
-
-            if (action === 'skip') {
-                log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 跳过文件: ${filename}`);
-                fileStream.resume();
-                return { skipped: true };
-            }
-            
-            const pathParts = currentFileRelativePath.split('/').filter(p => p);
-            let finalFilename = pathParts.pop() || currentFileRelativePath;
-            const folderPathParts = pathParts;
-
-            const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
-            
-            if (action === 'overwrite') {
-                const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                if (existingItem) {
-                    log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 正在覆盖文件: ${finalFilename}`);
-                    await data.unifiedDelete(existingItem.id, existingItem.type, userId);
-                }
-            } else if (action === 'rename') {
-                const oldName = finalFilename;
-                finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
-                log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 重命名文件: ${oldName} -> ${finalFilename}`);
-            } else {
-                 const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                 if (conflict) {
-                    log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 发现冲突且无解决方案，跳过文件: ${finalFilename}`);
-                    fileStream.resume();
-                    return { skipped: true };
-                 }
-            }
-            
-            log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 恢复文件流并调用储存引擎: ${finalFilename}`);
-            fileStream.resume(); // **恢复流**
-            await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
-            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 储存引擎成功处理了文件: ${finalFilename}`);
-            return { skipped: false };
-        })().catch(err => {
-            log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 处理文件 ${filename} 时发生严重错误:`, err);
-            fileStream.resume();
-            throw err;
-        });
-
-        uploadPromises.push(fileUploadPromise);
-    };
-
     busboy.on('field', (fieldname, val) => {
-        log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 收到字段: ${fieldname}`);
+        log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 收到字段: ${fieldname} = ${val}`);
         fields[fieldname] = val;
-        // 关键：假设所有必要字段都在文件流之前到达
-        if (fields.folderId && fields.resolutions && fields.relativePathsJSON && !fieldsReady) {
-            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 所有必要字段已就绪。`);
-            fieldsReady = true;
-            processPendingFiles();
-        }
     });
 
     busboy.on('file', (fieldname, fileStream, fileInfo) => {
-        let { filename } = fileInfo;
-        filename = Buffer.from(filename, 'latin1').toString('utf8');
-        log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 发现文件流: ${filename}。正在暂停等待字段信息...`);
+        // **乱码修复**
+        let correctedFilename = Buffer.from(fileInfo.filename, 'latin1').toString('utf8');
+        
+        log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 发现文件流: "${correctedFilename}"。正在暂停并暂存...`);
         fileStream.pause(); // **立即暂停流**
 
-        if (fieldsReady) {
-            log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 字段已就绪，立即处理文件流: ${filename}`);
-            handleFileStream(fileStream, fileInfo);
-        } else {
-            log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 字段未就绪，将文件流暂存: ${filename}`);
-            pendingFiles.push({ fileStream, fileInfo });
-        }
+        const fileData = {
+            fileStream: fileStream,
+            originalFilename: correctedFilename, // 使用修正后的文件名
+            mimeType: fileInfo.mimeType
+        };
+        pendingFiles.push(fileData);
     });
 
     busboy.on('finish', async () => {
-        log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 'finish' 事件触发。等待所有上传任务完成...`);
+        log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 'finish' 事件触发。所有字段和文件流已接收。开始处理 ${pendingFiles.length} 个文件。`);
+
+        for (const fileData of pendingFiles) {
+            const { fileStream, originalFilename, mimeType } = fileData;
+            
+            const fileUploadPromise = (async () => {
+                const initialFolderId = parseInt(fields.folderId, 10);
+                if (isNaN(initialFolderId)) {
+                    throw new Error('无效的 folderId。');
+                }
+                const resolutions = JSON.parse(fields.resolutions || '{}');
+                const caption = fields.caption || '';
+
+                const action = resolutions[originalFilename] || 'upload';
+                log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 文件 "${originalFilename}" 的处理动作是: ${action}`);
+
+                if (action === 'skip') {
+                    log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 跳过文件: "${originalFilename}"`);
+                    fileStream.resume();
+                    return { skipped: true };
+                }
+
+                const pathParts = originalFilename.split('/').filter(p => p);
+                let finalFilename = pathParts.pop() || originalFilename;
+                const folderPathParts = pathParts;
+
+                const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
+
+                if (action === 'overwrite') {
+                    const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
+                    if (existingItem) {
+                        log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 正在覆盖文件: "${finalFilename}"`);
+                        await data.unifiedDelete(existingItem.id, existingItem.type, userId);
+                    }
+                } else if (action === 'rename') {
+                    const oldName = finalFilename;
+                    finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
+                    log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 重命名文件: "${oldName}" -> "${finalFilename}"`);
+                } else {
+                    const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
+                    if (conflict) {
+                        log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 发现冲突且无解决方案，跳过文件: "${finalFilename}"`);
+                        fileStream.resume();
+                        return { skipped: true };
+                    }
+                }
+                
+                log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 恢复文件流并调用储存引擎: "${finalFilename}"`);
+                fileStream.resume(); // **在此处恢复流**
+                await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
+                log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 储存引擎成功处理了文件: "${finalFilename}"`);
+                return { skipped: false };
+            })().catch(err => {
+                log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 处理文件 "${originalFilename}" 时发生严重错误:`, err);
+                fileStream.resume();
+                throw err;
+            });
+            uploadPromises.push(fileUploadPromise);
+        }
+
         try {
             await Promise.all(uploadPromises);
             log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 所有上传任务完成。发送成功响应。`);
