@@ -8,8 +8,8 @@ const FILE_NAME = 'storage/local.js';
 
 // --- 日志辅助函数 ---
 const log = (level, func, message, ...args) => {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] [${level}] [${FILE_NAME}:${func}] - ${message}`, ...args);
+    // const timestamp = new Date().toISOString();
+    // console.log(`[${timestamp}] [${level}] [${FILE_NAME}:${func}] - ${message}`, ...args);
 };
 
 async function setup() {
