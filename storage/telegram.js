@@ -5,6 +5,7 @@ const data = require('../data.js');
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 
+// **核心修改：第一个参数现在是 fileStream**
 async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '') {
   try {
     const formData = new FormData();
@@ -23,7 +24,6 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
         const fileData = result.document || result.video || result.audio || result.photo;
 
         if (fileData && fileData.file_id) {
-            // 这是确保新档案能撷取到 thumb_file_id 的关键
             const dbResult = await data.addFile({
               message_id: result.message_id,
               fileName,
@@ -39,7 +39,6 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
     return { success: false, error: res.data };
   } catch (error) {
     const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
-    // 确保在出错时消耗流以防止请求挂起
     if (fileStream && typeof fileStream.resume === 'function') {
         fileStream.resume();
     }
