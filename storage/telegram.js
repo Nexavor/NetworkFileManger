@@ -5,11 +5,11 @@ const data = require('../data.js');
 const db = require('../database.js');
 const crypto = require('crypto');
 const path = require('path');
-const fs = require('fs'); // 引入 fs 模组
+const fs = require('fs');
 const fsp = fs.promises;
 
 const FILE_NAME = 'storage/telegram.js';
-const TMP_DIR = path.join(__dirname, '..', 'data', 'tmp'); // 定义暂存目录
+const TMP_DIR = path.join(__dirname, '..', 'data', 'tmp');
 
 // --- 日志辅助函数 ---
 const log = (level, func, message, ...args) => {
@@ -44,17 +44,14 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
     const config = getTelegramConfig();
     const url = `https://api.telegram.org/bot${config.botToken}/sendDocument`;
 
-    // --- *** 关键修正 开始 *** ---
-    // 为了解决 axios/form-data 的串流问题，先将档案暂存到本地
+    // --- *** 关键修正 v2 开始 *** ---
     const tempFileName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
     const tempFilePath = path.join(TMP_DIR, tempFileName);
-    let readStreamForUpload;
 
     try {
-        // 确保暂存目录存在
         await fsp.mkdir(TMP_DIR, { recursive: true });
 
-        // 将传入的串流写入暂存档案
+        // 1. 将传入的串流写入暂存档案
         await new Promise((resolve, reject) => {
             const writeStream = fs.createWriteStream(tempFilePath);
             fileStream.pipe(writeStream);
@@ -63,9 +60,9 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             fileStream.on('error', reject);
         });
 
-        // 从暂存档案建立一个新的读取串流用于上传
-        readStreamForUpload = fs.createReadStream(tempFilePath);
-        // --- *** 关键修正 结束 *** ---
+        // 2. 将整个暂存档案读入一个 Buffer
+        const fileBuffer = await fsp.readFile(tempFilePath);
+        // --- *** 关键修正 v2 结束 *** ---
 
         const folderPathForCaption = await getFolderPathForCaption(folderId, userId);
         const finalCaption = `<b>${fileName}</b>\n${caption ? `\n${caption}\n` : ''}\n#${folderPathForCaption}`;
@@ -73,7 +70,8 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
 
         const form = new FormData();
         form.append('chat_id', config.chatId);
-        form.append('document', readStreamForUpload, { filename: safeFilename });
+        // 3. 直接使用 Buffer 进行上传
+        form.append('document', fileBuffer, { filename: safeFilename }); 
         form.append('caption', finalCaption);
         form.append('parse_mode', 'HTML');
         form.append('disable_notification', true);
@@ -117,15 +115,10 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
         }
         throw error;
     } finally {
-        // --- *** 关键修正 开始 *** ---
-        // 确保在操作结束后（无论成功或失败）都删除暂存档案
-        if (readStreamForUpload) {
-            readStreamForUpload.destroy();
-        }
+        // 确保在操作结束后删除暂存档案
         if (fs.existsSync(tempFilePath)) {
             await fsp.unlink(tempFilePath).catch(err => log('WARN', FUNC_NAME, `无法删除暂存档案 ${tempFilePath}:`, err));
         }
-        // --- *** 关键修正 结束 *** ---
     }
 }
 
