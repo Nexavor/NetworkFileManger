@@ -146,6 +146,7 @@ app.post('/upload', requireLogin, (req, res) => {
     const fields = {};
     const uploadPromises = [];
     let relativePaths = []; // 用于按顺序对应文件流和路径
+    let fileCounter = 0;
 
     // 建立一个 Promise，用于确保在处理档案流之前已收到所有必要的表单栏位
     let resolveFieldsReady;
@@ -167,34 +168,36 @@ app.post('/upload', requireLogin, (req, res) => {
         }
     });
 
-    let fileCounter = 0;
     busboy.on('file', (fieldname, fileStream, fileInfo) => {
-        // 为每个档案流建立一个独立的上传 Promise
+        // 关键：立即暂停流，防止在异步操作期间数据丢失
+        fileStream.pause();
+
         const currentFileIndex = fileCounter++;
+        
         const uploadPromise = fieldsReadyPromise.then(async (fieldsAreReady) => {
             if (!fieldsAreReady) {
-                // 如果栏位解析失败，消耗掉这个档案流并抛出错误
-                fileStream.resume();
+                fileStream.resume(); // 消耗掉这个档案流并抛出错误
                 throw new Error("无法解析必要的表单栏位，上传中断。");
             }
 
-            // 从已解析的栏位中获取此档案对应的资讯
             const relativePath = relativePaths[currentFileIndex];
             if (!relativePath) {
                 fileStream.resume();
                 throw new Error(`找不到索引为 ${currentFileIndex} 的档案路径资讯。`);
             }
 
-            const { mimeType } = fileInfo;
+            // 从 busboy 修正档名乱码问题
+            let { filename, mimeType } = fileInfo;
+            filename = Buffer.from(filename, 'latin1').toString('utf8');
+
             const initialFolderId = parseInt(fields.folderId, 10);
             const caption = fields.caption || '';
-
-            // --- 开始处理单个档案的逻辑 ---
+            
             const action = fields.resolutions[relativePath] || 'upload';
 
             if (action === 'skip') {
-                fileStream.resume(); // 必须消耗掉档案流
-                return { skipped: true, filename: relativePath }; // 返回一个状态，表示已跳过
+                fileStream.resume(); // 必须消耗掉档案流以完成请求
+                return { skipped: true, filename: relativePath };
             }
 
             const pathParts = relativePath.split('/').filter(p => p);
@@ -213,12 +216,12 @@ app.post('/upload', requireLogin, (req, res) => {
             } else {
                  const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                  if (conflict) {
-                    fileStream.resume();
+                    fileStream.resume(); // 消耗流
                     return { skipped: true, filename: finalFilename };
                  }
             }
             
-            // 直接将接收到的档案流传给储存引擎
+            // 关键：将已暂停的流直接传递。储存模组中的 .pipe() 或其他消费方法会自动恢复它
             await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
             return { skipped: false, filename: finalFilename };
         });
