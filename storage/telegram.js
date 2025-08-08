@@ -16,7 +16,10 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
     formData.append('document', fileStream, { filename: fileName });
 
     const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
-        headers: formData.getHeaders() 
+        headers: formData.getHeaders(),
+        // 对大文件上传很关键
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
     });
 
     if (res.data.ok) {
@@ -36,13 +39,14 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             return { success: true, data: res.data, fileId: dbResult.fileId };
         }
     }
-    return { success: false, error: res.data };
+    throw new Error(res.data.description || 'Telegram API 返回失败');
   } catch (error) {
     const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
+    // 确保流在任何错误情况下都被消耗掉
     if (fileStream && typeof fileStream.resume === 'function') {
         fileStream.resume();
     }
-    return { success: false, error: { description: errorDescription }};
+    throw new Error(`上传至 Telegram 失败: ${errorDescription}`);
   }
 }
 
