@@ -193,7 +193,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         const uploadUrl = `/upload?${params.toString()}`;
-
+        
         await performUpload(uploadUrl, formData, isDrag);
     };
 
