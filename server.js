@@ -134,70 +134,50 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- *** 修正乱码和上传卡住问题的最终方案 *** ---
+// --- *** 最终解决方案：从 URL 查询参数获取元数据 *** ---
 app.post('/upload', requireLogin, (req, res) => {
     const FUNC_NAME = '/upload';
     const FILE_NAME = 'server.js';
     const reqId = Date.now();
     log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 请求开始。`);
 
+    // **核心修改：从 req.query 获取元数据**
+    const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
-    const busboy = Busboy({ headers: req.headers });
 
-    const fields = {};
-    const pendingFiles = [];
-    const uploadPromises = [];
-    
-    busboy.on('field', (fieldname, val) => {
-        log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 收到字段: ${fieldname} = ${val}`);
-        fields[fieldname] = val;
-    });
-
-    busboy.on('file', (fieldname, fileStream, fileInfo) => {
-        // **乱码修复**
-        let correctedFilename = Buffer.from(fileInfo.filename, 'latin1').toString('utf8');
+    try {
+        if (!folderId) throw new Error('folderId is missing from query parameters');
+        const initialFolderId = parseInt(folderId, 10);
+        if (isNaN(initialFolderId)) throw new Error('Invalid folderId');
         
-        log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 发现文件流: "${correctedFilename}"。正在暂停并暂存...`);
-        fileStream.pause(); // **立即暂停流**
+        const resolutions = JSON.parse(resolutionsJSON || '{}');
+        log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 已从URL获取元数据: folderId=${initialFolderId}`);
 
-        const fileData = {
-            fileStream: fileStream,
-            originalFilename: correctedFilename, // 使用修正后的文件名
-            mimeType: fileInfo.mimeType
-        };
-        pendingFiles.push(fileData);
-    });
+        const busboy = Busboy({ headers: req.headers });
+        const uploadPromises = [];
 
-    busboy.on('finish', async () => {
-        log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 'finish' 事件触发。所有字段和文件流已接收。开始处理 ${pendingFiles.length} 个文件。`);
-
-        for (const fileData of pendingFiles) {
-            const { fileStream, originalFilename, mimeType } = fileData;
+        busboy.on('file', (fieldname, fileStream, fileInfo) => {
+            const correctedFilename = Buffer.from(fileInfo.filename, 'latin1').toString('utf8');
+            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 发现文件流: "${correctedFilename}"，立即处理。`);
             
             const fileUploadPromise = (async () => {
-                const initialFolderId = parseInt(fields.folderId, 10);
-                if (isNaN(initialFolderId)) {
-                    throw new Error('无效的 folderId。');
-                }
-                const resolutions = JSON.parse(fields.resolutions || '{}');
-                const caption = fields.caption || '';
-
-                const action = resolutions[originalFilename] || 'upload';
-                log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 文件 "${originalFilename}" 的处理动作是: ${action}`);
+                const { mimeType } = fileInfo;
+                const action = resolutions[correctedFilename] || 'upload';
+                log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 文件 "${correctedFilename}" 的处理动作是: ${action}`);
 
                 if (action === 'skip') {
-                    log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 跳过文件: "${originalFilename}"`);
+                    log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 跳过文件: "${correctedFilename}"`);
                     fileStream.resume();
                     return { skipped: true };
                 }
 
-                const pathParts = originalFilename.split('/').filter(p => p);
-                let finalFilename = pathParts.pop() || originalFilename;
+                const pathParts = correctedFilename.split('/').filter(p => p);
+                let finalFilename = pathParts.pop() || correctedFilename;
                 const folderPathParts = pathParts;
 
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
-
+                
                 if (action === 'overwrite') {
                     const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                     if (existingItem) {
@@ -217,37 +197,40 @@ app.post('/upload', requireLogin, (req, res) => {
                     }
                 }
                 
-                log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 恢复文件流并调用储存引擎: "${finalFilename}"`);
-                fileStream.resume(); // **在此处恢复流**
-                await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
+                await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '');
                 log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 储存引擎成功处理了文件: "${finalFilename}"`);
                 return { skipped: false };
             })().catch(err => {
-                log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 处理文件 "${originalFilename}" 时发生严重错误:`, err);
+                log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 处理文件 "${correctedFilename}" 时发生严重错误:`, err);
                 fileStream.resume();
                 throw err;
             });
             uploadPromises.push(fileUploadPromise);
-        }
+        });
 
-        try {
+        busboy.on('finish', async () => {
+            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 'finish' 事件触发。等待所有上传任务完成...`);
             await Promise.all(uploadPromises);
             log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 所有上传任务完成。发送成功响应。`);
             res.json({ success: true, message: '上传完成' });
-        } catch (err) {
-            log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 一个或多个上传任务失败:`, err);
-            res.status(500).json({ success: false, message: err.message || '处理上传文件时发生内部错误。' });
-        }
-    });
-    
-    busboy.on('error', (err) => {
-        log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 发生错误:`, err);
-        req.unpipe(busboy);
-        res.status(500).json({ success: false, message: '上传解析失败' });
-    });
+        });
 
-    req.pipe(busboy);
+        busboy.on('error', (err) => {
+            log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 发生错误:`, err);
+            req.unpipe(busboy);
+            if (!res.headersSent) {
+                res.status(500).json({ success: false, message: '上传解析失败' });
+            }
+        });
+
+        req.pipe(busboy);
+
+    } catch (err) {
+        log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 预处理上传请求时失败:`, err);
+        res.status(400).json({ success: false, message: `请求预处理失败: ${err.message}` });
+    }
 });
+
 
 // --- API 端点 ---
 app.post('/api/text-file', requireLogin, async (req, res) => {
