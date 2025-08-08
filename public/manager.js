@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     
-    const performUpload = async (formData, isDrag = false) => {
+    const performUpload = async (url, formData, isDrag = false) => {
         const progressBar = isDrag ? dragUploadProgressBar : document.getElementById('progressBar');
         const progressArea = isDrag ? dragUploadProgressArea : document.getElementById('progressArea');
         const submitBtn = isDrag ? null : uploadSubmitBtn;
@@ -106,7 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (submitBtn) submitBtn.disabled = true;
     
         try {
-            const res = await axios.post('/upload', formData, {
+            const res = await axios.post(url, formData, {
                 onUploadProgress: p => {
                     const percent = Math.round((p.loaded * 100) / p.total);
                     progressBar.style.width = percent + '%';
@@ -177,26 +177,24 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const formData = new FormData();
-        const relativePathsArray = [];
-
         Array.from(files).forEach(file => {
-            formData.append('files', file);
-            relativePathsArray.push(file.webkitRelativePath || file.name);
+            formData.append(file.webkitRelativePath || file.name, file);
         });
         
-        formData.append('folderId', targetFolderId);
-        formData.append('resolutions', JSON.stringify(resolutions));
-        // --- *** 关键修正：发送单个 JSON 字符串而不是多个字段 *** ---
-        formData.append('relativePathsJSON', JSON.stringify(relativePathsArray));
+        const params = new URLSearchParams();
+        params.append('folderId', targetFolderId);
+        params.append('resolutions', JSON.stringify(resolutions));
 
         if (!isDrag) {
             const captionInput = document.getElementById('uploadCaption');
             if (captionInput && captionInput.value) {
-                formData.append('caption', captionInput.value);
+                params.append('caption', captionInput.value);
             }
         }
         
-        await performUpload(formData, isDrag);
+        const uploadUrl = `/upload?${params.toString()}`;
+
+        await performUpload(uploadUrl, formData, isDrag);
     };
 
     const loadFolderContents = async (folderId) => {
