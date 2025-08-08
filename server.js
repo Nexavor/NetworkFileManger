@@ -134,7 +134,7 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- *** 关键修正：重构上传逻辑为流式处理 *** ---
+// --- *** 最终优化：真·流式上传 *** ---
 app.post('/upload', requireLogin, (req, res) => {
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
@@ -146,45 +146,40 @@ app.post('/upload', requireLogin, (req, res) => {
     const fields = {};
     const uploadPromises = [];
     let allSkipped = true;
-    
-    // 创建一个 Promise，用于等待所有非文件字段被解析
+
     const fieldsReady = new Promise((resolve) => {
         busboy.on('field', (fieldname, val) => {
             fields[fieldname] = val;
         });
-        busboy.on('close', () => resolve(fields)); // busboy 'close' 在 'finish' 之前，适合解析字段
+        busboy.on('close', () => resolve(fields));
     });
 
     busboy.on('file', (fieldname, fileStream, fileInfo) => {
-        // 立即开始处理文件流，将其包装在一个 Promise 中
         const fileUploadPromise = fieldsReady.then(async (parsedFields) => {
             let { filename, mimeType } = fileInfo;
-            // 修正档名编码
             filename = Buffer.from(filename, 'latin1').toString('utf8');
 
             const initialFolderId = parseInt(parsedFields.folderId, 10);
             const resolutions = JSON.parse(parsedFields.resolutions || '{}');
-            const relativePaths = JSON.parse(parsedFields.relativePathsJSON || '[]');
             const caption = parsedFields.caption || '';
-
-            // 找到当前文件对应的相对路径
-            const currentFileRelativePath = filename;
             
+            // 使用原始文件名（即相对路径）来查找解决方案
+            const currentFileRelativePath = filename;
             const action = resolutions[currentFileRelativePath] || 'upload';
 
             if (action === 'skip') {
-                fileStream.resume(); // 消耗掉流，防止请求挂起
-                return; // 跳过此文件
+                fileStream.resume();
+                return { skipped: true };
             }
             
             allSkipped = false;
-            
+
             const pathParts = currentFileRelativePath.split('/').filter(p => p);
             let finalFilename = pathParts.pop() || currentFileRelativePath;
             const folderPathParts = pathParts;
 
             const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
-            
+
             if (action === 'overwrite') {
                 const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                 if (existingItem) {
@@ -195,16 +190,16 @@ app.post('/upload', requireLogin, (req, res) => {
             } else {
                  const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                  if (conflict) {
-                    fileStream.resume(); // 发现冲突且无解决方案，消耗流并跳过
-                    return;
+                    fileStream.resume();
+                    return { skipped: true };
                  }
             }
             
-            // 直接将活动的 fileStream 传递给储存引擎
             await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
+            return { skipped: false };
         }).catch(err => {
-            fileStream.resume(); // 确保流被消耗
-            throw err; // 将错误往外抛，以便 Promise.all 捕获
+            fileStream.resume();
+            throw err;
         });
         
         uploadPromises.push(fileUploadPromise);
@@ -212,8 +207,9 @@ app.post('/upload', requireLogin, (req, res) => {
 
     busboy.on('finish', async () => {
         try {
-            await Promise.all(uploadPromises);
-            res.json({ success: true, message: '上传完成', skippedAll: allSkipped });
+            const results = await Promise.all(uploadPromises);
+            const allFilesSkipped = results.every(r => r.skipped);
+            res.json({ success: true, message: '上传完成', skippedAll: allFilesSkipped });
         } catch (err) {
             res.status(500).json({ success: false, message: err.message || '处理上传文件时发生内部错误。' });
         }
