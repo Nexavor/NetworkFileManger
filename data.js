@@ -5,6 +5,11 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 
 const UPLOAD_DIR = path.resolve(__dirname, 'data', 'uploads');
+// --- *** 关键修正 开始 *** ---
+// 新增一个 Set 来作为锁，防止并发在数据库中创建同一个目录
+const creatingFolders = new Set();
+// --- *** 关键修正 结束 *** ---
+
 
 function createUser(username, hashedPassword) {
     return new Promise((resolve, reject) => {
@@ -353,7 +358,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
 
         case 'merge':
             if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') {
-                // console.warn(`[Data] moveItem: 尝试合并但目标项目 "${currentPath}" 不是资料夹，跳过。`);
+                // console.warn(`[Data] moveItem: 尝试合并但目标项目 "${currentPath}" 不是资料夾，跳过。`);
                 report.skipped++;
                 return report;
             }
@@ -388,7 +393,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
                 // console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夹 ID ${itemId}`);
                 await unifiedDelete(itemId, 'folder', userId);
             } else {
-                 // console.warn(`[Data] moveItem: 部分子项目未能成功合并，保留原始资料夹 ID ${itemId}`);
+                 // console.warn(`[Data] moveItem: 部分子项目未能成功合并，保留原始资料夾 ID ${itemId}`);
             }
             
             return report;
@@ -983,10 +988,19 @@ async function findOrCreateFolderByPath(fullPath, userId) {
     return parentId;
 }
 
+// --- *** 关键修正 开始 *** ---
+// 重构 resolvePathToFolderId 函数以包含锁机制
 async function resolvePathToFolderId(startFolderId, pathParts, userId) {
     let currentParentId = startFolderId;
+
     for (const part of pathParts) {
         if (!part) continue;
+
+        const lockId = `${userId}-${currentParentId}-${part}`;
+        
+        while (creatingFolders.has(lockId)) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
 
         let folder = await new Promise((resolve, reject) => {
             const sql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
@@ -996,18 +1010,34 @@ async function resolvePathToFolderId(startFolderId, pathParts, userId) {
         if (folder) {
             currentParentId = folder.id;
         } else {
-            const newFolder = await new Promise((resolve, reject) => {
-                const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
-                db.run(sql, [part, currentParentId, userId], function(err) {
-                    if (err) return reject(err);
-                    resolve({ id: this.lastID });
+            creatingFolders.add(lockId);
+            try {
+                // 再次检查，以防在获得锁之前目录已被创建
+                let raceFolder = await new Promise((resolve, reject) => {
+                    const sql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
+                    db.get(sql, [part, currentParentId, userId], (err, row) => err ? reject(err) : resolve(row));
                 });
-            });
-            currentParentId = newFolder.id;
+
+                if (raceFolder) {
+                    currentParentId = raceFolder.id;
+                } else {
+                    const newFolder = await new Promise((resolve, reject) => {
+                        const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
+                        db.run(sql, [part, currentParentId, userId], function(err) {
+                            if (err) return reject(err);
+                            resolve({ id: this.lastID });
+                        });
+                    });
+                    currentParentId = newFolder.id;
+                }
+            } finally {
+                creatingFolders.delete(lockId);
+            }
         }
     }
     return currentParentId;
 }
+// --- *** 关键修正 结束 *** ---
 
 module.exports = {
     createUser,
