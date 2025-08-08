@@ -18,6 +18,12 @@ const app = express();
 
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
+// --- 日志辅助函数 ---
+const log = (level, file, func, message, ...args) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] [${level}] [${file}:${func}] - ${message}`, ...args);
+};
+
 async function cleanupTempDir() {
     try {
         if (!fs.existsSync(TMP_DIR)) {
@@ -128,54 +134,52 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- *** 最终优化：真·流式上传以解决背压问题 *** ---
+// --- *** 加入详细日志的上传逻辑 *** ---
 app.post('/upload', requireLogin, (req, res) => {
+    const FUNC_NAME = '/upload';
+    const FILE_NAME = 'server.js';
+    const reqId = Date.now();
+    log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 请求开始。`);
+
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
-    const busboy = Busboy({ 
-        headers: req.headers,
-        defParamCharset: 'utf8'
-    });
+    const busboy = Busboy({ headers: req.headers, defParamCharset: 'utf8' });
 
     const fields = {};
     const uploadPromises = [];
-    let allSkipped = true;
-
-    // fieldsReady 不再是一个 Promise，而是一个标记
+    
     let fieldsReady = false;
     const pendingFiles = [];
 
-    const processPendingFiles = async () => {
+    const processPendingFiles = () => {
+        log('DEBUG', FILE_NAME, `${FUNC_NAME}:processPendingFiles`, `[${reqId}] 开始处理 ${pendingFiles.length} 个暂存的文件流。`);
         for (const fileData of pendingFiles) {
-            const { fileStream, fileInfo } = fileData;
-            try {
-                await handleFileStream(fileStream, fileInfo);
-            } catch (err) {
-                // 将错误包装起来，以便 Promise.all 可以捕获
-                uploadPromises.push(Promise.reject(err));
-            }
+            handleFileStream(fileData.fileStream, fileData.fileInfo);
         }
+        pendingFiles.length = 0; // 清空暂存列表
     };
     
-    const handleFileStream = async (fileStream, fileInfo) => {
-        let { filename, mimeType } = fileInfo;
+    const handleFileStream = (fileStream, fileInfo) => {
+        let { filename } = fileInfo;
         filename = Buffer.from(filename, 'latin1').toString('utf8');
-        
+        log('INFO', FILE_NAME, `${FUNC_NAME}:handleFileStream`, `[${reqId}] 开始处理文件流: ${filename}`);
+
         const fileUploadPromise = (async () => {
+            const { mimeType } = fileInfo;
             const initialFolderId = parseInt(fields.folderId, 10);
             const resolutions = JSON.parse(fields.resolutions || '{}');
             const caption = fields.caption || '';
             
             const currentFileRelativePath = filename;
             const action = resolutions[currentFileRelativePath] || 'upload';
+            log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 文件 ${filename} 的处理动作是: ${action}`);
 
             if (action === 'skip') {
+                log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 跳过文件: ${filename}`);
                 fileStream.resume();
                 return { skipped: true };
             }
             
-            allSkipped = false;
-
             const pathParts = currentFileRelativePath.split('/').filter(p => p);
             let finalFilename = pathParts.pop() || currentFileRelativePath;
             const folderPathParts = pathParts;
@@ -184,59 +188,77 @@ app.post('/upload', requireLogin, (req, res) => {
             
             if (action === 'overwrite') {
                 const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                if (existingItem) await data.unifiedDelete(existingItem.id, existingItem.type, userId);
+                if (existingItem) {
+                    log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 正在覆盖文件: ${finalFilename}`);
+                    await data.unifiedDelete(existingItem.id, existingItem.type, userId);
+                }
             } else if (action === 'rename') {
+                const oldName = finalFilename;
                 finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
+                log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 重命名文件: ${oldName} -> ${finalFilename}`);
             } else {
                  const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                  if (conflict) {
+                    log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 发现冲突且无解决方案，跳过文件: ${finalFilename}`);
                     fileStream.resume();
                     return { skipped: true };
                  }
             }
             
-            // 恢复流并直接传递
-            fileStream.resume();
+            log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 恢复文件流并调用储存引擎: ${finalFilename}`);
+            fileStream.resume(); // **恢复流**
             await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
+            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 储存引擎成功处理了文件: ${finalFilename}`);
             return { skipped: false };
         })().catch(err => {
-            fileStream.resume(); // 确保流在任何错误情况下都被消耗掉
+            log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 处理文件 ${filename} 时发生严重错误:`, err);
+            fileStream.resume();
             throw err;
         });
 
         uploadPromises.push(fileUploadPromise);
     };
 
-
     busboy.on('field', (fieldname, val) => {
+        log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 收到字段: ${fieldname}`);
         fields[fieldname] = val;
         // 关键：假设所有必要字段都在文件流之前到达
         if (fields.folderId && fields.resolutions && fields.relativePathsJSON && !fieldsReady) {
+            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 所有必要字段已就绪。`);
             fieldsReady = true;
             processPendingFiles();
         }
     });
 
     busboy.on('file', (fieldname, fileStream, fileInfo) => {
-        fileStream.pause(); // 立即暂停流，等待字段信息
+        let { filename } = fileInfo;
+        filename = Buffer.from(filename, 'latin1').toString('utf8');
+        log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 发现文件流: ${filename}。正在暂停等待字段信息...`);
+        fileStream.pause(); // **立即暂停流**
+
         if (fieldsReady) {
+            log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 字段已就绪，立即处理文件流: ${filename}`);
             handleFileStream(fileStream, fileInfo);
         } else {
+            log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 字段未就绪，将文件流暂存: ${filename}`);
             pendingFiles.push({ fileStream, fileInfo });
         }
     });
 
     busboy.on('finish', async () => {
+        log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 'finish' 事件触发。等待所有上传任务完成...`);
         try {
-            const results = await Promise.all(uploadPromises);
-            const allFilesSkipped = results.every(r => r && r.skipped);
-            res.json({ success: true, message: '上传完成', skippedAll: allFilesSkipped });
+            await Promise.all(uploadPromises);
+            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 所有上传任务完成。发送成功响应。`);
+            res.json({ success: true, message: '上传完成' });
         } catch (err) {
+            log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 一个或多个上传任务失败:`, err);
             res.status(500).json({ success: false, message: err.message || '处理上传文件时发生内部错误。' });
         }
     });
     
     busboy.on('error', (err) => {
+        log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 发生错误:`, err);
         req.unpipe(busboy);
         res.status(500).json({ success: false, message: '上传解析失败' });
     });
@@ -933,7 +955,9 @@ app.get('/share/download/:folderToken/:fileId', async (req, res) => {
 });
 
 
-app.listen(PORT, () => {}); // console.log(`✅ 伺服器已在 http://localhost:${PORT} 上运行`));
+app.listen(PORT, () => {
+    log('INFO', 'server.js', 'listen', `✅ 伺服器已在 http://localhost:${PORT} 上运行`);
+});
 
 // --- API 端点 ---
 app.post('/api/user/change-password', requireLogin, async (req, res) => {
