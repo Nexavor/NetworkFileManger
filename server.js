@@ -1,4 +1,3 @@
-// nexavor/networkfilemanger/NetworkFileManger-43f0ea7b6335ba475c462ec7e432d14b/server.js
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
@@ -157,8 +156,9 @@ app.post('/upload', requireLogin, (req, res) => {
 
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
             const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
-            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 发现文件流: "${relativePath}" (原始文件名: "${fileInfo.filename}")，立即处理。`);
-            
+            const correctedFilename = Buffer.from(fileInfo.filename, 'latin1').toString('utf8');
+            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 发现文件流: "${relativePath}" (原始文件名: "${correctedFilename}")，立即处理。`);
+
             const fileUploadPromise = (async () => {
                 const { mimeType } = fileInfo;
                 const action = resolutions[relativePath] || 'upload';
@@ -167,11 +167,11 @@ app.post('/upload', requireLogin, (req, res) => {
                 if (action === 'skip') {
                     log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 跳过文件: "${relativePath}"`);
                     fileStream.resume();
-                    return { skipped: true }; // 关键修正: 返回跳过状态
+                    return { skipped: true };
                 }
 
                 const pathParts = relativePath.split('/').filter(p => p);
-                let finalFilename = pathParts.pop() || relativePath;
+                let finalFilename = pathParts.pop() || correctedFilename;
                 const folderPathParts = pathParts;
 
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
@@ -191,13 +191,13 @@ app.post('/upload', requireLogin, (req, res) => {
                     if (conflict) {
                         log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 发现冲突且无解决方案，跳过文件: "${finalFilename}"`);
                         fileStream.resume();
-                        return { skipped: true }; // 关键修正: 返回跳过状态
+                        return { skipped: true };
                     }
                 }
                 
                 await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '');
                 log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 储存引擎成功处理了文件: "${finalFilename}"`);
-                return { skipped: false }; // 关键修正: 返回成功状态
+                return { skipped: false };
             })().catch(err => {
                 log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 处理文件 "${relativePath}" 时发生严重错误:`, err);
                 fileStream.resume();
@@ -206,7 +206,6 @@ app.post('/upload', requireLogin, (req, res) => {
             uploadPromises.push(fileUploadPromise);
         });
 
-        // --- *** 关键修正 开始 *** ---
         busboy.on('finish', async () => {
             log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 'finish' 事件触发。等待所有上传任务完成...`);
             try {
@@ -227,8 +226,7 @@ app.post('/upload', requireLogin, (req, res) => {
                 }
             }
         });
-        // --- *** 关键修正 结束 *** ---
-
+        
         busboy.on('error', (err) => {
             log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 发生错误:`, err);
             req.unpipe(busboy);
@@ -245,7 +243,6 @@ app.post('/upload', requireLogin, (req, res) => {
     }
 });
 
-// --- API 端点 ---
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
     const userId = req.session.userId;
@@ -938,7 +935,6 @@ app.listen(PORT, () => {
     log('INFO', 'server.js', 'listen', `✅ 伺服器已在 http://localhost:${PORT} 上运行`);
 });
 
-// --- API 端点 ---
 app.post('/api/user/change-password', requireLogin, async (req, res) => {
     const { oldPassword, newPassword } = req.body;
     
