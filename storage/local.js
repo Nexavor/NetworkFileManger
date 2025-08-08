@@ -33,7 +33,10 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
         fileStream.pipe(writeStream);
         writeStream.on('finish', resolve);
         writeStream.on('error', reject);
-        fileStream.on('error', reject);
+        fileStream.on('error', (err) => { // 监听输入流的错误
+            writeStream.close();
+            reject(err);
+        });
     });
     
     const stats = await fsp.stat(finalFilePath);
