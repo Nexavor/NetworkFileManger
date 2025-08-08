@@ -7,6 +7,11 @@ const path = require('path');
 
 const FILE_NAME = 'storage/webdav.js';
 let client = null;
+// --- *** 关键修正 开始 *** ---
+// 新增一个 Set 来作为锁，防止并发创建同一个目录
+const creatingDirs = new Set();
+// --- *** 关键修正 结束 *** ---
+
 
 // --- 日志辅助函数 ---
 const log = (level, func, message, ...args) => {
@@ -39,6 +44,48 @@ function resetClient() {
     client = null;
 }
 
+// --- *** 关键修正 开始 *** ---
+// 新增辅助函数，用于按顺序创建目录
+async function ensureDirectoryExists(fullPath) {
+    const FUNC_NAME = 'ensureDirectoryExists';
+    if (!fullPath || fullPath === "/") return;
+    
+    // 如果路径已在创建中，则等待
+    while (creatingDirs.has(fullPath)) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    
+    // 锁定当前路径，防止其他并发操作重复创建
+    creatingDirs.add(fullPath);
+
+    try {
+        const client = getClient();
+        const pathParts = fullPath.split('/').filter(p => p);
+        let currentPath = '';
+
+        for (const part of pathParts) {
+            currentPath += `/${part}`;
+            log('DEBUG', FUNC_NAME, `检查目录是否存在: "${currentPath}"`);
+            const exists = await client.exists(currentPath);
+            if (!exists) {
+                log('INFO', FUNC_NAME, `目录不存在，正在创建: "${currentPath}"`);
+                try {
+                    await client.createDirectory(currentPath);
+                } catch (e) {
+                    // 忽略“方法不允许”或“已存在”的错误，因为另一个进程可能刚刚创建了它
+                    if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
+                         throw new Error(`建立 WebDAV 目录失败 (${e.response.status}): ${e.message}`);
+                    }
+                }
+            }
+        }
+    } finally {
+        // 解锁
+        creatingDirs.delete(fullPath);
+    }
+}
+// --- *** 关键修正 结束 *** ---
+
 async function getFolderPath(folderId, userId) {
     const userRoot = await new Promise((resolve, reject) => {
         db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [userId], (err, row) => {
@@ -63,17 +110,14 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
             const client = getClient();
             const folderPath = await getFolderPath(folderId, userId);
             const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
-
+            
+            // --- *** 关键修正 开始 *** ---
+            // 使用新的健壮的目录创建函数
             if (folderPath && folderPath !== "/") {
-                log('DEBUG', FUNC_NAME, `正在建立 WebDAV 远端目录: "${folderPath}"`);
-                try {
-                    await client.createDirectory(folderPath, { recursive: true });
-                } catch (e) {
-                    if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
-                        throw new Error(`建立 WebDAV 目录失败 (${e.response.status}): ${e.message}`);
-                    }
-                }
+                await ensureDirectoryExists(folderPath);
             }
+            // --- *** 关键修正 结束 *** ---
+
 
             // 关键：监听输入流的错误
             fileStream.on('error', err => {
