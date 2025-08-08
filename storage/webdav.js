@@ -5,7 +5,14 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+const FILE_NAME = 'storage/webdav.js';
 let client = null;
+
+// --- 日志辅助函数 ---
+const log = (level, func, message, ...args) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] [${level}] [${FILE_NAME}:${func}] - ${message}`, ...args);
+};
 
 function getWebdavConfig() {
     const storageManager = require('./index'); 
@@ -16,7 +23,6 @@ function getWebdavConfig() {
     }
     return webdavConfig;
 }
-
 
 function getClient() {
     if (!client) {
@@ -48,42 +54,65 @@ async function getFolderPath(folderId, userId) {
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
-// **核心修改：第一个参数现在是 fileStream**
 async function upload(fileStream, fileName, mimetype, userId, folderId) {
-    const client = getClient();
-    const folderPath = await getFolderPath(folderId, userId);
-    const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
-
-    if (folderPath && folderPath !== "/") {
+    const FUNC_NAME = 'upload';
+    log('INFO', FUNC_NAME, `开始上传文件: ${fileName} 到 WebDAV...`);
+    
+    return new Promise(async (resolve, reject) => {
         try {
-            await client.createDirectory(folderPath, { recursive: true });
-        } catch (e) {
-            if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
-                 throw new Error(`建立 WebDAV 目录失败 (${e.response.status}): ${e.message}`);
+            const client = getClient();
+            const folderPath = await getFolderPath(folderId, userId);
+            const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
+
+            if (folderPath && folderPath !== "/") {
+                log('DEBUG', FUNC_NAME, `正在建立 WebDAV 远端目录: ${folderPath}`);
+                try {
+                    await client.createDirectory(folderPath, { recursive: true });
+                } catch (e) {
+                    if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
+                        throw new Error(`建立 WebDAV 目录失败 (${e.response.status}): ${e.message}`);
+                    }
+                }
             }
+
+            // 关键：监听输入流的错误
+            fileStream.on('error', err => {
+                log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for ${fileName}:`, err);
+                reject(new Error(`输入文件流中断: ${err.message}`));
+            });
+
+            log('DEBUG', FUNC_NAME, `正在调用 putFileContents 上传到: ${remotePath}`);
+            const success = await client.putFileContents(remotePath, fileStream, { overwrite: true });
+
+            if (!success) {
+                return reject(new Error('WebDAV putFileContents 操作失败'));
+            }
+            log('INFO', FUNC_NAME, `文件成功上传到 WebDAV: ${fileName}`);
+
+            const stats = await client.stat(remotePath);
+            log('DEBUG', FUNC_NAME, `获取 WebDAV 文件状态成功，大小: ${stats.size}`);
+            const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
+
+            const dbResult = await data.addFile({
+                message_id: messageId,
+                fileName,
+                mimetype,
+                size: stats.size,
+                file_id: remotePath,
+                date: Date.now(),
+            }, folderId, userId, 'webdav');
+            
+            log('INFO', FUNC_NAME, `文件 ${fileName} 已成功存入资料库。`);
+            resolve({ success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId });
+
+        } catch (error) {
+            log('ERROR', FUNC_NAME, `上传到 WebDAV 失败 for ${fileName}:`, error);
+            if (fileStream && typeof fileStream.resume === 'function') {
+                fileStream.resume();
+            }
+            reject(error);
         }
-    }
-    
-    // **核心修改：直接将传入的流上传**
-    const success = await client.putFileContents(remotePath, fileStream, { overwrite: true });
-
-    if (!success) {
-        throw new Error('WebDAV putFileContents 操作失败');
-    }
-
-    const stats = await client.stat(remotePath);
-    const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
-
-    const dbResult = await data.addFile({
-        message_id: messageId,
-        fileName,
-        mimetype,
-        size: stats.size,
-        file_id: remotePath,
-        date: Date.now(),
-    }, folderId, userId, 'webdav');
-    
-    return { success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId };
+    });
 }
 
 
