@@ -14,7 +14,7 @@ const log = (level, func, message, ...args) => {
 
 async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '') {
     const FUNC_NAME = 'upload';
-    log('INFO', FUNC_NAME, `开始上传文件: ${fileName} 到 Telegram...`);
+    log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 Telegram...`);
   
     return new Promise(async (resolve, reject) => {
         try {
@@ -25,24 +25,24 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             
             // 关键：监听输入流的错误，防止它静默失败
             fileStream.on('error', err => {
-                log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for ${fileName}:`, err);
+                log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for "${fileName}":`, err);
                 reject(new Error(`输入文件流中断: ${err.message}`));
             });
 
-            log('DEBUG', FUNC_NAME, `正在发送 POST 请求到 Telegram API for ${fileName}`);
+            log('DEBUG', FUNC_NAME, `正在发送 POST 请求到 Telegram API for "${fileName}"`);
             const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
                 headers: formData.getHeaders(),
                 maxContentLength: Infinity,
                 maxBodyLength: Infinity,
             });
-            log('DEBUG', FUNC_NAME, `收到 Telegram API 的响应 for ${fileName}`);
+            log('DEBUG', FUNC_NAME, `收到 Telegram API 的响应 for "${fileName}"`);
 
             if (res.data.ok) {
                 const result = res.data.result;
                 const fileData = result.document || result.video || result.audio || result.photo;
 
                 if (fileData && fileData.file_id) {
-                    log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: ${fileName}`);
+                    log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: "${fileName}"`);
                     const dbResult = await data.addFile({
                       message_id: result.message_id,
                       fileName,
@@ -52,7 +52,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
                       thumb_file_id: fileData.thumb ? fileData.thumb.file_id : null,
                       date: Date.now(),
                     }, folderId, userId, 'telegram');
-                    log('INFO', FUNC_NAME, `文件 ${fileName} 已成功存入资料库。`);
+                    log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
                     resolve({ success: true, data: res.data, fileId: dbResult.fileId });
                 } else {
                      reject(new Error('Telegram API 响应成功，但缺少 file_id'));
@@ -62,7 +62,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             }
         } catch (error) {
             const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
-            log('ERROR', FUNC_NAME, `上传到 Telegram 失败 for ${fileName}: ${errorDescription}`);
+            log('ERROR', FUNC_NAME, `上传到 Telegram 失败 for "${fileName}": ${errorDescription}`);
             // 确保流在任何错误情况下都被消耗掉
             if (fileStream && typeof fileStream.resume === 'function') {
                 fileStream.resume();
