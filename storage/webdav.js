@@ -56,7 +56,7 @@ async function getFolderPath(folderId, userId) {
 
 async function upload(fileStream, fileName, mimetype, userId, folderId) {
     const FUNC_NAME = 'upload';
-    log('INFO', FUNC_NAME, `开始上传文件: ${fileName} 到 WebDAV...`);
+    log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 WebDAV...`);
     
     return new Promise(async (resolve, reject) => {
         try {
@@ -65,7 +65,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
             const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
 
             if (folderPath && folderPath !== "/") {
-                log('DEBUG', FUNC_NAME, `正在建立 WebDAV 远端目录: ${folderPath}`);
+                log('DEBUG', FUNC_NAME, `正在建立 WebDAV 远端目录: "${folderPath}"`);
                 try {
                     await client.createDirectory(folderPath, { recursive: true });
                 } catch (e) {
@@ -77,17 +77,17 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
 
             // 关键：监听输入流的错误
             fileStream.on('error', err => {
-                log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for ${fileName}:`, err);
+                log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for "${fileName}":`, err);
                 reject(new Error(`输入文件流中断: ${err.message}`));
             });
 
-            log('DEBUG', FUNC_NAME, `正在调用 putFileContents 上传到: ${remotePath}`);
+            log('DEBUG', FUNC_NAME, `正在调用 putFileContents 上传到: "${remotePath}"`);
             const success = await client.putFileContents(remotePath, fileStream, { overwrite: true });
 
             if (!success) {
                 return reject(new Error('WebDAV putFileContents 操作失败'));
             }
-            log('INFO', FUNC_NAME, `文件成功上传到 WebDAV: ${fileName}`);
+            log('INFO', FUNC_NAME, `文件成功上传到 WebDAV: "${fileName}"`);
 
             const stats = await client.stat(remotePath);
             log('DEBUG', FUNC_NAME, `获取 WebDAV 文件状态成功，大小: ${stats.size}`);
@@ -102,11 +102,11 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
                 date: Date.now(),
             }, folderId, userId, 'webdav');
             
-            log('INFO', FUNC_NAME, `文件 ${fileName} 已成功存入资料库。`);
+            log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
             resolve({ success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId });
 
         } catch (error) {
-            log('ERROR', FUNC_NAME, `上传到 WebDAV 失败 for ${fileName}:`, error);
+            log('ERROR', FUNC_NAME, `上传到 WebDAV 失败 for "${fileName}":`, error);
             if (fileStream && typeof fileStream.resume === 'function') {
                 fileStream.resume();
             }
