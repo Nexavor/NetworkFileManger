@@ -22,21 +22,15 @@ async function cleanupTempDir() {
     try {
         if (!fs.existsSync(TMP_DIR)) {
             await fsp.mkdir(TMP_DIR, { recursive: true });
-            // console.log(`[服务器] 创建暂存目录: ${TMP_DIR}`);
             return;
         }
         const files = await fsp.readdir(TMP_DIR);
         for (const file of files) {
             try {
                 await fsp.unlink(path.join(TMP_DIR, file));
-            } catch (err) {
-                // console.warn(`[服务器] 清理暂存文件时发生非致命错误: ${file}`, err.message);
-            }
+            } catch (err) {}
         }
-        // console.log(`[服务器] 暂存目录清理完成: ${TMP_DIR}`);
-    } catch (error) {
-        // console.error(`[严重错误] 清理暂存目录失败: ${TMP_DIR}。`, error);
-    }
+    } catch (error) {}
 }
 cleanupTempDir();
 
@@ -134,7 +128,7 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- *** 最终优化：真·流式上传 *** ---
+// --- *** 最终优化：真·流式上传以解决背压问题 *** ---
 app.post('/upload', requireLogin, (req, res) => {
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
@@ -147,23 +141,31 @@ app.post('/upload', requireLogin, (req, res) => {
     const uploadPromises = [];
     let allSkipped = true;
 
-    const fieldsReady = new Promise((resolve) => {
-        busboy.on('field', (fieldname, val) => {
-            fields[fieldname] = val;
-        });
-        busboy.on('close', () => resolve(fields));
-    });
+    // fieldsReady 不再是一个 Promise，而是一个标记
+    let fieldsReady = false;
+    const pendingFiles = [];
 
-    busboy.on('file', (fieldname, fileStream, fileInfo) => {
-        const fileUploadPromise = fieldsReady.then(async (parsedFields) => {
-            let { filename, mimeType } = fileInfo;
-            filename = Buffer.from(filename, 'latin1').toString('utf8');
-
-            const initialFolderId = parseInt(parsedFields.folderId, 10);
-            const resolutions = JSON.parse(parsedFields.resolutions || '{}');
-            const caption = parsedFields.caption || '';
+    const processPendingFiles = async () => {
+        for (const fileData of pendingFiles) {
+            const { fileStream, fileInfo } = fileData;
+            try {
+                await handleFileStream(fileStream, fileInfo);
+            } catch (err) {
+                // 将错误包装起来，以便 Promise.all 可以捕获
+                uploadPromises.push(Promise.reject(err));
+            }
+        }
+    };
+    
+    const handleFileStream = async (fileStream, fileInfo) => {
+        let { filename, mimeType } = fileInfo;
+        filename = Buffer.from(filename, 'latin1').toString('utf8');
+        
+        const fileUploadPromise = (async () => {
+            const initialFolderId = parseInt(fields.folderId, 10);
+            const resolutions = JSON.parse(fields.resolutions || '{}');
+            const caption = fields.caption || '';
             
-            // 使用原始文件名（即相对路径）来查找解决方案
             const currentFileRelativePath = filename;
             const action = resolutions[currentFileRelativePath] || 'upload';
 
@@ -179,12 +181,10 @@ app.post('/upload', requireLogin, (req, res) => {
             const folderPathParts = pathParts;
 
             const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
-
+            
             if (action === 'overwrite') {
                 const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                if (existingItem) {
-                    await data.unifiedDelete(existingItem.id, existingItem.type, userId);
-                }
+                if (existingItem) await data.unifiedDelete(existingItem.id, existingItem.type, userId);
             } else if (action === 'rename') {
                 finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
             } else {
@@ -195,26 +195,47 @@ app.post('/upload', requireLogin, (req, res) => {
                  }
             }
             
+            // 恢复流并直接传递
+            fileStream.resume();
             await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption);
             return { skipped: false };
-        }).catch(err => {
-            fileStream.resume();
+        })().catch(err => {
+            fileStream.resume(); // 确保流在任何错误情况下都被消耗掉
             throw err;
         });
-        
+
         uploadPromises.push(fileUploadPromise);
+    };
+
+
+    busboy.on('field', (fieldname, val) => {
+        fields[fieldname] = val;
+        // 关键：假设所有必要字段都在文件流之前到达
+        if (fields.folderId && fields.resolutions && fields.relativePathsJSON && !fieldsReady) {
+            fieldsReady = true;
+            processPendingFiles();
+        }
+    });
+
+    busboy.on('file', (fieldname, fileStream, fileInfo) => {
+        fileStream.pause(); // 立即暂停流，等待字段信息
+        if (fieldsReady) {
+            handleFileStream(fileStream, fileInfo);
+        } else {
+            pendingFiles.push({ fileStream, fileInfo });
+        }
     });
 
     busboy.on('finish', async () => {
         try {
             const results = await Promise.all(uploadPromises);
-            const allFilesSkipped = results.every(r => r.skipped);
+            const allFilesSkipped = results.every(r => r && r.skipped);
             res.json({ success: true, message: '上传完成', skippedAll: allFilesSkipped });
         } catch (err) {
             res.status(500).json({ success: false, message: err.message || '处理上传文件时发生内部错误。' });
         }
     });
-
+    
     busboy.on('error', (err) => {
         req.unpipe(busboy);
         res.status(500).json({ success: false, message: '上传解析失败' });
