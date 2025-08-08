@@ -1,4 +1,4 @@
-// nexavor/networkfilemanger/NetworkFileManger-43f0ea7b6335ba475c463557b9462ec7e432d14b/server.js
+// nexavor/networkfilemanger/NetworkFileManger-43f0ea7b6335ba475c462ec7e432d14b/server.js
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
@@ -134,14 +134,13 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- *** 最终解决方案：从 URL 查询参数获取元数据 *** ---
+// --- *** 关键修正 开始 *** ---
 app.post('/upload', requireLogin, (req, res) => {
     const FUNC_NAME = '/upload';
     const FILE_NAME = 'server.js';
     const reqId = Date.now();
     log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 请求开始。`);
 
-    // **核心修改：从 req.query 获取元数据**
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
@@ -158,22 +157,23 @@ app.post('/upload', requireLogin, (req, res) => {
         const uploadPromises = [];
 
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
-            const correctedFilename = Buffer.from(fileInfo.filename, 'latin1').toString('utf8');
-            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 发现文件流: "${correctedFilename}"，立即处理。`);
+            // 关键修正: 使用 fieldname (它包含了 webkitRelativePath) 而不是 fileInfo.filename 来重建路径。
+            const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
+            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 发现文件流: "${relativePath}" (原始文件名: "${fileInfo.filename}")，立即处理。`);
             
             const fileUploadPromise = (async () => {
                 const { mimeType } = fileInfo;
-                const action = resolutions[correctedFilename] || 'upload';
-                log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 文件 "${correctedFilename}" 的处理动作是: ${action}`);
+                const action = resolutions[relativePath] || 'upload'; // 使用 relativePath 作为 key
+                log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 文件 "${relativePath}" 的处理动作是: ${action}`);
 
                 if (action === 'skip') {
-                    log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 跳过文件: "${correctedFilename}"`);
+                    log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 跳过文件: "${relativePath}"`);
                     fileStream.resume();
                     return { skipped: true };
                 }
 
-                const pathParts = correctedFilename.split('/').filter(p => p);
-                let finalFilename = pathParts.pop() || correctedFilename;
+                const pathParts = relativePath.split('/').filter(p => p);
+                let finalFilename = pathParts.pop() || relativePath;
                 const folderPathParts = pathParts;
 
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
@@ -197,11 +197,12 @@ app.post('/upload', requireLogin, (req, res) => {
                     }
                 }
                 
+                // 注意：传递给 storage.upload 的是 finalFilename，而不是完整的 relativePath
                 await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '');
                 log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 储存引擎成功处理了文件: "${finalFilename}"`);
                 return { skipped: false };
             })().catch(err => {
-                log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 处理文件 "${correctedFilename}" 时发生严重错误:`, err);
+                log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 处理文件 "${relativePath}" 时发生严重错误:`, err);
                 fileStream.resume();
                 throw err;
             });
@@ -230,7 +231,7 @@ app.post('/upload', requireLogin, (req, res) => {
         res.status(400).json({ success: false, message: `请求预处理失败: ${err.message}` });
     }
 });
-
+// --- *** 关键修正 结束 *** ---
 
 // --- API 端点 ---
 app.post('/api/text-file', requireLogin, async (req, res) => {
@@ -269,7 +270,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         } else if (mode === 'create' && folderId) {
              const conflict = await data.checkFullConflict(fileName, folderId, userId);
             if (conflict) {
-                return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
+                return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
             }
             result = await storage.upload(fileStream, fileName, 'text/plain', userId, folderId);
         } else {
@@ -374,14 +375,14 @@ app.get('/api/folder/:id', requireLogin, async (req, res) => {
         const contents = await data.getFolderContents(folderId, req.session.userId);
         const path = await data.getFolderPath(folderId, req.session.userId);
         res.json({ contents, path });
-    } catch (error) { res.status(500).json({ success: false, message: '读取资料夹内容失败。' }); }
+    } catch (error) { res.status(500).json({ success: false, message: '读取资料夾内容失败。' }); }
 });
 
 app.post('/api/folder', requireLogin, async (req, res) => {
     const { name, parentId } = req.body;
     const userId = req.session.userId;
     if (!name || !parentId) {
-        return res.status(400).json({ success: false, message: '缺少资料夹名称或父 ID。' });
+        return res.status(400).json({ success: false, message: '缺少资料夾名称或父 ID。' });
     }
     
     try {
