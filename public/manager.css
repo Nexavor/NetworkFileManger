@@ -84,6 +84,7 @@ body {
     text-decoration: none;
     color: var(--primary-color);
     font-weight: 500;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); /* --- 新增立体感文字阴影 --- */
 }
 .breadcrumb a:hover { text-decoration: underline; }
 .breadcrumb span { color: #6c757d; font-weight: normal; }
@@ -318,6 +319,14 @@ body {
         flex-grow: 1;
         display: flex;
         align-items: center;
+    }
+    #applyToAllContainer {
+        display: block;
+        margin-top: 15px;
+        text-align: left;
+    }
+    #applyToAllContainer input {
+        margin-right: 5px;
     }
     .action-bar #collapseBtn {
         order: 2;
