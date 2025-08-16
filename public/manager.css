@@ -83,11 +83,15 @@ body {
 .breadcrumb a, .breadcrumb span {
     text-decoration: none;
     color: var(--primary-color);
-    font-weight: 500;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); /* --- 新增立体感文字阴影 --- */
+    font-weight: 600; /* --- 增加字體粗細 --- */
+    text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3); /* --- 调整了文字阴影以增强立体感 --- */
 }
 .breadcrumb a:hover { text-decoration: underline; }
-.breadcrumb span { color: #6c757d; font-weight: normal; }
+.breadcrumb span {
+    color: #6c757d;
+    font-weight: normal; /* --- 保持当前目录文字的正常粗细 --- */
+    text-shadow: none; /* --- 移除当前目录文字的阴影 --- */
+}
 .breadcrumb .separator { margin: 0 10px; color: #6c757d; }
 #dropZone.dragover { border-color: var(--primary-color); background-color: #f0f8ff; }
 #dropZoneOverlay {
