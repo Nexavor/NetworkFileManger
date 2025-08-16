@@ -74,43 +74,25 @@ body {
 .breadcrumb {
     display: flex;
     align-items: center;
-    background-color: transparent; /* --- 移除背景色，交由子元素处理 --- */
-    padding: 5px; /* --- 调整内边距以适应按钮样式 --- */
-    border-radius: 8px;
+    background-color: #e9ecef;
+    padding: 10px 15px;
+    border-radius: 5px;
     margin-bottom: 20px;
     font-size: 16px;
 }
-.breadcrumb a {
+.breadcrumb a, .breadcrumb span {
     text-decoration: none;
-    color: #fff;
-    font-weight: 600;
-    background-color: var(--primary-color); /* --- 添加按钮背景色 --- */
-    padding: 6px 12px; /* --- 添加内边距 --- */
-    border-radius: 6px; /* --- 圆角 --- */
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2); /* --- 添加阴影 --- */
-    transition: all 0.2s ease; /* --- 添加过渡效果 --- */
-    border-bottom: 2px solid #0056b3; /* --- 添加底部边框以增强立体感 --- */
+    color: var(--primary-color);
+    font-weight: 600; /* --- 增加字體粗細 --- */
+    text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3); /* --- 调整了文字阴影以增强立体感 --- */
 }
-.breadcrumb a:hover {
-    background-color: #0069d9;
-    box-shadow: 0 3px 6px rgba(0, 0, 0, 0.25);
-    transform: translateY(-1px); /* --- 悬停时轻微上浮 --- */
-}
-.breadcrumb a:active {
-    transform: translateY(1px); /* --- 点击时下沉 --- */
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-}
+.breadcrumb a:hover { text-decoration: underline; }
 .breadcrumb span {
-    color: #343a40; /* --- 调整当前目录文字颜色 --- */
-    font-weight: 600;
-    padding: 6px 12px; /* --- 保持与按钮一致的内边距 --- */
-    text-shadow: none;
-}
-.breadcrumb .separator {
-    margin: 0 10px;
     color: #6c757d;
-    font-size: 1.2em; /* --- 可选：让分隔符更醒目 --- */
+    font-weight: normal; /* --- 保持当前目录文字的正常粗细 --- */
+    text-shadow: none; /* --- 移除当前目录文字的阴影 --- */
 }
+.breadcrumb .separator { margin: 0 10px; color: #6c757d; }
 #dropZone.dragover { border-color: var(--primary-color); background-color: #f0f8ff; }
 #dropZoneOverlay {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
