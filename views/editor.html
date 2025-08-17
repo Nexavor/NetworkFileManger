@@ -7,11 +7,11 @@
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="/manager.css">
     <style>
-        /* 自动适应窗口布局样式 */
+        /* 1. 自动适应窗口的全屏布局 */
         html, body {
             height: 100%;
             margin: 0;
-            overflow: hidden; /* 防止body本身出现滚动条 */
+            overflow: hidden;
         }
 
         .container {
@@ -23,22 +23,24 @@
         }
 
         .main-header {
-            flex-shrink: 0; /* 防止头部在空间不足时被压缩 */
+            flex-shrink: 0;
         }
         
-        /* 移除原有内联样式的影响，统一由CSS管理 */
+        /* 2. 修复溢出的编辑器容器样式 */
         .editor-container {
-            padding-top: 10px !important;
-            padding-bottom: 0 !important;
-            padding-left: 0 !important;
-            padding-right: 0 !important;
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0; /* 关键修复：防止 flex 容器内容溢出 */
+            padding-top: 10px;
+            box-sizing: border-box;
         }
 
-        /* 编辑器和行号样式 */
+        /* 3. 编辑器和行号的样式 */
         .editor-wrapper {
             display: flex;
             width: 100%;
-            height: 100%;
+            flex-grow: 1; /* 关键修复：使用 flex-grow 填充空间，而不是 height: 100% */
             border: 1px solid var(--border-color);
             border-radius: 4px;
         }
@@ -50,10 +52,10 @@
             color: #aaa;
             background-color: #f7f7f7;
             font-family: 'Courier New', Courier, monospace;
-            font-size: 14px; /* 缩小字体 */
-            line-height: 1.4; /* 调整行高，使其更紧凑 */
+            font-size: 14px;
+            line-height: 1.4;
             user-select: none;
-            overflow-y: hidden; /* 隐藏自身的滚动条 */
+            overflow-y: hidden;
             border-right: 1px solid var(--border-color);
         }
         
@@ -65,19 +67,19 @@
         #editor {
             width: 100%;
             height: 100%;
-            border: none !important; /* 移除原有边框，由 wrapper 提供 */
+            border: none !important;
             border-radius: 0 4px 4px 0 !important;
             padding: 15px !important;
-            font-size: 14px; /* 缩小字体 */
-            line-height: 1.4; /* 调整行高，使其更紧凑 */
+            font-size: 14px;
+            line-height: 1.4;
             resize: none;
-            outline: none; /* 移除聚焦时的外边框 */
+            outline: none;
         }
         
-        /* 保存按钮禁用样式 */
+        /* 4. 保存按钮禁用样式 */
         #saveBtn:disabled {
-            background-color: #ccc; /* 禁用时的背景色 */
-            cursor: not-allowed; /* 禁用时的鼠标指针 */
+            background-color: #ccc;
+            cursor: not-allowed;
             color: #666;
         }
     </style>
@@ -92,7 +94,7 @@
                 <button id="backBtn" class="upload-link-btn" style="background-color: #6c757d;">返回</button>
             </div>
         </header>
-        <div class="editor-container" style="flex-grow: 1; box-sizing: border-box; display: flex;">
+        <div class="editor-container">
             <div class="editor-wrapper">
                 <div id="line-numbers"><div>1</div></div>
                 <textarea id="editor" spellcheck="false" style="font-family: 'Courier New', Courier, monospace;"></textarea>
@@ -117,16 +119,14 @@
             let initialFileName = '';
             let initialContent = '';
             
-            // 更新行号
             const updateLineNumbers = () => {
                 const lines = editor.value.split('\n');
                 const lineCount = lines.length;
                 const lineNumbersHtml = Array.from({ length: lineCount }, (_, i) => `<div>${i + 1}</div>`).join('');
-                lineNumbers.innerHTML = lineNumbersHtml || '<div>1</div>'; // 保证至少有一行
+                lineNumbers.innerHTML = lineNumbersHtml || '<div>1</div>';
                 lineNumbers.scrollTop = editor.scrollTop;
             };
 
-            // 检查内容是否有变更并更新按钮状态
             const checkForChanges = () => {
                 const nameChanged = fileNameInput.value !== initialFileName;
                 const contentChanged = editor.value !== initialContent;
