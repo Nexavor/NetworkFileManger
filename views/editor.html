@@ -7,7 +7,34 @@
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="/manager.css">
     <style>
-        /* 新增样式 */
+        /* 自动适应窗口布局样式 */
+        html, body {
+            height: 100%;
+            margin: 0;
+            overflow: hidden; /* 防止body本身出现滚动条 */
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+
+        .main-header {
+            flex-shrink: 0; /* 防止头部在空间不足时被压缩 */
+        }
+        
+        /* 移除原有内联样式的影响，统一由CSS管理 */
+        .editor-container {
+            padding-top: 10px !important;
+            padding-bottom: 0 !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+        }
+
+        /* 编辑器和行号样式 */
         .editor-wrapper {
             display: flex;
             width: 100%;
@@ -47,6 +74,7 @@
             outline: none; /* 移除聚焦时的外边框 */
         }
         
+        /* 保存按钮禁用样式 */
         #saveBtn:disabled {
             background-color: #ccc; /* 禁用时的背景色 */
             cursor: not-allowed; /* 禁用时的鼠标指针 */
@@ -64,7 +92,7 @@
                 <button id="backBtn" class="upload-link-btn" style="background-color: #6c757d;">返回</button>
             </div>
         </header>
-        <div class="editor-container" style="flex-grow: 1; padding: 10px 0; box-sizing: border-box; display: flex;">
+        <div class="editor-container" style="flex-grow: 1; box-sizing: border-box; display: flex;">
             <div class="editor-wrapper">
                 <div id="line-numbers"><div>1</div></div>
                 <textarea id="editor" spellcheck="false" style="font-family: 'Courier New', Courier, monospace;"></textarea>
@@ -79,7 +107,7 @@
             const saveBtn = document.getElementById('saveBtn');
             const backBtn = document.getElementById('backBtn');
             const saveStatus = document.getElementById('saveStatus');
-            const lineNumbers = document.getElementById('line-numbers'); // 获取行号元素
+            const lineNumbers = document.getElementById('line-numbers');
 
             const urlParams = new URLSearchParams(window.location.search);
             let mode = urlParams.get('mode');
@@ -95,7 +123,6 @@
                 const lineCount = lines.length;
                 const lineNumbersHtml = Array.from({ length: lineCount }, (_, i) => `<div>${i + 1}</div>`).join('');
                 lineNumbers.innerHTML = lineNumbersHtml || '<div>1</div>'; // 保证至少有一行
-                // 同步滚动
                 lineNumbers.scrollTop = editor.scrollTop;
             };
 
@@ -107,7 +134,7 @@
             };
 
             async function loadFileContent() {
-                saveBtn.disabled = true; // 初始禁用保存按钮
+                saveBtn.disabled = true;
                 if (mode === 'edit' && fileId) {
                     try {
                         const fileInfoRes = await axios.get(`/api/file-info/${fileId}`);
@@ -123,7 +150,7 @@
                         window.close();
                     }
                 }
-                updateLineNumbers(); // 初始加载行号
+                updateLineNumbers();
             }
 
             saveBtn.addEventListener('click', async () => {
@@ -136,7 +163,7 @@
                     fileName += '.txt';
                 }
                 const content = editor.value;
-                saveBtn.disabled = true; // 点击后立刻禁用，防止重复点击
+                saveBtn.disabled = true;
                 saveBtn.textContent = '储存中...';
                 saveStatus.textContent = '';
 
@@ -158,7 +185,6 @@
                         saveStatus.textContent = '';
                     }, 2000);
 
-                    // 更新初始状态为当前已保存的状态
                     initialFileName = fileName;
                     initialContent = content;
 
@@ -171,7 +197,6 @@
                     }
                 } catch (error) {
                     alert('储存失败：' + (error.response?.data?.message || '伺服器错误'));
-                    // 储存失败时，根据当前内容重新判断按钮是否可用
                     checkForChanges();
                 } finally {
                     saveBtn.textContent = '保存';
@@ -182,14 +207,13 @@
                 window.close();
             });
 
-            // 监听输入变化
             fileNameInput.addEventListener('input', checkForChanges);
+            
             editor.addEventListener('input', () => {
                 checkForChanges();
-                updateLineNumbers(); // 内容变化时更新行号
+                updateLineNumbers();
             });
 
-            // 监听编辑器滚动，同步行号滚动
             editor.addEventListener('scroll', () => {
                 lineNumbers.scrollTop = editor.scrollTop;
             });
