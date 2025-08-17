@@ -7,40 +7,45 @@
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="/manager.css">
     <style>
-        /* 1. 自动适应窗口的全屏布局 */
-        html, body {
+        /* 1. 更稳健的全屏布局方案 */
+        html {
+            height: 100%;
+        }
+        
+        body {
             height: 100%;
             margin: 0;
             overflow: hidden;
+            /* 将页面的边距放在 body 上 */
+            padding: 10px;
+            box-sizing: border-box;
         }
 
         .container {
+            /* 容器占满 body 的可用空间 */
+            height: 100%;
+            width: 100%;
             display: flex;
             flex-direction: column;
-            height: 100%;
-            padding: 10px;
-            box-sizing: border-box;
+            /* 使用 gap 来控制子元素间距，比 padding 更稳定 */
+            gap: 10px; 
         }
 
         .main-header {
             flex-shrink: 0;
         }
         
-        /* 2. 修复溢出的编辑器容器样式 */
         .editor-container {
             flex-grow: 1;
             display: flex;
-            flex-direction: column;
-            min-height: 0; /* 关键修复：防止 flex 容器内容溢出 */
-            padding-top: 10px;
-            box-sizing: border-box;
+            /* 关键：防止 flex 容器内容溢出 */
+            min-height: 0; 
         }
 
-        /* 3. 编辑器和行号的样式 */
+        /* 2. 编辑器和行号的样式（保持不变） */
         .editor-wrapper {
             display: flex;
             width: 100%;
-            flex-grow: 1; /* 关键修复：使用 flex-grow 填充空间，而不是 height: 100% */
             border: 1px solid var(--border-color);
             border-radius: 4px;
         }
@@ -76,7 +81,7 @@
             outline: none;
         }
         
-        /* 4. 保存按钮禁用样式 */
+        /* 3. 保存按钮禁用样式（保持不变） */
         #saveBtn:disabled {
             background-color: #ccc;
             cursor: not-allowed;
