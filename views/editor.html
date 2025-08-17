@@ -6,6 +6,53 @@
     <title>文字编辑器</title>
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="/manager.css">
+    <style>
+        /* 新增样式 */
+        .editor-wrapper {
+            display: flex;
+            width: 100%;
+            height: 100%;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+        }
+
+        #line-numbers {
+            width: 45px;
+            padding: 15px 0;
+            text-align: right;
+            color: #aaa;
+            background-color: #f7f7f7;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 14px; /* 缩小字体 */
+            line-height: 1.4; /* 调整行高，使其更紧凑 */
+            user-select: none;
+            overflow-y: hidden; /* 隐藏自身的滚动条 */
+            border-right: 1px solid var(--border-color);
+        }
+        
+        #line-numbers > div {
+            padding: 0 8px;
+            box-sizing: border-box;
+        }
+
+        #editor {
+            width: 100%;
+            height: 100%;
+            border: none !important; /* 移除原有边框，由 wrapper 提供 */
+            border-radius: 0 4px 4px 0 !important;
+            padding: 15px !important;
+            font-size: 14px; /* 缩小字体 */
+            line-height: 1.4; /* 调整行高，使其更紧凑 */
+            resize: none;
+            outline: none; /* 移除聚焦时的外边框 */
+        }
+        
+        #saveBtn:disabled {
+            background-color: #ccc; /* 禁用时的背景色 */
+            cursor: not-allowed; /* 禁用时的鼠标指针 */
+            color: #666;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -18,7 +65,10 @@
             </div>
         </header>
         <div class="editor-container" style="flex-grow: 1; padding: 10px 0; box-sizing: border-box; display: flex;">
-            <textarea id="editor" spellcheck="false" style="width: 100%; height: 100%; border: 1px solid var(--border-color); border-radius: 4px; padding: 15px; box-sizing: border-box; font-family: 'Courier New', Courier, monospace; font-size: 16px; line-height: 1.5; resize: none;"></textarea>
+            <div class="editor-wrapper">
+                <div id="line-numbers"><div>1</div></div>
+                <textarea id="editor" spellcheck="false" style="font-family: 'Courier New', Courier, monospace;"></textarea>
+            </div>
         </div>
     </div>
     <script src="/vendor/axios/axios.min.js"></script>
@@ -29,6 +79,7 @@
             const saveBtn = document.getElementById('saveBtn');
             const backBtn = document.getElementById('backBtn');
             const saveStatus = document.getElementById('saveStatus');
+            const lineNumbers = document.getElementById('line-numbers'); // 获取行号元素
 
             const urlParams = new URLSearchParams(window.location.search);
             let mode = urlParams.get('mode');
@@ -37,6 +88,16 @@
 
             let initialFileName = '';
             let initialContent = '';
+            
+            // 更新行号
+            const updateLineNumbers = () => {
+                const lines = editor.value.split('\n');
+                const lineCount = lines.length;
+                const lineNumbersHtml = Array.from({ length: lineCount }, (_, i) => `<div>${i + 1}</div>`).join('');
+                lineNumbers.innerHTML = lineNumbersHtml || '<div>1</div>'; // 保证至少有一行
+                // 同步滚动
+                lineNumbers.scrollTop = editor.scrollTop;
+            };
 
             // 检查内容是否有变更并更新按钮状态
             const checkForChanges = () => {
@@ -62,7 +123,7 @@
                         window.close();
                     }
                 }
-                // 新建文件时，按钮初始也是禁用的，直到用户输入内容
+                updateLineNumbers(); // 初始加载行号
             }
 
             saveBtn.addEventListener('click', async () => {
@@ -123,7 +184,15 @@
 
             // 监听输入变化
             fileNameInput.addEventListener('input', checkForChanges);
-            editor.addEventListener('input', checkForChanges);
+            editor.addEventListener('input', () => {
+                checkForChanges();
+                updateLineNumbers(); // 内容变化时更新行号
+            });
+
+            // 监听编辑器滚动，同步行号滚动
+            editor.addEventListener('scroll', () => {
+                lineNumbers.scrollTop = editor.scrollTop;
+            });
 
             loadFileContent();
         });
