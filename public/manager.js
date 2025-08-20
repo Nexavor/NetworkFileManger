@@ -137,31 +137,33 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     
     const uploadFiles = async (filesOrData, targetFolderId, isDrag = false) => {
+        // --- 关键修正：检查 filesOrData[0] 是否存在 file 属性来判断资料结构 ---
         const isDataArray = filesOrData.length > 0 && filesOrData[0].file;
-    
+
         if (filesOrData.length === 0) {
             showNotification('请选择文件或文件夹。', 'error', !isDrag ? uploadNotificationArea : null);
             return;
         }
-    
+
         const notificationContainer = isDrag ? null : uploadNotificationArea;
-    
+
+        // --- 关键修正：统一处理两种资料结构为 allFilesData ---
         const allFilesData = isDataArray ? filesOrData : Array.from(filesOrData).map(f => ({
             relativePath: f.webkitRelativePath || f.name,
             file: f
         }));
-    
+
         const oversizedFiles = allFilesData.filter(data => data.file.size > MAX_TELEGRAM_SIZE);
         if (oversizedFiles.length > 0) {
             const fileNames = oversizedFiles.map(data => `"${data.file.name}"`).join(', ');
             showNotification(`文件 ${fileNames} 过大，超过 ${formatBytes(MAX_TELEGRAM_SIZE)} 的限制。`, 'error', notificationContainer);
             return;
         }
-    
+
         const filesToCheck = allFilesData.map(data => ({
             relativePath: data.relativePath
         }));
-    
+
         let existenceData = [];
         try {
             const res = await axios.post('/api/check-existence', { files: filesToCheck, folderId: targetFolderId });
@@ -170,7 +172,7 @@ document.addEventListener('DOMContentLoaded', () => {
             showNotification(error.response?.data?.message || '检查文件是否存在时出错。', 'error', notificationContainer);
             return;
         }
-    
+
         const resolutions = {};
         const conflicts = existenceData.filter(f => f.exists).map(f => f.relativePath);
         
@@ -182,8 +184,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             Object.assign(resolutions, conflictResult.resolutions);
         }
-    
+
         const formData = new FormData();
+        // --- 关键修正：使用 allFilesData 来确保每个文件都与其相对路径一起添加 ---
         allFilesData.forEach(data => {
             formData.append(data.relativePath, data.file);
         });
@@ -191,7 +194,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const params = new URLSearchParams();
         params.append('folderId', targetFolderId);
         params.append('resolutions', JSON.stringify(resolutions));
-    
+
         if (!isDrag) {
             const captionInput = document.getElementById('uploadCaption');
             if (captionInput && captionInput.value) {
@@ -611,63 +614,92 @@ document.addEventListener('DOMContentLoaded', () => {
             dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'));
         });
 
+        // --- *** 关键修正与日志添加 开始 *** ---
         dropZone.addEventListener('drop', async (e) => {
+            console.log('[DEBUG] Drop event triggered.');
             e.preventDefault();
             e.stopPropagation();
             dropZone.classList.remove('dragover');
-        
+    
             const items = e.dataTransfer.items;
-            
-            const getFilesWithRelativePath = async (entry) => {
-                if (!entry) return [];
-                if (entry.isFile) {
-                    return new Promise((resolve, reject) => {
+            if (!items || items.length === 0) {
+                console.log('[DEBUG] No items found in dataTransfer.');
+                return;
+            }
+            console.log(`[DEBUG] Found ${items.length} items.`);
+    
+            // 递归读取目录内容
+            const getFilesInDirectory = (entry) => {
+                return new Promise((resolve, reject) => {
+                    if (!entry.isDirectory) {
+                        reject(new Error("拖拽的项目不是一个目录。"));
+                        return;
+                    }
+                    const dirReader = entry.createReader();
+                    let allEntries = [];
+    
+                    const readEntries = () => {
+                        dirReader.readEntries(async (entries) => {
+                            if (entries.length === 0) {
+                                try {
+                                    const filesDataArrays = await Promise.all(allEntries.map(getFileWithRelativePath));
+                                    resolve(filesDataArrays.flat());
+                                } catch (error) {
+                                    reject(error);
+                                }
+                            } else {
+                                allEntries.push(...entries);
+                                readEntries(); // 继续读取下一批条目
+                            }
+                        }, err => reject(err));
+                    };
+                    readEntries();
+                });
+            };
+    
+            // 获取文件及其相对路径
+            const getFileWithRelativePath = (entry) => {
+                return new Promise((resolve, reject) => {
+                    if (entry.isFile) {
                         entry.file(file => {
-                            file.webkitRelativePath = entry.fullPath.slice(1); 
+                            const relativePath = entry.fullPath.startsWith('/') ? entry.fullPath.substring(1) : entry.fullPath;
+                            console.log(`[DEBUG] 找到文件: ${relativePath}, 大小: ${file.size}`);
                             resolve([{
-                                relativePath: file.webkitRelativePath,
+                                relativePath: relativePath,
                                 file: file
                             }]);
                         }, err => reject(err));
-                    });
-                }
-                if (entry.isDirectory) {
-                    return new Promise((resolve, reject) => {
-                        const dirReader = entry.createReader();
-                        let allEntries = [];
-                        const readEntries = () => {
-                            dirReader.readEntries(async (entries) => {
-                                if (entries.length === 0) {
-                                    const filesData = await Promise.all(allEntries.map(getFileWithRelativePath));
-                                    resolve(filesData.flat());
-                                } else {
-                                    allEntries.push(...entries);
-                                    readEntries();
-                                }
-                            }, err => reject(err));
-                        };
-                        readEntries();
-                    });
-                }
-                return [];
+                    } else if (entry.isDirectory) {
+                        console.log(`[DEBUG] 正在遍历目录: ${entry.fullPath}`);
+                        resolve(getFilesInDirectory(entry));
+                    } else {
+                        console.log(`[DEBUG] 忽略未知类型项目: ${entry.name}`);
+                        resolve([]); 
+                    }
+                });
             };
         
-            if (items && items.length > 0) {
-                try {
-                    const entries = Array.from(items).map(item => item.webkitGetAsEntry());
-                    const filesDataPromises = entries.map(getFileWithRelativePath);
-                    const filesDataArrays = await Promise.all(filesDataPromises);
-                    const allFilesData = filesDataArrays.flat().filter(Boolean);
-        
-                    if (allFilesData.length > 0) {
-                        uploadFiles(allFilesData, currentFolderId, true);
-                    }
-                } catch (error) {
-                    showNotification('读取拖放的文件夹时出错。', 'error');
-                    console.error(error);
+            try {
+                console.log('[DEBUG] 开始处理拖拽的项目。');
+                const entries = Array.from(items).map(item => item.webkitGetAsEntry());
+                const filesDataPromises = entries.map(getFileWithRelativePath);
+                const filesDataArrays = await Promise.all(filesDataPromises);
+                const allFilesData = filesDataArrays.flat().filter(Boolean);
+                console.log(`[DEBUG] 总共收集到 ${allFilesData.length} 个文件。`);
+                
+                if (allFilesData.length > 0) {
+                    console.log('[DEBUG] 使用收集到的文件呼叫 uploadFiles:', allFilesData);
+                    uploadFiles(allFilesData, currentFolderId, true);
+                } else {
+                    console.log('[DEBUG] 没有从拖拽事件中收集到任何文件。');
+                    showNotification('找不到可上传的文件。', 'warn');
                 }
+            } catch (error) {
+                showNotification('读取拖放的文件夹时出错。请检查浏览器控制台以获取详细资讯。', 'error');
+                console.error('[DEBUG] 处理拖拽事件时出错:', error);
             }
         });
+        // --- *** 关键修正与日志添加 结束 *** ---
     }
 
     if (homeLink) {
