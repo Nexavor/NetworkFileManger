@@ -136,25 +136,32 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
     
-    const uploadFiles = async (files, targetFolderId, isDrag = false) => {
-        if (files.length === 0) {
+    const uploadFiles = async (filesOrData, targetFolderId, isDrag = false) => {
+        const isDataArray = filesOrData.length > 0 && filesOrData[0].file;
+    
+        if (filesOrData.length === 0) {
             showNotification('请选择文件或文件夹。', 'error', !isDrag ? uploadNotificationArea : null);
             return;
         }
-
+    
         const notificationContainer = isDrag ? null : uploadNotificationArea;
-
-        const oversizedFiles = Array.from(files).filter(file => file.size > MAX_TELEGRAM_SIZE);
+    
+        const allFilesData = isDataArray ? filesOrData : Array.from(filesOrData).map(f => ({
+            relativePath: f.webkitRelativePath || f.name,
+            file: f
+        }));
+    
+        const oversizedFiles = allFilesData.filter(data => data.file.size > MAX_TELEGRAM_SIZE);
         if (oversizedFiles.length > 0) {
-            const fileNames = oversizedFiles.map(f => `"${f.name}"`).join(', ');
+            const fileNames = oversizedFiles.map(data => `"${data.file.name}"`).join(', ');
             showNotification(`文件 ${fileNames} 过大，超过 ${formatBytes(MAX_TELEGRAM_SIZE)} 的限制。`, 'error', notificationContainer);
             return;
         }
-
-        const filesToCheck = Array.from(files).map(file => ({
-            relativePath: file.webkitRelativePath || file.name 
+    
+        const filesToCheck = allFilesData.map(data => ({
+            relativePath: data.relativePath
         }));
-
+    
         let existenceData = [];
         try {
             const res = await axios.post('/api/check-existence', { files: filesToCheck, folderId: targetFolderId });
@@ -175,16 +182,16 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             Object.assign(resolutions, conflictResult.resolutions);
         }
-
+    
         const formData = new FormData();
-        Array.from(files).forEach(file => {
-            formData.append(file.webkitRelativePath || file.name, file);
+        allFilesData.forEach(data => {
+            formData.append(data.relativePath, data.file);
         });
         
         const params = new URLSearchParams();
         params.append('folderId', targetFolderId);
         params.append('resolutions', JSON.stringify(resolutions));
-
+    
         if (!isDrag) {
             const captionInput = document.getElementById('uploadCaption');
             if (captionInput && captionInput.value) {
@@ -608,38 +615,56 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             e.stopPropagation();
             dropZone.classList.remove('dragover');
-    
+        
             const items = e.dataTransfer.items;
-            const allFiles = [];
-    
-            const traverseFileTree = async (entry) => {
+            
+            const getFilesWithRelativePath = async (entry) => {
+                if (!entry) return [];
                 if (entry.isFile) {
-                    return new Promise((resolve) => {
+                    return new Promise((resolve, reject) => {
                         entry.file(file => {
-                            // 关键：为拖拽的文件夹中的文件手动设置 webkitRelativePath
-                            file.webkitRelativePath = entry.fullPath.substring(1); 
-                            resolve([file]);
-                        });
+                            file.webkitRelativePath = entry.fullPath.slice(1); 
+                            resolve([{
+                                relativePath: file.webkitRelativePath,
+                                file: file
+                            }]);
+                        }, err => reject(err));
                     });
-                } else if (entry.isDirectory) {
-                    const dirReader = entry.createReader();
-                    const entries = await new Promise((resolve) => {
-                        dirReader.readEntries(entries => resolve(entries));
+                }
+                if (entry.isDirectory) {
+                    return new Promise((resolve, reject) => {
+                        const dirReader = entry.createReader();
+                        let allEntries = [];
+                        const readEntries = () => {
+                            dirReader.readEntries(async (entries) => {
+                                if (entries.length === 0) {
+                                    const filesData = await Promise.all(allEntries.map(getFileWithRelativePath));
+                                    resolve(filesData.flat());
+                                } else {
+                                    allEntries.push(...entries);
+                                    readEntries();
+                                }
+                            }, err => reject(err));
+                        };
+                        readEntries();
                     });
-                    const files = await Promise.all(entries.map(traverseFileTree));
-                    return files.flat();
                 }
                 return [];
             };
-    
+        
             if (items && items.length > 0) {
-                const entries = Array.from(items).map(item => item.webkitGetAsEntry());
-                const filesPromises = entries.map(traverseFileTree);
-                const filesArrays = await Promise.all(filesPromises);
-                allFiles.push(...filesArrays.flat());
-    
-                if (allFiles.length > 0) {
-                    uploadFiles(allFiles, currentFolderId, true);
+                try {
+                    const entries = Array.from(items).map(item => item.webkitGetAsEntry());
+                    const filesDataPromises = entries.map(getFileWithRelativePath);
+                    const filesDataArrays = await Promise.all(filesDataPromises);
+                    const allFilesData = filesDataArrays.flat().filter(Boolean);
+        
+                    if (allFilesData.length > 0) {
+                        uploadFiles(allFilesData, currentFolderId, true);
+                    }
+                } catch (error) {
+                    showNotification('读取拖放的文件夹时出错。', 'error');
+                    console.error(error);
                 }
             }
         });
