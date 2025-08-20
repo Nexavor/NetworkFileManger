@@ -619,31 +619,24 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         dropZone.addEventListener('drop', async (e) => {
-            console.log('[DEBUG] Drop event triggered.');
             e.preventDefault();
             e.stopPropagation();
             dropZone.classList.remove('dragover');
     
             const items = e.dataTransfer.items;
-            if (!items || items.length === 0) {
-                console.log('[DEBUG] No items found in dataTransfer.');
-                return;
-            }
-            console.log(`[DEBUG] Found ${items.length} items.`);
+            if (!items || items.length === 0) return;
     
             const getFileWithRelativePath = (entry) => {
                 return new Promise((resolve, reject) => {
                     if (entry.isFile) {
                         entry.file(file => {
                             const relativePath = entry.fullPath.startsWith('/') ? entry.fullPath.substring(1) : entry.fullPath;
-                            console.log(`[DEBUG] 找到文件: ${relativePath}, 大小: ${file.size}`);
                             resolve([{
                                 relativePath: relativePath,
                                 file: file
                             }]);
                         }, err => reject(err));
                     } else if (entry.isDirectory) {
-                        console.log(`[DEBUG] 正在遍历目录: ${entry.fullPath}`);
                         const dirReader = entry.createReader();
                         let allEntries = [];
                         const readEntries = () => {
@@ -663,30 +656,25 @@ document.addEventListener('DOMContentLoaded', () => {
                         };
                         readEntries();
                     } else {
-                        console.log(`[DEBUG] 忽略未知类型项目: ${entry.name}`);
                         resolve([]);
                     }
                 });
             };
         
             try {
-                console.log('[DEBUG] 开始处理拖拽的项目。');
                 const entries = Array.from(items).map(item => item.webkitGetAsEntry());
                 const filesDataPromises = entries.map(getFileWithRelativePath);
                 const filesDataArrays = await Promise.all(filesDataPromises);
                 const allFilesData = filesDataArrays.flat().filter(Boolean);
-                console.log(`[DEBUG] 总共收集到 ${allFilesData.length} 个文件。`);
                 
                 if (allFilesData.length > 0) {
-                    console.log('[DEBUG] 使用收集到的文件呼叫 uploadFiles:', allFilesData);
                     uploadFiles(allFilesData, currentFolderId, true);
                 } else {
-                    console.log('[DEBUG] 没有从拖拽事件中收集到任何文件。');
                     showNotification('找不到可上传的文件。', 'warn');
                 }
             } catch (error) {
-                showNotification('读取拖放的文件夹时出错。请检查浏览器控制台以获取详细资讯。', 'error');
-                console.error('[DEBUG] 处理拖拽事件时出错:', error);
+                showNotification('读取拖放的文件夹时出错。', 'error');
+                console.error(error);
             }
         });
     }
@@ -1007,26 +995,25 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     if (confirmMoveBtn) {
-        // --- *** 关键修正 开始 *** ---
         confirmMoveBtn.addEventListener('click', async () => {
             if (!moveTargetFolderId) return;
-
+    
             const resolutions = {};
             let isAborted = false;
             let applyToAllFolderAction = null;
 
             async function resolveConflictsRecursively(itemsToMove, currentTargetFolderId, pathPrefix = '') {
                 if (isAborted) return;
-
+    
                 const conflictCheckRes = await axios.post('/api/check-move-conflict', {
                     itemIds: itemsToMove.map(item => item.id),
                     targetFolderId: currentTargetFolderId
                 });
                 const { fileConflicts, folderConflicts } = conflictCheckRes.data;
-
+    
                 const destFolderContentsRes = await axios.get(`/api/folder/${currentTargetFolderId}`);
                 const destFolderMap = new Map(destFolderContentsRes.data.contents.folders.map(f => [f.name, f.id]));
-
+    
                 for (const folderName of folderConflicts) {
                     const fullPath = pathPrefix ? `${pathPrefix}/${folderName}` : folderName;
                     
@@ -1046,7 +1033,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         return;
                     }
                     resolutions[fullPath] = action;
-
+    
                     if (action === 'merge') {
                         const sourceFolder = itemsToMove.find(item => item.name === folderName && item.type === 'folder');
                         const destSubFolderId = destFolderMap.get(folderName);
@@ -1065,11 +1052,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     }
                 }
-
+    
                 if (fileConflicts.length > 0) {
                     const prefixedFileConflicts = fileConflicts.map(name => pathPrefix ? `${pathPrefix}/${name}` : name);
                     const result = await handleConflict(prefixedFileConflicts, '档案');
-
+    
                     if (result.aborted) {
                         isAborted = true;
                         return;
@@ -1077,34 +1064,33 @@ document.addEventListener('DOMContentLoaded', () => {
                     Object.assign(resolutions, result.resolutions);
                 }
             }
-
+    
             try {
                 const topLevelItems = Array.from(selectedItems.entries()).map(([id, { type, name }]) => ({ id: parseInt(id), type, name }));
                 
                 await resolveConflictsRecursively(topLevelItems, moveTargetFolderId);
-
+    
                 if (isAborted) {
                     moveModal.style.display = 'none';
                     showNotification('移动操作已取消。', 'info');
                     return;
                 }
-
+    
                 const response = await axios.post('/api/move', {
                     itemIds: topLevelItems.map(item => item.id),
                     targetFolderId: moveTargetFolderId,
                     resolutions 
                 });
-
+    
                 moveModal.style.display = 'none';
                 loadFolderContents(currentFolderId);
                 showNotification(response.data.message, 'success');
-
+    
             } catch (error) {
                 moveModal.style.display = 'none';
                 alert('操作失败：' + (error.response?.data?.message || '服务器错误'));
             }
         });
-        // --- *** 关键修正 结束 *** ---
     }
 
     if (shareBtn && shareModal) {
