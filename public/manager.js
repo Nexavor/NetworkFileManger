@@ -604,25 +604,43 @@ document.addEventListener('DOMContentLoaded', () => {
             dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'));
         });
 
-        dropZone.addEventListener('drop', (e) => {
-            const files = Array.from(e.dataTransfer.files);
-             let hasFolder = false;
-            if (e.dataTransfer.items) {
-                for(let i=0; i<e.dataTransfer.items.length; i++) {
-                    const item = e.dataTransfer.items[i];
-                    if (typeof item.webkitGetAsEntry === "function" && item.webkitGetAsEntry().isDirectory) {
-                        hasFolder = true;
-                        break;
-                    }
+        dropZone.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropZone.classList.remove('dragover');
+    
+            const items = e.dataTransfer.items;
+            const allFiles = [];
+    
+            const traverseFileTree = async (entry) => {
+                if (entry.isFile) {
+                    return new Promise((resolve) => {
+                        entry.file(file => {
+                            // 关键：为拖拽的文件夹中的文件手动设置 webkitRelativePath
+                            file.webkitRelativePath = entry.fullPath.substring(1); 
+                            resolve([file]);
+                        });
+                    });
+                } else if (entry.isDirectory) {
+                    const dirReader = entry.createReader();
+                    const entries = await new Promise((resolve) => {
+                        dirReader.readEntries(entries => resolve(entries));
+                    });
+                    const files = await Promise.all(entries.map(traverseFileTree));
+                    return files.flat();
                 }
-            }
-
-            if (hasFolder) {
-                showNotification('不支援拖拽资料夹上传，请使用上传按钮选择资料夹。', 'error');
-                return;
-            }
-            if (files.length > 0) {
-                uploadFiles(files, currentFolderId, true);
+                return [];
+            };
+    
+            if (items && items.length > 0) {
+                const entries = Array.from(items).map(item => item.webkitGetAsEntry());
+                const filesPromises = entries.map(traverseFileTree);
+                const filesArrays = await Promise.all(filesPromises);
+                allFiles.push(...filesArrays.flat());
+    
+                if (allFiles.length > 0) {
+                    uploadFiles(allFiles, currentFolderId, true);
+                }
             }
         });
     }
