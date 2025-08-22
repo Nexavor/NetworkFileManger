@@ -251,9 +251,11 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
 
-    if (!fileName || !fileName.endsWith('.txt')) {
-        return res.status(400).json({ success: false, message: '档名无效或不是 .txt 档案' });
+    // --- *** 关键修正 开始 *** ---
+    if (!fileName) {
+        return res.status(400).json({ success: false, message: '档名无效' });
     }
+    // --- *** 关键修正 结束 *** ---
 
     const tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.txt`);
 
