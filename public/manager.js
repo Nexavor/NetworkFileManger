@@ -67,6 +67,20 @@ document.addEventListener('DOMContentLoaded', () => {
     let foldersLoaded = false;
     let currentView = 'grid';
 
+    // --- *** 关键修正 开始 *** ---
+    const EDITABLE_EXTENSIONS = [
+        '.txt', '.md', '.json', '.js', '.css', '.html', '.xml', '.yaml', '.yml', 
+        '.log', '.ini', '.cfg', '.conf', '.sh', '.bat', '.py', '.java', '.c', 
+        '.cpp', '.h', '.hpp', '.cs', '.php', '.rb', '.go', '.rs', '.ts', '.sql'
+    ];
+
+    function isEditableFile(fileName) {
+        if (!fileName) return false;
+        const lowerCaseFileName = fileName.toLowerCase();
+        return EDITABLE_EXTENSIONS.some(ext => lowerCaseFileName.endsWith(ext));
+    }
+    // --- *** 关键修正 结束 *** ---
+
     const formatBytes = (bytes, decimals = 2) => {
         if (!bytes || bytes === 0) return '0 Bytes';
         const k = 1024;
@@ -358,12 +372,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (downloadBtn) downloadBtn.disabled = count === 0;
 
-        const isSingleTextFile = count === 1 && selectedItems.values().next().value.name.endsWith('.txt');
+        // --- *** 关键修正 开始 *** ---
+        const isSingleEditableFile = count === 1 && isEditableFile(selectedItems.values().next().value.name);
         if (textEditBtn) {
-            textEditBtn.disabled = !(count === 0 || isSingleTextFile);
+            textEditBtn.disabled = !(count === 0 || isSingleEditableFile);
             textEditBtn.innerHTML = count === 0 ? '<i class="fas fa-file-alt"></i>' : '<i class="fas fa-edit"></i>';
             textEditBtn.title = count === 0 ? '新建文字档' : '编辑文字档';
         }
+        // --- *** 关键修正 结束 *** ---
 
         if (previewBtn) previewBtn.disabled = count !== 1 || (count === 1 && selectedItems.values().next().value.type === 'folder');
 
