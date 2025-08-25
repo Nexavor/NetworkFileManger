@@ -403,7 +403,8 @@ document.addEventListener('DOMContentLoaded', () => {
             shareBtn.disabled = count !== 1;
             renameBtn.disabled = count !== 1;
             moveBtn.disabled = count === 0 || isSearchMode;
-            deleteBtn.disabled = false;
+            downloadBtn.disabled = count === 0;
+            deleteBtn.disabled = count === 0;
         } else {
             generalButtons.forEach(btn => btn.style.display = 'block');
             itemSpecificButtons.forEach(btn => btn.style.display = 'none');
