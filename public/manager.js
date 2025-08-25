@@ -5,6 +5,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const breadcrumb = document.getElementById('breadcrumb');
     const contextMenu = document.getElementById('contextMenu');
     const selectionInfo = document.getElementById('selectionInfo');
+    const multiSelectToggleBtn = document.getElementById('multiSelectToggleBtn');
     const createFolderBtn = document.getElementById('createFolderBtn');
     const searchForm = document.getElementById('searchForm');
     const searchInput = document.getElementById('searchInput');
@@ -58,6 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const contextMenuSeparatorTop = document.getElementById('contextMenuSeparatorTop');
 
     // 状态
+    let isMultiSelectMode = false;
     let currentFolderId = 1;
     let currentFolderContents = { folders: [], files: [] };
     let selectedItems = new Map();
@@ -372,29 +374,27 @@ document.addEventListener('DOMContentLoaded', () => {
         selectionInfo.style.display = hasSelection ? 'block' : 'none';
         contextMenuSeparatorTop.style.display = hasSelection ? 'block' : 'none';
     
-        const generalButtons = [createFolderBtn, textEditBtn, selectAllBtn, contextMenuSeparator2];
+        const generalButtons = [createFolderBtn, textEditBtn, selectAllBtn, multiSelectToggleBtn];
         const itemSpecificButtons = [previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1];
     
         if (hasSelection) {
-            generalButtons.forEach(btn => {
-                if(btn !== selectAllBtn && btn !== contextMenuSeparator2) btn.style.display = 'none';
-                else if (btn === selectAllBtn || btn === contextMenuSeparator2) btn.style.display = 'block';
-            });
+            generalButtons.forEach(btn => btn.style.display = 'none');
             itemSpecificButtons.forEach(btn => btn.style.display = 'flex');
+            selectAllBtn.style.display = 'block';
+            contextMenuSeparator2.style.display = 'block';
     
             downloadBtn.disabled = count === 0;
     
             const isSingleEditableFile = count === 1 && isEditableFile(selectedItems.values().next().value.name);
             if (textEditBtn) {
                 textEditBtn.style.display = isSingleEditableFile ? 'flex' : 'none';
-                if(isSingleEditableFile) {
+                if (isSingleEditableFile) {
                     textEditBtn.innerHTML = '<i class="fas fa-edit"></i> <span class="button-text">编辑文件</span>';
                     textEditBtn.title = '编辑文字档';
                 }
             }
-             contextMenuSeparator1.style.display = (isSingleEditableFile) ? 'block' : 'none';
-             if (isSingleEditableFile) textEditBtn.style.display = 'flex'; else textEditBtn.style.display = 'none';
-
+            contextMenuSeparator1.style.display = isSingleEditableFile ? 'block' : 'none';
+            if (isSingleEditableFile) textEditBtn.style.display = 'flex'; else textEditBtn.style.display = 'none';
     
             previewBtn.disabled = count !== 1 || (count === 1 && selectedItems.values().next().value.type === 'folder');
             shareBtn.disabled = count !== 1;
@@ -404,6 +404,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             generalButtons.forEach(btn => btn.style.display = 'block');
             itemSpecificButtons.forEach(btn => btn.style.display = 'none');
+            contextMenuSeparator2.style.display = 'block';
             textEditBtn.style.display = 'block';
             if (textEditBtn) {
                 textEditBtn.innerHTML = '<i class="fas fa-file-alt"></i> <span class="button-text">新建文件</span>';
@@ -604,7 +605,7 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             const targetItem = e.target.closest('.item-card, .list-item');
     
-            if (targetItem && !e.ctrlKey && !e.metaKey) {
+            if (targetItem && !isMultiSelectMode && !e.ctrlKey && !e.metaKey) {
                 if (!selectedItems.has(targetItem.dataset.id)) {
                     selectedItems.clear();
                     selectedItems.set(targetItem.dataset.id, {
@@ -614,8 +615,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     rerenderSelection();
                 }
             } else if (!targetItem) {
-                selectedItems.clear();
-                rerenderSelection();
+                if (!isMultiSelectMode) {
+                  selectedItems.clear();
+                  rerenderSelection();
+                }
             }
     
             updateContextMenu(targetItem);
@@ -630,13 +633,12 @@ document.addEventListener('DOMContentLoaded', () => {
             const menuWidth = contextMenu.offsetWidth;
             const menuHeight = contextMenu.offsetHeight;
             const dropZoneWidth = dropZone.clientWidth;
-            const dropZoneHeight = dropZone.clientHeight;
     
             if (menuX + menuWidth > dropZoneWidth) {
-                menuX = dropZoneWidth - menuWidth;
+                menuX = dropZoneWidth - menuWidth - 5;
             }
             if (menuY + menuHeight > dropZone.scrollHeight) {
-                 menuY = dropZone.scrollHeight - menuHeight;
+                 menuY = dropZone.scrollHeight - menuHeight - 5;
             }
             if (menuY < dropZone.scrollTop) {
                 menuY = dropZone.scrollTop;
@@ -742,24 +744,22 @@ document.addEventListener('DOMContentLoaded', () => {
         const type = target.dataset.type;
         const name = target.dataset.name;
 
-        if (e.ctrlKey || e.metaKey) {
+        if (isMultiSelectMode || e.ctrlKey || e.metaKey) {
             if (selectedItems.has(id)) {
                 selectedItems.delete(id);
             } else {
                 selectedItems.set(id, { type, name });
             }
         } else {
-            const isSelected = selectedItems.has(id);
             selectedItems.clear();
-            if (!isSelected) {
-                selectedItems.set(id, { type, name });
-            }
+            selectedItems.set(id, { type, name });
         }
         rerenderSelection();
         updateContextMenu();
     };
 
     const handleItemDblClick = (e) => {
+        if(isMultiSelectMode) return;
         const target = e.target.closest('.item-card, .list-item');
         if (target && target.dataset.type === 'folder') {
             const folderId = parseInt(target.dataset.id, 10);
@@ -780,6 +780,23 @@ document.addEventListener('DOMContentLoaded', () => {
     if (viewSwitchBtn) {
         viewSwitchBtn.addEventListener('click', () => {
             switchView(currentView === 'grid' ? 'list' : 'grid');
+        });
+    }
+
+    if (multiSelectToggleBtn) {
+        multiSelectToggleBtn.addEventListener('click', () => {
+            isMultiSelectMode = !isMultiSelectMode;
+            document.body.classList.toggle('selection-mode-active', isMultiSelectMode);
+
+            if (isMultiSelectMode) {
+                multiSelectToggleBtn.innerHTML = '<i class="fas fa-times"></i> <span class="button-text">退出多选模式</span>';
+            } else {
+                multiSelectToggleBtn.innerHTML = '<i class="fas fa-check-square"></i> <span class="button-text">进入多选模式</span>';
+                selectedItems.clear();
+                rerenderSelection();
+            }
+            updateContextMenu();
+            contextMenu.style.display = 'none';
         });
     }
 
