@@ -149,6 +149,7 @@ body {
     flex-direction: column;
     gap: 4px;
     border: 1px solid var(--border-color);
+    min-width: 200px;
 }
 .context-menu button {
     background: transparent;
@@ -303,7 +304,7 @@ body {
         margin-right: 5px;
     }
     .context-menu .button-text, .main-header .upload-link-btn .button-text {
-        display: none;
+        display: inline;
     }
     
     .setting-card { padding: 15px; }
