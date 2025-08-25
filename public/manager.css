@@ -133,7 +133,6 @@ body.selection-mode-active #dropZone {
 .item-info h5 { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; color: var(--text-color); }
 .list-header, .list-item { display: flex; align-items: center; padding: 10px; border-bottom: 1px solid var(--border-color); }
 .list-header { font-weight: bold; background-color: #e9ecef; border-radius: 5px 5px 0 0; }
-/* --- *** 关键修正 开始 *** --- */
 .list-header > div {
     cursor: pointer;
     user-select: none;
@@ -153,14 +152,30 @@ body.selection-mode-active #dropZone {
 .list-header > div.sort-desc {
     background-color: #cfe2ff;
 }
-/* --- *** 关键修正 结束 *** --- */
 .list-item { cursor: pointer; transition: background-color 0.2s; }
 .list-item:hover { background-color: #f1f3f5; }
 .list-item.selected { background-color: #cfe2ff; border-left: 4px solid var(--primary-color); padding-left: 6px; }
 .list-icon { width: 30px; text-align: center; margin-right: 15px; font-size: 1.2em; }
 .list-icon .fa-folder { color: #ffc107; }
 .list-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.list-size, .list-date { width: 150px; text-align: right; color: #6c757d; font-size: 0.9em; flex-shrink: 0; }
+/* --- *** 关键修正 开始 *** --- */
+.list-size {
+    width: 120px;
+    text-align: right;
+    color: #6c757d;
+    font-size: 0.9em;
+    flex-shrink: 0;
+    padding-right: 15px; /* 增加与日期之间的间距 */
+    box-sizing: border-box;
+}
+.list-date {
+    width: 180px;
+    text-align: right;
+    color: #6c757d;
+    font-size: 0.9em;
+    flex-shrink: 0;
+}
+/* --- *** 关键修正 结束 *** --- */
 .context-menu {
     position: absolute;
     display: none;
@@ -327,7 +342,10 @@ body.selection-mode-active #dropZone {
     .item-list-view { overflow-x: auto; }
     .list-header, .list-item { min-width: 500px; }
     .list-name { flex: 1 1 200px; }
-    .list-size, .list-date { display: block; width: 100px; font-size: 0.8em; flex-shrink: 0; }
+    /* --- *** 关键修正 开始 *** --- */
+    .list-size { width: 100px; font-size: 0.8em; flex-shrink: 0; padding-right: 10px; }
+    .list-date { width: 150px; font-size: 0.8em; flex-shrink: 0; }
+    /* --- *** 关键修正 结束 *** --- */
     
     #applyToAllContainer {
         display: block;
