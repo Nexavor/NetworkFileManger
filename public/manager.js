@@ -374,9 +374,17 @@ document.addEventListener('DOMContentLoaded', () => {
         selectionInfo.style.display = hasSelection ? 'block' : 'none';
         contextMenuSeparatorTop.style.display = hasSelection ? 'block' : 'none';
     
-        const generalButtons = [createFolderBtn, textEditBtn, multiSelectToggleBtn];
+        const generalButtons = [createFolderBtn, textEditBtn];
         const itemSpecificButtons = [previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1];
     
+        if (isMultiSelectMode) {
+            multiSelectToggleBtn.innerHTML = '<i class="fas fa-times"></i> <span class="button-text">退出多选模式</span>';
+            multiSelectToggleBtn.style.display = 'block';
+        } else {
+            multiSelectToggleBtn.innerHTML = '<i class="fas fa-check-square"></i> <span class="button-text">进入多选模式</span>';
+            multiSelectToggleBtn.style.display = hasSelection ? 'none' : 'block';
+        }
+
         if (hasSelection) {
             generalButtons.forEach(btn => btn.style.display = 'none');
             itemSpecificButtons.forEach(btn => btn.style.display = 'flex');
@@ -788,10 +796,7 @@ document.addEventListener('DOMContentLoaded', () => {
             isMultiSelectMode = !isMultiSelectMode;
             document.body.classList.toggle('selection-mode-active', isMultiSelectMode);
 
-            if (isMultiSelectMode) {
-                multiSelectToggleBtn.innerHTML = '<i class="fas fa-times"></i> <span class="button-text">退出多选模式</span>';
-            } else {
-                multiSelectToggleBtn.innerHTML = '<i class="fas fa-check-square"></i> <span class="button-text">进入多选模式</span>';
+            if (!isMultiSelectMode) {
                 selectedItems.clear();
                 rerenderSelection();
             }
