@@ -133,6 +133,27 @@ body.selection-mode-active #dropZone {
 .item-info h5 { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; color: var(--text-color); }
 .list-header, .list-item { display: flex; align-items: center; padding: 10px; border-bottom: 1px solid var(--border-color); }
 .list-header { font-weight: bold; background-color: #e9ecef; border-radius: 5px 5px 0 0; }
+/* --- *** 关键修正 开始 *** --- */
+.list-header > div {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    padding-right: 20px; /* 为排序图标留出空间 */
+}
+.list-header > div:hover {
+    background-color: #d1d9e0;
+}
+.sort-icon {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+.list-header > div.sort-asc,
+.list-header > div.sort-desc {
+    background-color: #cfe2ff;
+}
+/* --- *** 关键修正 结束 *** --- */
 .list-item { cursor: pointer; transition: background-color 0.2s; }
 .list-item:hover { background-color: #f1f3f5; }
 .list-item.selected { background-color: #cfe2ff; border-left: 4px solid var(--primary-color); padding-left: 6px; }
