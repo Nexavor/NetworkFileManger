@@ -3,12 +3,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const homeLink = document.getElementById('homeLink');
     const itemGrid = document.getElementById('itemGrid');
     const breadcrumb = document.getElementById('breadcrumb');
-    const actionBar = document.getElementById('actionBar');
-    const selectionCountSpan = document.getElementById('selectionCount');
+    const contextMenu = document.getElementById('contextMenu');
     const createFolderBtn = document.getElementById('createFolderBtn');
     const searchForm = document.getElementById('searchForm');
     const searchInput = document.getElementById('searchInput');
-    const multiSelectBtn = document.getElementById('multiSelectBtn');
     const previewBtn = document.getElementById('previewBtn');
     const shareBtn = document.getElementById('shareBtn');
     const renameBtn = document.getElementById('renameBtn');
@@ -54,10 +52,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const viewSwitchBtn = document.getElementById('view-switch-btn');
     const itemListView = document.getElementById('itemListView');
     const itemListBody = document.getElementById('itemListBody');
-    const collapseBtn = document.getElementById('collapseBtn');
+    const contextMenuSeparator1 = document.getElementById('contextMenuSeparator1');
+    const contextMenuSeparator2 = document.getElementById('contextMenuSeparator2');
+
 
     // 状态
-    let isMultiSelectMode = false;
     let currentFolderId = 1;
     let currentFolderContents = { folders: [], files: [] };
     let selectedItems = new Map();
@@ -67,7 +66,6 @@ document.addEventListener('DOMContentLoaded', () => {
     let foldersLoaded = false;
     let currentView = 'grid';
 
-    // --- *** 关键修正 开始 *** ---
     const EDITABLE_EXTENSIONS = [
         '.txt', '.md', '.json', '.js', '.css', '.html', '.xml', '.yaml', '.yml', 
         '.log', '.ini', '.cfg', '.conf', '.sh', '.bat', '.py', '.java', '.c', 
@@ -79,7 +77,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const lowerCaseFileName = fileName.toLowerCase();
         return EDITABLE_EXTENSIONS.some(ext => lowerCaseFileName.endsWith(ext));
     }
-    // --- *** 关键修正 结束 *** ---
 
     const formatBytes = (bytes, decimals = 2) => {
         if (!bytes || bytes === 0) return '0 Bytes';
@@ -236,7 +233,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             renderBreadcrumb(res.data.path);
             renderItems(currentFolderContents.folders, currentFolderContents.files);
-            updateActionBar();
+            updateContextMenu();
         } catch (error) {
             if (error.response && error.response.status === 401) {
                 window.location.href = '/login';
@@ -253,7 +250,7 @@ document.addEventListener('DOMContentLoaded', () => {
             selectedItems.clear();
             renderBreadcrumb(res.data.path);
             renderItems(currentFolderContents.folders, currentFolderContents.files);
-            updateActionBar();
+            updateContextMenu();
         } catch (error) {
             itemGrid.innerHTML = '<p>搜寻失败。</p>';
             itemListBody.innerHTML = '<p>搜寻失败。</p>';
@@ -365,34 +362,36 @@ document.addEventListener('DOMContentLoaded', () => {
         if (mimetype.includes('archive') || mimetype.includes('zip')) return 'fa-file-archive';
         return 'fa-file-alt';
     };
-    const updateActionBar = () => {
-        if (!actionBar) return;
+    const updateContextMenu = (targetItem = null) => {
         const count = selectedItems.size;
-        selectionCountSpan.textContent = `已选择 ${count} 个项目`;
-
-        if (downloadBtn) downloadBtn.disabled = count === 0;
-
-        // --- *** 关键修正 开始 *** ---
-        const isSingleEditableFile = count === 1 && isEditableFile(selectedItems.values().next().value.name);
-        if (textEditBtn) {
-            textEditBtn.disabled = !(count === 0 || isSingleEditableFile);
-            textEditBtn.innerHTML = count === 0 ? '<i class="fas fa-file-alt"></i>' : '<i class="fas fa-edit"></i>';
-            textEditBtn.title = count === 0 ? '新建文字档' : '编辑文字档';
-        }
-        // --- *** 关键修正 结束 *** ---
-
-        if (previewBtn) previewBtn.disabled = count !== 1 || (count === 1 && selectedItems.values().next().value.type === 'folder');
-
-        if (shareBtn) shareBtn.disabled = count !== 1;
-
-        if (renameBtn) renameBtn.disabled = count !== 1;
-        if (moveBtn) moveBtn.disabled = count === 0 || isSearchMode;
-        if (deleteBtn) deleteBtn.disabled = count === 0;
-
-        actionBar.classList.toggle('visible', true);
-
-        if (!isMultiSelectMode && multiSelectBtn) {
-            multiSelectBtn.classList.remove('active');
+        const isItemSelected = targetItem || count > 0;
+    
+        const itemSpecificButtons = [previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1, contextMenuSeparator2];
+        const generalButtons = [createFolderBtn, textEditBtn, selectAllBtn];
+    
+        if (isItemSelected) {
+            generalButtons.forEach(btn => btn.style.display = 'none');
+            itemSpecificButtons.forEach(btn => btn.style.display = 'block');
+    
+            downloadBtn.disabled = count === 0;
+    
+            const isSingleEditableFile = count === 1 && isEditableFile(selectedItems.values().next().value.name);
+            textEditBtn.style.display = isSingleEditableFile ? 'flex' : 'none';
+            if (isSingleEditableFile) {
+                textEditBtn.innerHTML = '<i class="fas fa-edit"></i> <span class="button-text">编辑文件</span>';
+                textEditBtn.title = '编辑文字档';
+            }
+    
+            previewBtn.disabled = count !== 1 || (count === 1 && selectedItems.values().next().value.type === 'folder');
+            shareBtn.disabled = count !== 1;
+            renameBtn.disabled = count !== 1;
+            moveBtn.disabled = count === 0 || isSearchMode;
+            deleteBtn.disabled = count === 0;
+        } else {
+            generalButtons.forEach(btn => btn.style.display = 'block');
+            itemSpecificButtons.forEach(btn => btn.style.display = 'none');
+            textEditBtn.innerHTML = '<i class="fas fa-file-alt"></i> <span class="button-text">新建文件</span>';
+            textEditBtn.title = '新建文字档';
         }
     };
     const rerenderSelection = () => {
@@ -506,26 +505,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return { aborted, resolutions };
     }
 
-    const checkScreenWidthAndCollapse = () => {
-        if (window.innerWidth <= 768) {
-            if (actionBar && !actionBar.classList.contains('collapsed')) {
-                actionBar.classList.add('collapsed');
-                const icon = collapseBtn.querySelector('i');
-                icon.classList.remove('fa-chevron-down');
-                icon.classList.add('fa-chevron-up');
-                collapseBtn.title = "展开";
-            }
-        } else {
-            if (actionBar && actionBar.classList.contains('collapsed')) {
-                 actionBar.classList.remove('collapsed');
-                 const icon = collapseBtn.querySelector('i');
-                 icon.classList.remove('fa-chevron-up');
-                 icon.classList.add('fa-chevron-down');
-                 collapseBtn.title = "收起";
-            }
-        }
-    };
-
     // --- 事件监听 ---
     if (logoutBtn) {
         logoutBtn.addEventListener('click', () => {
@@ -563,22 +542,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     
-    if (collapseBtn) {
-        collapseBtn.addEventListener('click', () => {
-            actionBar.classList.toggle('collapsed');
-            const icon = collapseBtn.querySelector('i');
-            if (actionBar.classList.contains('collapsed')) {
-                icon.classList.remove('fa-chevron-down');
-                icon.classList.add('fa-chevron-up');
-                collapseBtn.title = "展开";
-            } else {
-                icon.classList.remove('fa-chevron-up');
-                icon.classList.add('fa-chevron-down');
-                collapseBtn.title = "收起";
-            }
-        });
-    }
-
     if (fileInput) {
         fileInput.addEventListener('change', () => {
             fileListContainer.innerHTML = '';
@@ -709,7 +672,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const type = target.dataset.type;
         const name = target.dataset.name;
 
-        if (isMultiSelectMode) {
+        if (e.ctrlKey || e.metaKey) {
             if (selectedItems.has(id)) {
                 selectedItems.delete(id);
             } else {
@@ -723,7 +686,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         rerenderSelection();
-        updateActionBar();
+        updateContextMenu();
     };
 
     const handleItemDblClick = (e) => {
@@ -793,23 +756,8 @@ document.addEventListener('DOMContentLoaded', () => {
             else if(isSearchMode) loadFolderContents(currentFolderId);
         });
     }
-    if (multiSelectBtn) {
-        multiSelectBtn.addEventListener('click', () => {
-            isMultiSelectMode = !isMultiSelectMode;
-            multiSelectBtn.classList.toggle('active', isMultiSelectMode);
-            if (!isMultiSelectMode && selectedItems.size > 1) {
-                const lastItem = Array.from(selectedItems.entries()).pop();
-                selectedItems.clear();
-                selectedItems.set(lastItem[0], lastItem[1]);
-                rerenderSelection();
-                updateActionBar();
-            }
-        });
-    }
     if (selectAllBtn) {
         selectAllBtn.addEventListener('click', () => {
-            isMultiSelectMode = true;
-            if (multiSelectBtn) multiSelectBtn.classList.add('active');
             const allVisibleItems = [...currentFolderContents.folders, ...currentFolderContents.files];
             const allVisibleIds = allVisibleItems.map(item => String(item.id));
             const isAllSelected = allVisibleIds.length > 0 && allVisibleIds.every(id => selectedItems.has(id));
@@ -819,7 +767,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 allVisibleItems.forEach(item => selectedItems.set(String(item.id), { type: item.type, name: item.name }));
             }
             rerenderSelection();
-            updateActionBar();
+            updateContextMenu();
         });
     }
     if (showUploadModalBtn) {
@@ -1188,7 +1136,5 @@ document.addEventListener('DOMContentLoaded', () => {
             folderId = rootFolderLink ? parseInt(rootFolderLink.dataset.folderId) : 1;
         }
         loadFolderContents(folderId);
-        checkScreenWidthAndCollapse();
-        window.addEventListener('resize', checkScreenWidthAndCollapse);
     }
 });
