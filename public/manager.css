@@ -140,42 +140,50 @@ body {
 .context-menu {
     position: absolute;
     display: none;
-    background-color: #212529;
-    color: white;
+    background-color: #ffffff;
+    color: var(--text-color);
     border-radius: 8px;
-    padding: 10px;
-    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    padding: 8px;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.2);
     z-index: 1000;
     flex-direction: column;
-    gap: 5px;
+    gap: 4px;
+    border: 1px solid var(--border-color);
 }
 .context-menu button {
-    background: #495057;
-    color: white;
+    background: transparent;
+    color: var(--text-color);
     border: none;
     padding: 8px 12px;
     border-radius: 5px;
     cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     text-align: left;
     width: 100%;
-    transition: background-color 0.2s, opacity 0.2s;
+    font-size: 14px;
+    transition: background-color 0.2s;
+}
+.context-menu button .fas {
+    width: 16px;
+    text-align: center;
+    color: #6c757d;
 }
 .context-menu button:disabled {
-    background: #343a40;
-    color: #6c757d;
+    color: #adb5bd;
     cursor: not-allowed;
-    opacity: 0.6;
+}
+.context-menu button:disabled .fas {
+    color: #ced4da;
 }
 .context-menu button:not(:disabled):hover {
-    opacity: 0.85;
+    background-color: #f1f3f5;
 }
 .context-menu hr {
     border: none;
-    border-top: 1px solid #495057;
-    margin: 5px 0;
+    border-top: 1px solid var(--border-color);
+    margin: 4px 0;
 }
 .modal {
     display: none; position: fixed; z-index: 1000; left: 0; top: 0;
@@ -219,7 +227,6 @@ body {
 .search-form { position: relative; flex-grow: 1; max-width: 400px; flex-shrink: 0; }
 #searchInput { width: 100%; padding: 10px 15px 10px 40px; border-radius: 20px; border: 1px solid #ccc; box-sizing: border-box;}
 .search-form .fa-search { position: absolute; top: 13px; left: 15px; color: #999; }
-#multiSelectBtn.active { background-color: var(--primary-color); box-shadow: 0 0 0 2px white, 0 0 0 4px var(--primary-color); }
 .upload-modal-content { background-color: var(--card-background); padding: 24px; border-radius: 8px; box-shadow: var(--shadow); width: 100%; max-width: 600px; position: relative; }
 #uploadForm input, #uploadForm button, #uploadForm select { width: 100%; padding: 12px; margin-bottom: 15px; box-sizing: border-box; border-radius: 4px; border: 1px solid #ccc; }
 #uploadForm button { background-color: var(--primary-color); color: white; border: none; cursor: pointer; font-size: 16px; }
@@ -295,7 +302,7 @@ body {
     #applyToAllContainer input {
         margin-right: 5px;
     }
-    .context-menu button .button-text, .main-header .upload-link-btn .button-text {
+    .context-menu .button-text, .main-header .upload-link-btn .button-text {
         display: none;
     }
     
