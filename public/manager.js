@@ -369,20 +369,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const updateContextMenu = (targetItem = null) => {
         const count = selectedItems.size;
         const hasSelection = count > 0;
-    
+
         selectionInfo.textContent = hasSelection ? `已选择 ${count} 个项目` : '';
         selectionInfo.style.display = hasSelection ? 'block' : 'none';
         contextMenuSeparatorTop.style.display = hasSelection ? 'block' : 'none';
-    
+
         const generalButtons = [createFolderBtn, textEditBtn];
         const itemSpecificButtons = [previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1];
-    
+
         if (isMultiSelectMode) {
             multiSelectToggleBtn.innerHTML = '<i class="fas fa-times"></i> <span class="button-text">退出多选模式</span>';
             multiSelectToggleBtn.style.display = 'block';
         } else {
             multiSelectToggleBtn.innerHTML = '<i class="fas fa-check-square"></i> <span class="button-text">进入多选模式</span>';
-            multiSelectToggleBtn.style.display = hasSelection ? 'none' : 'block';
+            multiSelectToggleBtn.style.display = !hasSelection ? 'block' : 'none';
         }
 
         if (hasSelection) {
@@ -390,34 +390,27 @@ document.addEventListener('DOMContentLoaded', () => {
             itemSpecificButtons.forEach(btn => btn.style.display = 'flex');
             selectAllBtn.style.display = 'block';
             contextMenuSeparator2.style.display = 'block';
-    
-            downloadBtn.disabled = count === 0;
-    
+
             const isSingleEditableFile = count === 1 && isEditableFile(selectedItems.values().next().value.name);
-            if (textEditBtn) {
-                textEditBtn.style.display = isSingleEditableFile ? 'flex' : 'none';
-                if (isSingleEditableFile) {
-                    textEditBtn.innerHTML = '<i class="fas fa-edit"></i> <span class="button-text">编辑文件</span>';
-                    textEditBtn.title = '编辑文字档';
-                }
+            textEditBtn.style.display = isSingleEditableFile ? 'flex' : 'none';
+            if (isSingleEditableFile) {
+                textEditBtn.innerHTML = '<i class="fas fa-edit"></i> <span class="button-text">编辑文件</span>';
+                textEditBtn.title = '编辑文字档';
             }
             contextMenuSeparator1.style.display = isSingleEditableFile ? 'block' : 'none';
-    
+
             previewBtn.disabled = count !== 1 || (count === 1 && selectedItems.values().next().value.type === 'folder');
             shareBtn.disabled = count !== 1;
             renameBtn.disabled = count !== 1;
             moveBtn.disabled = count === 0 || isSearchMode;
-            deleteBtn.disabled = count === 0;
+            deleteBtn.disabled = false;
         } else {
             generalButtons.forEach(btn => btn.style.display = 'block');
             itemSpecificButtons.forEach(btn => btn.style.display = 'none');
             selectAllBtn.style.display = 'block';
             contextMenuSeparator2.style.display = 'block';
-            
-            if (textEditBtn) {
-                textEditBtn.innerHTML = '<i class="fas fa-file-alt"></i> <span class="button-text">新建文件</span>';
-                textEditBtn.title = '新建文字档';
-            }
+            textEditBtn.innerHTML = '<i class="fas fa-file-alt"></i> <span class="button-text">新建文件</span>';
+            textEditBtn.title = '新建文字档';
         }
     };
 
@@ -830,6 +823,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     if (createFolderBtn) {
         createFolderBtn.addEventListener('click', async () => {
+            contextMenu.style.display = 'none';
             const name = prompt('请输入新资料夾的名称：');
             if (name && name.trim()) {
                 try {
@@ -1200,6 +1194,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (textEditBtn) {
         textEditBtn.addEventListener('click', () => {
+            contextMenu.style.display = 'none';
             const selectionCount = selectedItems.size;
             if (selectionCount === 0) {
                 window.open(`/editor?mode=create&folderId=${currentFolderId}`, '_blank');
