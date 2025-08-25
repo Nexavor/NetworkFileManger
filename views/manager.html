@@ -44,6 +44,20 @@
         <div id="dropZoneOverlay">
             <span>将拖到此处以上传</span>
         </div>
+        
+        <div id="contextMenu" class="context-menu">
+            <button id="createFolderBtn" title="建立文件夹"><i class="fas fa-folder-plus"></i> <span class="button-text">新建文件夹</span></button>
+            <button id="textEditBtn" title="新建文字档"><i class="fas fa-file-alt"></i> <span class="button-text">新建/编辑文件</span></button>
+            <hr id="contextMenuSeparator1">
+            <button id="previewBtn" title="预览" disabled><i class="fas fa-eye"></i> <span class="button-text">预览</span></button>
+            <button id="moveBtn" title="移动" disabled><i class="fas fa-people-arrows"></i> <span class="button-text">移动</span></button>
+            <button id="shareBtn" title="分享" disabled><i class="fas fa-share-alt"></i> <span class="button-text">分享</span></button>
+            <button id="renameBtn" title="重命名" disabled><i class="fas fa-i-cursor"></i> <span class="button-text">重命名</span></button>
+            <button id="downloadBtn" title="下载" disabled><i class="fas fa-download"></i> <span class="button-text">下载</span></button>
+            <button id="deleteBtn" title="删除" disabled><i class="fas fa-trash-alt"></i> <span class="button-text">删除</span></button>
+            <hr id="contextMenuSeparator2">
+            <button id="selectAllBtn" title="全选/取消全选"><i class="fas fa-check-double"></i> <span class="button-text">全选</span></button>
+        </div>
     </div>
   </div>
 
@@ -158,29 +172,6 @@
     <div class="progress-bar-container">
         <div class="progress-bar" id="dragUploadProgressBar">0%</div>
     </div>
-  </div>
-  
-  <div class="action-bar" id="actionBar">
-      <div class="action-bar-content">
-          <div class="action-bar-top-row">
-              <div class="action-bar-info-left">
-                  <button id="selectAllBtn" title="全选/取消全选"><i class="fas fa-check-double"></i></button>
-                  <span id="selectionCount">已选择 0 个项目</span>
-              </div>
-          </div>
-          <div class="actions">
-              <button id="createFolderBtn" title="建立文件夹"><i class="fas fa-folder-plus"></i></button>
-              <button id="textEditBtn" title="新建文字档"><i class="fas fa-file-alt"></i></button>
-              <button id="multiSelectBtn" title="多选模式"><i class="fas fa-tasks"></i></button>
-              <button id="previewBtn" title="预览" disabled><i class="fas fa-eye"></i></button>
-              <button id="moveBtn" title="移动" disabled><i class="fas fa-people-arrows"></i></button>
-              <button id="shareBtn" title="分享" disabled><i class="fas fa-share-alt"></i></button>
-              <button id="renameBtn" title="重命名" disabled><i class="fas fa-i-cursor"></i></button>
-              <button id="downloadBtn" title="下载" disabled><i class="fas fa-download"></i></button>
-              <button id="deleteBtn" title="删除" disabled><i class="fas fa-trash-alt"></i></button>
-          </div>
-      </div>
-      <button id="collapseBtn" title="收起/展开"><i class="fas fa-chevron-down"></i></button>
   </div>
 
   <script src="/manager.js"></script>
