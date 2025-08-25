@@ -58,6 +58,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const contextMenuSeparator2 = document.getElementById('contextMenuSeparator2');
     const contextMenuSeparatorTop = document.getElementById('contextMenuSeparatorTop');
 
+    // --- *** 关键修正 开始 *** ---
+    const listHeader = document.querySelector('.list-header');
+    // --- *** 关键修正 结束 *** ---
+
     // 状态
     let isMultiSelectMode = false;
     let currentFolderId = 1;
@@ -68,6 +72,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const MAX_TELEGRAM_SIZE = 1000 * 1024 * 1024;
     let foldersLoaded = false;
     let currentView = 'grid';
+    // --- *** 关键修正 开始 *** ---
+    let currentSort = {
+        key: 'name',
+        order: 'asc' 
+    };
+    // --- *** 关键修正 结束 *** ---
 
     const EDITABLE_EXTENSIONS = [
         '.txt', '.md', '.json', '.js', '.css', '.html', '.xml', '.yaml', '.yml', 
@@ -89,6 +99,21 @@ document.addEventListener('DOMContentLoaded', () => {
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
     };
+    
+    // --- *** 关键修正 开始 *** ---
+    const formatDateTime = (timestamp) => {
+        if (!timestamp) return '—';
+        return new Date(timestamp).toLocaleString('zh-CN', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        }).replace(/\//g, '-');
+    };
+    // --- *** 关键修正 结束 *** ---
+
 
     function showNotification(message, type = 'info', container = null) {
         const notification = document.createElement('div');
@@ -278,6 +303,35 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     };
     
+    // --- *** 关键修正 开始 *** ---
+    const sortItems = (folders, files) => {
+        const { key, order } = currentSort;
+        const direction = order === 'asc' ? 1 : -1;
+
+        const sortedFolders = [...folders].sort((a, b) => {
+            if (key === 'name') {
+                return a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true }) * direction;
+            }
+            // 文件夹没有大小和日期，保持名称排序
+            return a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true });
+        });
+
+        const sortedFiles = [...files].sort((a, b) => {
+            if (key === 'name') {
+                return a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true }) * direction;
+            }
+            if (key === 'size') {
+                return (a.size - b.size) * direction;
+            }
+            if (key === 'date') {
+                return (a.date - b.date) * direction;
+            }
+            return 0;
+        });
+
+        return { folders: sortedFolders, files: sortedFiles };
+    };
+    
     const renderItems = (folders, files) => {
         const parentGrid = itemGrid;
         const parentList = itemListBody;
@@ -285,7 +339,9 @@ document.addEventListener('DOMContentLoaded', () => {
         parentGrid.innerHTML = '';
         parentList.innerHTML = '';
 
-        const allItems = [...folders, ...files];
+        const { folders: sortedFolders, files: sortedFiles } = sortItems(folders, files);
+        
+        const allItems = [...sortedFolders, ...sortedFiles];
         
         if (allItems.length === 0) {
             if (currentView === 'grid') parentGrid.innerHTML = isSearchMode ? '<p>找不到符合条件的文件。</p>' : '<p>这个资料夾是空的。</p>';
@@ -300,7 +356,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 parentList.appendChild(createListItem(item));
             }
         });
+        updateSortIndicator();
     };
+    // --- *** 关键修正 结束 *** ---
 
     const createItemCard = (item) => {
         const card = document.createElement('div');
@@ -340,7 +398,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const icon = item.type === 'folder' ? 'fa-folder' : getFileIconClass(item.mimetype);
         const name = item.name === '/' ? '根目录' : item.name;
         const size = item.type === 'file' && item.size ? formatBytes(item.size) : '—';
-        const date = item.date ? new Date(item.date).toLocaleDateString() : '—';
+        // --- *** 关键修正 开始 *** ---
+        const date = item.date ? formatDateTime(item.date) : '—';
+        // --- *** 关键修正 结束 *** ---
+
 
         itemDiv.innerHTML = `
             <div class="list-icon"><i class="fas ${icon}"></i></div>
@@ -414,6 +475,22 @@ document.addEventListener('DOMContentLoaded', () => {
             textEditBtn.title = '新建文字档';
         }
     };
+    // --- *** 关键修正 开始 *** ---
+    const updateSortIndicator = () => {
+        listHeader.querySelectorAll('[data-sort]').forEach(el => {
+            el.classList.remove('sort-asc', 'sort-desc');
+            const icon = el.querySelector('.sort-icon');
+            if(icon) icon.remove();
+        });
+        const activeHeader = listHeader.querySelector(`[data-sort="${currentSort.key}"]`);
+        if (activeHeader) {
+            activeHeader.classList.add(currentSort.order === 'asc' ? 'sort-asc' : 'sort-desc');
+            const icon = document.createElement('i');
+            icon.className = `fas fa-caret-${currentSort.order === 'asc' ? 'up' : 'down'} sort-icon`;
+            activeHeader.appendChild(icon);
+        }
+    };
+    // --- *** 关键修正 结束 *** ---
 
     const rerenderSelection = () => {
         document.querySelectorAll('.item-card, .list-item').forEach(el => {
@@ -527,6 +604,24 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- 事件监听 ---
+    // --- *** 关键修正 开始 *** ---
+    if (listHeader) {
+        listHeader.addEventListener('click', (e) => {
+            const target = e.target.closest('[data-sort]');
+            if (!target) return;
+
+            const sortKey = target.dataset.sort;
+            if (currentSort.key === sortKey) {
+                currentSort.order = currentSort.order === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSort.key = sortKey;
+                currentSort.order = 'asc';
+            }
+            renderItems(currentFolderContents.folders, currentFolderContents.files);
+        });
+    }
+    // --- *** 关键修正 结束 *** ---
+
     if (logoutBtn) {
         logoutBtn.addEventListener('click', () => {
             window.location.href = '/logout';
