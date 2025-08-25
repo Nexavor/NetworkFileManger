@@ -366,7 +366,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return 'fa-file-alt';
     };
     
-    const updateContextMenu = () => {
+    const updateContextMenu = (targetItem = null) => {
         const count = selectedItems.size;
         const hasSelection = count > 0;
     
@@ -374,7 +374,7 @@ document.addEventListener('DOMContentLoaded', () => {
         selectionInfo.style.display = hasSelection ? 'block' : 'none';
         contextMenuSeparatorTop.style.display = hasSelection ? 'block' : 'none';
     
-        const generalButtons = [createFolderBtn, textEditBtn, selectAllBtn, multiSelectToggleBtn];
+        const generalButtons = [createFolderBtn, textEditBtn, multiSelectToggleBtn];
         const itemSpecificButtons = [previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1];
     
         if (hasSelection) {
@@ -394,7 +394,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
             contextMenuSeparator1.style.display = isSingleEditableFile ? 'block' : 'none';
-            if (isSingleEditableFile) textEditBtn.style.display = 'flex'; else textEditBtn.style.display = 'none';
     
             previewBtn.disabled = count !== 1 || (count === 1 && selectedItems.values().next().value.type === 'folder');
             shareBtn.disabled = count !== 1;
@@ -404,8 +403,9 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             generalButtons.forEach(btn => btn.style.display = 'block');
             itemSpecificButtons.forEach(btn => btn.style.display = 'none');
+            selectAllBtn.style.display = 'block';
             contextMenuSeparator2.style.display = 'block';
-            textEditBtn.style.display = 'block';
+            
             if (textEditBtn) {
                 textEditBtn.innerHTML = '<i class="fas fa-file-alt"></i> <span class="button-text">新建文件</span>';
                 textEditBtn.title = '新建文字档';
