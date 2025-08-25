@@ -42,6 +42,9 @@ body {
     overflow-y: auto;
     min-height: 200px; 
 }
+body.selection-mode-active #dropZone {
+    background-color: #e9f5ff;
+}
 .table-container, .setting-card {
     overflow-x: auto;
 }
@@ -83,14 +86,14 @@ body {
 .breadcrumb a, .breadcrumb span {
     text-decoration: none;
     color: var(--primary-color);
-    font-weight: 600; /* --- 增加字體粗細 --- */
-    text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3); /* --- 调整了文字阴影以增强立体感 --- */
+    font-weight: 600;
+    text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
 }
 .breadcrumb a:hover { text-decoration: underline; }
 .breadcrumb span {
     color: #6c757d;
-    font-weight: normal; /* --- 保持当前目录文字的正常粗细 --- */
-    text-shadow: none; /* --- 移除当前目录文字的阴影 --- */
+    font-weight: normal;
+    text-shadow: none;
 }
 .breadcrumb .separator { margin: 0 10px; color: #6c757d; }
 #dropZone.dragover { border-color: var(--primary-color); background-color: #f0f8ff; }
@@ -150,6 +153,13 @@ body {
     gap: 4px;
     border: 1px solid var(--border-color);
     min-width: 200px;
+}
+#selectionInfo {
+    padding: 8px 12px; 
+    color: #6c757d; 
+    font-size: 13px; 
+    text-align: center;
+    display: none;
 }
 .context-menu button {
     background: transparent;
