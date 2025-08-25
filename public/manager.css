@@ -152,7 +152,7 @@ body.selection-mode-active #dropZone {
     flex-direction: column;
     gap: 4px;
     border: 1px solid var(--border-color);
-    min-width: 200px;
+    min-width: 180px;
 }
 #selectionInfo {
     padding: 8px 12px; 
@@ -294,7 +294,7 @@ body.selection-mode-active #dropZone {
     .main-header { flex-direction: column; align-items: flex-start; gap: 15px; }
     .main-header h1 { font-size: 24px; }
     .upload-link-btn { padding: 8px 12px; font-size: 14px; gap: 6px; height: auto; }
-    .main-header .upload-link-btn .button-text, .main-header .upload-link-btn .button-text {
+    .main-header .upload-link-btn .button-text {
         display: none;
     }
     .breadcrumb { font-size: 14px; padding: 8px 10px; }
