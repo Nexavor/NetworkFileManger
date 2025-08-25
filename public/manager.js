@@ -55,7 +55,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const itemListBody = document.getElementById('itemListBody');
     const contextMenuSeparator1 = document.getElementById('contextMenuSeparator1');
     const contextMenuSeparator2 = document.getElementById('contextMenuSeparator2');
-
+    const contextMenuSeparatorTop = document.getElementById('contextMenuSeparatorTop');
 
     // 状态
     let currentFolderId = 1;
@@ -363,7 +363,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (mimetype.includes('archive') || mimetype.includes('zip')) return 'fa-file-archive';
         return 'fa-file-alt';
     };
-
     const updateContextMenu = () => {
         const count = selectedItems.size;
         const hasSelection = count > 0;
@@ -377,7 +376,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
         if (hasSelection) {
             generalButtons.forEach(btn => btn.style.display = 'none');
-            itemSpecificButtons.forEach(btn => btn.style.display = 'block');
+            itemSpecificButtons.forEach(btn => btn.style.display = 'flex');
     
             downloadBtn.disabled = count === 0;
     
@@ -389,7 +388,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     textEditBtn.title = '编辑文字档';
                 }
             }
-             contextMenuSeparator1.style.display = isSingleEditableFile ? 'block' : 'none';
+             contextMenuSeparator1.style.display = (isSingleEditableFile || hasSelection) ? 'block' : 'none';
     
             previewBtn.disabled = count !== 1 || (count === 1 && selectedItems.values().next().value.type === 'folder');
             shareBtn.disabled = count !== 1;
@@ -594,6 +593,55 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (dropZone) {
+        dropZone.addEventListener('contextmenu', e => {
+            e.preventDefault();
+            const targetItem = e.target.closest('.item-card, .list-item');
+    
+            if (targetItem && !e.ctrlKey && !e.metaKey) {
+                if (!selectedItems.has(targetItem.dataset.id)) {
+                    selectedItems.clear();
+                    selectedItems.set(targetItem.dataset.id, {
+                        type: targetItem.dataset.type,
+                        name: targetItem.dataset.name
+                    });
+                    rerenderSelection();
+                }
+            } else if (!targetItem) {
+                selectedItems.clear();
+                rerenderSelection();
+            }
+    
+            updateContextMenu(targetItem);
+    
+            contextMenu.style.display = 'flex';
+            const { clientX: mouseX, clientY: mouseY } = e;
+            const { x, y } = dropZone.getBoundingClientRect();
+            
+            let menuX = mouseX - x;
+            let menuY = mouseY - y + dropZone.scrollTop;
+    
+            const menuWidth = contextMenu.offsetWidth;
+            const menuHeight = contextMenu.offsetHeight;
+            const dropZoneWidth = dropZone.clientWidth;
+            const dropZoneHeight = dropZone.clientHeight;
+    
+            if (menuX + menuWidth > dropZoneWidth) {
+                menuX = dropZoneWidth - menuWidth;
+            }
+            if (menuY + menuHeight > dropZone.scrollHeight) {
+                 menuY = dropZone.scrollHeight - menuHeight;
+            }
+
+            contextMenu.style.top = `${menuY}px`;
+            contextMenu.style.left = `${menuX}px`;
+        });
+        
+        window.addEventListener('click', (e) => {
+            if (!contextMenu.contains(e.target)) {
+               contextMenu.style.display = 'none';
+            }
+        });
+
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             dropZone.addEventListener(eventName, (e) => {
                 e.preventDefault();
@@ -1120,12 +1168,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (textEditBtn) {
         textEditBtn.addEventListener('click', () => {
-            if (textEditBtn.disabled) return;
-
             const selectionCount = selectedItems.size;
             if (selectionCount === 0) {
                 window.open(`/editor?mode=create&folderId=${currentFolderId}`, '_blank');
-            } else {
+            } else if (selectionCount === 1 && isEditableFile(selectedItems.values().next().value.name)) {
                 const fileId = selectedItems.keys().next().value;
                 window.open(`/editor?mode=edit&fileId=${fileId}`, '_blank');
             }
