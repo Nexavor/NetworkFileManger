@@ -369,20 +369,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const updateContextMenu = (targetItem = null) => {
         const count = selectedItems.size;
         const hasSelection = count > 0;
-
+    
         selectionInfo.textContent = hasSelection ? `已选择 ${count} 个项目` : '';
         selectionInfo.style.display = hasSelection ? 'block' : 'none';
         contextMenuSeparatorTop.style.display = hasSelection ? 'block' : 'none';
-
+    
         const generalButtons = [createFolderBtn, textEditBtn];
         const itemSpecificButtons = [previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1];
-
+    
         if (isMultiSelectMode) {
             multiSelectToggleBtn.innerHTML = '<i class="fas fa-times"></i> <span class="button-text">退出多选模式</span>';
             multiSelectToggleBtn.style.display = 'block';
         } else {
             multiSelectToggleBtn.innerHTML = '<i class="fas fa-check-square"></i> <span class="button-text">进入多选模式</span>';
-            multiSelectToggleBtn.style.display = !hasSelection ? 'block' : 'none';
+            multiSelectToggleBtn.style.display = !targetItem ? 'block' : 'none';
         }
 
         if (hasSelection) {
@@ -390,7 +390,7 @@ document.addEventListener('DOMContentLoaded', () => {
             itemSpecificButtons.forEach(btn => btn.style.display = 'flex');
             selectAllBtn.style.display = 'block';
             contextMenuSeparator2.style.display = 'block';
-
+    
             const isSingleEditableFile = count === 1 && isEditableFile(selectedItems.values().next().value.name);
             textEditBtn.style.display = isSingleEditableFile ? 'flex' : 'none';
             if (isSingleEditableFile) {
@@ -398,7 +398,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 textEditBtn.title = '编辑文字档';
             }
             contextMenuSeparator1.style.display = isSingleEditableFile ? 'block' : 'none';
-
+    
             previewBtn.disabled = count !== 1 || (count === 1 && selectedItems.values().next().value.type === 'folder');
             shareBtn.disabled = count !== 1;
             renameBtn.disabled = count !== 1;
@@ -844,6 +844,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (selectAllBtn) {
         selectAllBtn.addEventListener('click', () => {
+            contextMenu.style.display = 'none';
             const allVisibleItems = [...currentFolderContents.folders, ...currentFolderContents.files];
             const allVisibleIds = allVisibleItems.map(item => String(item.id));
             const isAllSelected = allVisibleIds.length > 0 && allVisibleIds.every(id => selectedItems.has(id));
@@ -875,6 +876,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (previewBtn) {
         previewBtn.addEventListener('click', async () => {
             if (previewBtn.disabled) return;
+            contextMenu.style.display = 'none';
             const messageId = selectedItems.keys().next().value;
             const file = currentFolderContents.files.find(f => String(f.id) === messageId);
             if (!file) return;
@@ -909,6 +911,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (renameBtn) {
         renameBtn.addEventListener('click', async () => {
              if (renameBtn.disabled) return;
+             contextMenu.style.display = 'none';
              const [id, item] = selectedItems.entries().next().value;
              const newName = prompt('请输入新的名称:', item.name);
              if (newName && newName.trim() && newName !== item.name) {
@@ -928,6 +931,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (downloadBtn) {
         downloadBtn.addEventListener('click', async () => {
             if (downloadBtn.disabled) return;
+            contextMenu.style.display = 'none';
             const messageIds = [];
             const folderIds = [];
             selectedItems.forEach((item, id) => {
@@ -958,6 +962,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (deleteBtn) {
         deleteBtn.addEventListener('click', async () => {
             if (selectedItems.size === 0) return;
+            contextMenu.style.display = 'none';
             if (!confirm(`确定要删除这 ${selectedItems.size} 个项目吗？\n注意：删除资料夾将会一并删除其所有内容！`)) return;
             const filesToDelete = [], foldersToDelete = [];
             selectedItems.forEach((item, id) => {
@@ -974,6 +979,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (moveBtn) {
         moveBtn.addEventListener('click', async () => {
             if (selectedItems.size === 0) return;
+            contextMenu.style.display = 'none';
             try {
                 const res = await axios.get('/api/folders');
                 const folders = res.data;
@@ -1155,6 +1161,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         shareBtn.addEventListener('click', () => {
             if (shareBtn.disabled) return;
+            contextMenu.style.display = 'none';
             shareOptions.style.display = 'block';
             shareResult.style.display = 'none';
             shareModal.style.display = 'flex';
