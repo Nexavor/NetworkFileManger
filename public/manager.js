@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const itemGrid = document.getElementById('itemGrid');
     const breadcrumb = document.getElementById('breadcrumb');
     const contextMenu = document.getElementById('contextMenu');
+    const selectionInfo = document.getElementById('selectionInfo');
     const createFolderBtn = document.getElementById('createFolderBtn');
     const searchForm = document.getElementById('searchForm');
     const searchInput = document.getElementById('searchInput');
@@ -362,25 +363,33 @@ document.addEventListener('DOMContentLoaded', () => {
         if (mimetype.includes('archive') || mimetype.includes('zip')) return 'fa-file-archive';
         return 'fa-file-alt';
     };
-    const updateContextMenu = (targetItem = null) => {
+
+    const updateContextMenu = () => {
         const count = selectedItems.size;
-        const isItemSelected = targetItem || count > 0;
+        const hasSelection = count > 0;
     
-        const itemSpecificButtons = [previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1, contextMenuSeparator2];
-        const generalButtons = [createFolderBtn, textEditBtn, selectAllBtn];
+        selectionInfo.textContent = hasSelection ? `已选择 ${count} 个项目` : '';
+        selectionInfo.style.display = hasSelection ? 'block' : 'none';
+        contextMenuSeparatorTop.style.display = hasSelection ? 'block' : 'none';
     
-        if (isItemSelected) {
+        const generalButtons = [createFolderBtn, textEditBtn, selectAllBtn, contextMenuSeparator2];
+        const itemSpecificButtons = [previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1];
+    
+        if (hasSelection) {
             generalButtons.forEach(btn => btn.style.display = 'none');
             itemSpecificButtons.forEach(btn => btn.style.display = 'block');
     
             downloadBtn.disabled = count === 0;
     
             const isSingleEditableFile = count === 1 && isEditableFile(selectedItems.values().next().value.name);
-            textEditBtn.style.display = isSingleEditableFile ? 'flex' : 'none';
-            if (isSingleEditableFile) {
-                textEditBtn.innerHTML = '<i class="fas fa-edit"></i> <span class="button-text">编辑文件</span>';
-                textEditBtn.title = '编辑文字档';
+            if (textEditBtn) {
+                textEditBtn.style.display = isSingleEditableFile ? 'flex' : 'none';
+                if(isSingleEditableFile) {
+                    textEditBtn.innerHTML = '<i class="fas fa-edit"></i> <span class="button-text">编辑文件</span>';
+                    textEditBtn.title = '编辑文字档';
+                }
             }
+             contextMenuSeparator1.style.display = isSingleEditableFile ? 'block' : 'none';
     
             previewBtn.disabled = count !== 1 || (count === 1 && selectedItems.values().next().value.type === 'folder');
             shareBtn.disabled = count !== 1;
@@ -390,10 +399,13 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             generalButtons.forEach(btn => btn.style.display = 'block');
             itemSpecificButtons.forEach(btn => btn.style.display = 'none');
-            textEditBtn.innerHTML = '<i class="fas fa-file-alt"></i> <span class="button-text">新建文件</span>';
-            textEditBtn.title = '新建文字档';
+            if (textEditBtn) {
+                textEditBtn.innerHTML = '<i class="fas fa-file-alt"></i> <span class="button-text">新建文件</span>';
+                textEditBtn.title = '新建文字档';
+            }
         }
     };
+
     const rerenderSelection = () => {
         document.querySelectorAll('.item-card, .list-item').forEach(el => {
             el.classList.toggle('selected', selectedItems.has(el.dataset.id));
