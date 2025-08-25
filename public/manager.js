@@ -363,6 +363,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (mimetype.includes('archive') || mimetype.includes('zip')) return 'fa-file-archive';
         return 'fa-file-alt';
     };
+    
     const updateContextMenu = () => {
         const count = selectedItems.size;
         const hasSelection = count > 0;
@@ -375,7 +376,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const itemSpecificButtons = [previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1];
     
         if (hasSelection) {
-            generalButtons.forEach(btn => btn.style.display = 'none');
+            generalButtons.forEach(btn => {
+                if(btn !== selectAllBtn && btn !== contextMenuSeparator2) btn.style.display = 'none';
+                else if (btn === selectAllBtn || btn === contextMenuSeparator2) btn.style.display = 'block';
+            });
             itemSpecificButtons.forEach(btn => btn.style.display = 'flex');
     
             downloadBtn.disabled = count === 0;
@@ -388,7 +392,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     textEditBtn.title = '编辑文字档';
                 }
             }
-             contextMenuSeparator1.style.display = (isSingleEditableFile || hasSelection) ? 'block' : 'none';
+             contextMenuSeparator1.style.display = (isSingleEditableFile) ? 'block' : 'none';
+             if (isSingleEditableFile) textEditBtn.style.display = 'flex'; else textEditBtn.style.display = 'none';
+
     
             previewBtn.disabled = count !== 1 || (count === 1 && selectedItems.values().next().value.type === 'folder');
             shareBtn.disabled = count !== 1;
@@ -398,6 +404,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             generalButtons.forEach(btn => btn.style.display = 'block');
             itemSpecificButtons.forEach(btn => btn.style.display = 'none');
+            textEditBtn.style.display = 'block';
             if (textEditBtn) {
                 textEditBtn.innerHTML = '<i class="fas fa-file-alt"></i> <span class="button-text">新建文件</span>';
                 textEditBtn.title = '新建文字档';
@@ -630,6 +637,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (menuY + menuHeight > dropZone.scrollHeight) {
                  menuY = dropZone.scrollHeight - menuHeight;
+            }
+            if (menuY < dropZone.scrollTop) {
+                menuY = dropZone.scrollTop;
             }
 
             contextMenu.style.top = `${menuY}px`;
