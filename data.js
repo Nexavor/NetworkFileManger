@@ -87,28 +87,68 @@ async function deleteUser(userId) {
     });
 }
 
-
+// --- *** 关键修正 开始 *** ---
+// 重写 searchItems 函数以正确处理加密
 function searchItems(query, userId) {
     return new Promise((resolve, reject) => {
         const searchQuery = `%${query}%`;
-        const sqlFolders = `
-            SELECT id, name, parent_id, 'folder' as type, password IS NOT NULL as is_locked
-            FROM folders
-            WHERE name LIKE ? AND user_id = ? AND parent_id IS NOT NULL
-            ORDER BY name ASC`;
 
-        const sqlFiles = `
-            SELECT *, message_id as id, fileName as name, 'file' as type
-            FROM files
-            WHERE fileName LIKE ? AND user_id = ?
-            ORDER BY date DESC`;
+        // 此 CTE (Common Table Expression) 递归地建立每个资料夹的祖先路径，
+        // 并确定路径中是否有任何一个资料夹被加密。
+        const baseQuery = `
+            WITH RECURSIVE folder_ancestry(id, parent_id, is_locked) AS (
+                -- 基底查询: 选出该使用者的所有资料夹，并标记其自身的加密状态
+                SELECT id, parent_id, (password IS NOT NULL) as is_locked
+                FROM folders
+                WHERE user_id = ?
+                UNION ALL
+                -- 递归步骤: 向上查找父资料夹，并继承其加密状态
+                SELECT fa.id, f.parent_id, (fa.is_locked OR (f.password IS NOT NULL))
+                FROM folders f
+                JOIN folder_ancestry fa ON f.id = fa.parent_id
+                WHERE f.user_id = ?
+            ),
+            -- 聚合结果: 对每个资料夹ID，只要其路径上有任一加密，最终状态就是加密
+            folder_lock_status AS (
+                SELECT id, MAX(is_locked) as is_path_locked
+                FROM folder_ancestry
+                GROUP BY id
+            )
+        `;
+
+        // 查询未被加密路径下的文件
+        const sqlFiles = baseQuery + `
+            SELECT 
+                f.*, 
+                f.message_id as id, 
+                f.fileName as name, 
+                'file' as type
+            FROM files f
+            JOIN folder_lock_status fls ON f.folder_id = fls.id
+            WHERE f.fileName LIKE ? AND f.user_id = ? AND fls.is_path_locked = 0
+            ORDER BY f.date DESC;
+        `;
+        
+        // 查询未被加密路径下的资料夹
+        const sqlFolders = baseQuery + `
+            SELECT 
+                f.id, 
+                f.name, 
+                f.parent_id, 
+                'folder' as type, 
+                (f.password IS NOT NULL) as is_locked
+            FROM folders f
+            JOIN folder_lock_status fls ON f.id = fls.id
+            WHERE f.name LIKE ? AND f.user_id = ? AND fls.is_path_locked = 0 AND f.parent_id IS NOT NULL
+            ORDER BY f.name ASC;
+        `;
 
         let contents = { folders: [], files: [] };
 
-        db.all(sqlFolders, [searchQuery, userId], (err, folders) => {
+        db.all(sqlFolders, [userId, userId, searchQuery, userId], (err, folders) => {
             if (err) return reject(err);
             contents.folders = folders;
-            db.all(sqlFiles, [searchQuery, userId], (err, files) => {
+            db.all(sqlFiles, [userId, userId, searchQuery, userId], (err, files) => {
                 if (err) return reject(err);
                 contents.files = files.map(f => ({ ...f, message_id: f.id }));
                 resolve(contents);
@@ -116,6 +156,41 @@ function searchItems(query, userId) {
         });
     });
 }
+
+// 新增 isFileAccessible 函数用于在直接存取文件前进行权限验证
+async function isFileAccessible(fileId, userId, unlockedFolders = []) {
+    const file = (await getFilesByIds([fileId], userId))[0];
+    if (!file) {
+        return false; // 找不到档案或档案不属于该使用者
+    }
+
+    const path = await getFolderPath(file.folder_id, userId);
+    if (!path || path.length === 0) {
+        return false; // 资料库不一致，这不应该发生
+    }
+
+    // 一次性查询路径上所有资料夹的加密状态
+    const folderIds = path.map(p => p.id);
+    const placeholders = folderIds.map(() => '?').join(',');
+    const sql = `SELECT id, password IS NOT NULL as is_locked FROM folders WHERE id IN (${placeholders}) AND user_id = ?`;
+    
+    const folderStatuses = await new Promise((resolve, reject) => {
+        db.all(sql, [...folderIds, userId], (err, rows) => {
+            if (err) return reject(err);
+            resolve(new Map(rows.map(row => [row.id, row.is_locked])));
+        });
+    });
+
+    // 检查路径上的每个资料夹
+    for (const folder of path) {
+        if (folderStatuses.get(folder.id) && !unlockedFolders.includes(folder.id)) {
+            return false; // 发现一个已加密但在 session 中未解锁的资料夹
+        }
+    }
+
+    return true; // 路径上所有资料夹都可存取
+}
+// --- *** 关键修正 结束 *** ---
 
 function getItemsByIds(itemIds, userId) {
     return new Promise((resolve, reject) => {
@@ -1144,4 +1219,5 @@ module.exports = {
     getFolderDetails,
     setFolderPassword,
     verifyFolderPassword,
+    isFileAccessible,
 };
