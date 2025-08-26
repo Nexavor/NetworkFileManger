@@ -592,10 +592,40 @@ function addFile(fileData, folderId = 1, userId, storageType) {
     return new Promise((resolve, reject) => {
         db.run(sql, [message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
             if (err) reject(err);
-            else resolve({ success: true, id: this.lastID, fileId: this.lastID });
+            else resolve({ success: true, id: this.lastID, fileId: message_id });
         });
     });
 }
+
+function updateFile(fileId, updates, userId) {
+    return new Promise((resolve, reject) => {
+        const fields = [];
+        const values = [];
+        const validKeys = ['fileName', 'mimetype', 'file_id', 'thumb_file_id', 'size', 'date', 'message_id'];
+
+        for (const key in updates) {
+            if (Object.hasOwnProperty.call(updates, key) && validKeys.includes(key)) {
+                fields.push(`${key} = ?`);
+                values.push(updates[key]);
+            }
+        }
+
+        if (fields.length === 0) {
+            return resolve({ success: true, changes: 0 });
+        }
+        
+        values.push(fileId, userId);
+        const sql = `UPDATE files SET ${fields.join(', ')} WHERE message_id = ? AND user_id = ?`;
+        
+        db.run(sql, values, function(err) {
+            if (err) {
+                return reject(err);
+            }
+            resolve({ success: true, changes: this.changes });
+        });
+    });
+}
+
 
 function getFilesByIds(messageIds, userId) {
     if (!messageIds || messageIds.length === 0) {
@@ -1051,6 +1081,7 @@ module.exports = {
     getFolderDeletionData,
     deleteSingleFolder,
     addFile,
+    updateFile,
     getFilesByIds,
     getItemsByIds,
     getChildrenOfFolder,
