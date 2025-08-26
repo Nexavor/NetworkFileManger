@@ -65,6 +65,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const passwordInput = document.getElementById('passwordInput');
     const oldPasswordContainer = document.getElementById('oldPasswordContainer');
     const oldPasswordInput = document.getElementById('oldPasswordInput');
+    const confirmPasswordContainer = document.getElementById('confirmPasswordContainer');
+    const confirmPasswordInput = document.getElementById('confirmPasswordInput');
     const passwordSubmitBtn = document.getElementById('passwordSubmitBtn');
     const passwordCancelBtn = document.getElementById('passwordCancelBtn');
     const listHeader = document.querySelector('.list-header');
@@ -259,7 +261,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await axios.get(`/api/folder/${folderId}`);
             
             if (res.data.locked) {
-                const password = await promptForPassword(`资料夹 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
+                const { password } = await promptForPassword(`资料夹 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
                 if (password === null) { 
                     const parentId = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2].id : null;
                     if (parentId) {
@@ -493,7 +495,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             contextMenuSeparator1.style.display = isSingleEditableFile ? 'block' : 'none';
 
-            // --- *** 关键修正 开始 *** ---
             const containsLockedFolder = Array.from(selectedItems.keys()).some(id => {
                 const itemEl = document.querySelector(`.item-card[data-id="${id}"], .list-item[data-id="${id}"]`);
                 return itemEl && itemEl.dataset.type === 'folder' && (itemEl.dataset.isLocked === 'true' || itemEl.dataset.isLocked === '1');
@@ -504,19 +505,16 @@ document.addEventListener('DOMContentLoaded', () => {
             renameBtn.disabled = !singleSelection;
             moveBtn.disabled = count === 0 || isSearchMode;
 
-            // 如果选择中包含加密文件夹，则禁用相关操作
             shareBtn.disabled = !singleSelection || isSingleLockedFolder;
             downloadBtn.disabled = count === 0 || containsLockedFolder;
             deleteBtn.disabled = count === 0 || containsLockedFolder;
             
-            // 加密按钮逻辑
             lockBtn.disabled = !singleSelection || firstSelectedItem.type !== 'folder';
             if(singleSelection && firstSelectedItem.type === 'folder'){
                  const isLocked = containsLockedFolder;
                  lockBtn.innerHTML = isLocked ? '<i class="fas fa-unlock"></i> <span class="button-text">管理密码</span>' : '<i class="fas fa-lock"></i> <span class="button-text">加密</span>';
                  lockBtn.title = isLocked ? '修改或移除密码' : '设定密码';
             }
-            // --- *** 关键修正 结束 *** ---
 
         } else {
             generalButtons.forEach(btn => btn.style.display = 'block');
@@ -654,15 +652,17 @@ document.addEventListener('DOMContentLoaded', () => {
         return { aborted, resolutions };
     }
     
-    function promptForPassword(title, text, showOldPassword = false) {
+    function promptForPassword(title, text, showOldPassword = false, showConfirm = false) {
         return new Promise((resolve, reject) => {
             passwordPromise.resolve = resolve;
             passwordPromise.reject = reject;
             passwordModalTitle.textContent = title;
             passwordPromptText.textContent = text;
             oldPasswordContainer.style.display = showOldPassword ? 'block' : 'none';
+            confirmPasswordContainer.style.display = showConfirm ? 'block' : 'none';
             passwordInput.value = '';
             oldPasswordInput.value = '';
+            confirmPasswordInput.value = '';
             passwordModal.style.display = 'flex';
             passwordInput.focus();
         });
@@ -672,17 +672,14 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         const password = passwordInput.value;
         const oldPassword = oldPasswordInput.value;
+        const confirmPassword = confirmPasswordInput.value;
         passwordModal.style.display = 'none';
-        if(oldPasswordContainer.style.display === 'block') {
-            passwordPromise.resolve({ password, oldPassword });
-        } else {
-            passwordPromise.resolve(password);
-        }
+        passwordPromise.resolve({ password, oldPassword, confirmPassword });
     });
 
     passwordCancelBtn.addEventListener('click', () => {
         passwordModal.style.display = 'none';
-        passwordPromise.resolve(null);
+        passwordPromise.resolve({password: null});
     });
 
     // --- 事件监听 ---
@@ -944,7 +941,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (isLocked) {
                 try {
-                    const password = await promptForPassword(`资料夹 "${target.dataset.name}" 已加密`, '请输入密码以存取:');
+                    const { password } = await promptForPassword(`资料夹 "${target.dataset.name}" 已加密`, '请输入密码以存取:');
                     if (password === null) return;
                     await axios.post(`/api/folder/${folderId}/verify`, { password });
                     window.history.pushState(null, '', `/folder/${folderId}`);
@@ -1423,7 +1420,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // 解锁或修改密码
             const action = prompt(`资料夹 "${folderName}" 已加密。\n请输入 "change" 来修改密码，或输入 "unlock" 来移除密码。`);
             if (action === 'unlock') {
-                const password = await promptForPassword(`移除密码`, `请输入 "${folderName}" 的密码以移除加密:`);
+                const { password } = await promptForPassword(`移除密码`, `请输入 "${folderName}" 的密码以移除加密:`);
                 if (password === null) return;
                 try {
                     await axios.post(`/api/folder/${folderId}/unlock`, { password });
@@ -1433,8 +1430,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     alert('密码错误或操作失败。');
                 }
             } else if (action === 'change') {
-                const { password, oldPassword } = await promptForPassword(`修改密码`, `为 "${folderName}" 设定新密码:`, true);
+                const { password, oldPassword, confirmPassword } = await promptForPassword(`修改密码`, `为 "${folderName}" 设定新密码:`, true, true);
                 if (password === null) return;
+                if (password !== confirmPassword) {
+                    alert('两次输入的新密码不匹配！');
+                    return;
+                }
                 try {
                     await axios.post(`/api/folder/${folderId}/lock`, { oldPassword, password });
                     showNotification('密码修改成功。', 'success');
@@ -1444,8 +1445,12 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } else {
             // 设置新密码
-            const password = await promptForPassword(`加密资料夹`, `为 "${folderName}" 设定一个新密码 (至少4个字元):`);
+            const { password, confirmPassword } = await promptForPassword(`加密资料夹`, `为 "${folderName}" 设定一个新密码 (至少4个字元):`, false, true);
             if (password === null) return;
+            if (password !== confirmPassword) {
+                alert('两次输入的密码不匹配！');
+                return;
+            }
             try {
                 await axios.post(`/api/folder/${folderId}/lock`, { password });
                 showNotification('资料夹已成功加密。', 'success');
