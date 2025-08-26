@@ -57,10 +57,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const contextMenuSeparator1 = document.getElementById('contextMenuSeparator1');
     const contextMenuSeparator2 = document.getElementById('contextMenuSeparator2');
     const contextMenuSeparatorTop = document.getElementById('contextMenuSeparatorTop');
-
-    // --- *** 关键修正 开始 *** ---
+    const lockBtn = document.getElementById('lockBtn');
+    const passwordModal = document.getElementById('passwordModal');
+    const passwordModalTitle = document.getElementById('passwordModalTitle');
+    const passwordPromptText = document.getElementById('passwordPromptText');
+    const passwordForm = document.getElementById('passwordForm');
+    const passwordInput = document.getElementById('passwordInput');
+    const oldPasswordContainer = document.getElementById('oldPasswordContainer');
+    const oldPasswordInput = document.getElementById('oldPasswordInput');
+    const passwordSubmitBtn = document.getElementById('passwordSubmitBtn');
+    const passwordCancelBtn = document.getElementById('passwordCancelBtn');
     const listHeader = document.querySelector('.list-header');
-    // --- *** 关键修正 结束 *** ---
 
     // 状态
     let isMultiSelectMode = false;
@@ -72,12 +79,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const MAX_TELEGRAM_SIZE = 1000 * 1024 * 1024;
     let foldersLoaded = false;
     let currentView = 'grid';
-    // --- *** 关键修正 开始 *** ---
     let currentSort = {
         key: 'name',
         order: 'asc' 
     };
-    // --- *** 关键修正 结束 *** ---
+    
+    // 储存密码操作的 Promise resolve/reject
+    let passwordPromise = {};
 
     const EDITABLE_EXTENSIONS = [
         '.txt', '.md', '.json', '.js', '.css', '.html', '.xml', '.yaml', '.yml', 
@@ -100,7 +108,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
     };
     
-    // --- *** 关键修正 开始 *** ---
     const formatDateTime = (timestamp) => {
         if (!timestamp) return '—';
         return new Date(timestamp).toLocaleString('zh-CN', {
@@ -112,7 +119,6 @@ document.addEventListener('DOMContentLoaded', () => {
             hour12: false
         }).replace(/\//g, '-');
     };
-    // --- *** 关键修正 结束 *** ---
 
 
     function showNotification(message, type = 'info', container = null) {
@@ -251,6 +257,29 @@ document.addEventListener('DOMContentLoaded', () => {
             if (searchInput) searchInput.value = '';
             currentFolderId = folderId;
             const res = await axios.get(`/api/folder/${folderId}`);
+            
+            if (res.data.locked) {
+                const password = await promptForPassword(`资料夹 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
+                if (password === null) { 
+                    const parentId = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2].id : null;
+                    if (parentId) {
+                        history.back(); 
+                    }
+                    return;
+                }
+                try {
+                    await axios.post(`/api/folder/${folderId}/verify`, { password });
+                    loadFolderContents(folderId); // 验证成功后重新加载
+                } catch (error) {
+                    alert('密码错误！');
+                    const parentId = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2].id : null;
+                    if (parentId) {
+                        loadFolderContents(parentId);
+                    }
+                }
+                return;
+            }
+
             currentFolderContents = res.data.contents;
             // 清理已不存在的选择项
             const currentIds = new Set([...res.data.contents.folders.map(f => String(f.id)), ...res.data.contents.files.map(f => String(f.id))]);
@@ -303,7 +332,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     };
     
-    // --- *** 关键修正 开始 *** ---
     const sortItems = (folders, files) => {
         const { key, order } = currentSort;
         const direction = order === 'asc' ? 1 : -1;
@@ -358,7 +386,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         updateSortIndicator();
     };
-    // --- *** 关键修正 结束 *** ---
 
     const createItemCard = (item) => {
         const card = document.createElement('div');
@@ -366,6 +393,9 @@ document.addEventListener('DOMContentLoaded', () => {
         card.dataset.id = item.id;
         card.dataset.type = item.type;
         card.dataset.name = item.name === '/' ? '根目录' : item.name;
+        if (item.type === 'folder') {
+            card.dataset.isLocked = item.is_locked;
+        }
 
         let iconHtml = '';
         if (item.type === 'file') {
@@ -380,7 +410,7 @@ document.addEventListener('DOMContentLoaded', () => {
                  iconHtml = `<i class="fas ${getFileIconClass(item.mimetype)}"></i>`;
             }
         } else { // folder
-            iconHtml = '<i class="fas fa-folder"></i>';
+            iconHtml = `<i class="fas ${item.is_locked ? 'fa-lock' : 'fa-folder'}"></i>`;
         }
 
         card.innerHTML = `<div class="item-icon">${iconHtml}</div><div class="item-info"><h5 title="${item.name}">${item.name === '/' ? '根目录' : item.name}</h5></div>`;
@@ -394,13 +424,14 @@ document.addEventListener('DOMContentLoaded', () => {
         itemDiv.dataset.id = item.id;
         itemDiv.dataset.type = item.type;
         itemDiv.dataset.name = item.name === '/' ? '根目录' : item.name;
+        if (item.type === 'folder') {
+            itemDiv.dataset.isLocked = item.is_locked;
+        }
 
-        const icon = item.type === 'folder' ? 'fa-folder' : getFileIconClass(item.mimetype);
+        const icon = item.type === 'folder' ? (item.is_locked ? 'fa-lock' : 'fa-folder') : getFileIconClass(item.mimetype);
         const name = item.name === '/' ? '根目录' : item.name;
         const size = item.type === 'file' && item.size ? formatBytes(item.size) : '—';
-        // --- *** 关键修正 开始 *** ---
         const date = item.date ? formatDateTime(item.date) : '—';
-        // --- *** 关键修正 结束 *** ---
 
 
         itemDiv.innerHTML = `
@@ -430,13 +461,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const updateContextMenu = (targetItem = null) => {
         const count = selectedItems.size;
         const hasSelection = count > 0;
-    
+        const singleSelection = count === 1;
+        const firstSelectedItem = hasSelection ? selectedItems.values().next().value : null;
+
         selectionInfo.textContent = hasSelection ? `已选择 ${count} 个项目` : '';
         selectionInfo.style.display = hasSelection ? 'block' : 'none';
         contextMenuSeparatorTop.style.display = hasSelection ? 'block' : 'none';
     
         const generalButtons = [createFolderBtn, textEditBtn];
-        const itemSpecificButtons = [previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1];
+        const itemSpecificButtons = [previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1, lockBtn];
     
         if (isMultiSelectMode) {
             multiSelectToggleBtn.innerHTML = '<i class="fas fa-times"></i> <span class="button-text">退出多选模式</span>';
@@ -452,7 +485,7 @@ document.addEventListener('DOMContentLoaded', () => {
             selectAllBtn.style.display = 'block';
             contextMenuSeparator2.style.display = 'block';
     
-            const isSingleEditableFile = count === 1 && isEditableFile(selectedItems.values().next().value.name);
+            const isSingleEditableFile = singleSelection && firstSelectedItem.type === 'file' && isEditableFile(firstSelectedItem.name);
             textEditBtn.style.display = isSingleEditableFile ? 'flex' : 'none';
             if (isSingleEditableFile) {
                 textEditBtn.innerHTML = '<i class="fas fa-edit"></i> <span class="button-text">编辑文件</span>';
@@ -460,12 +493,22 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             contextMenuSeparator1.style.display = isSingleEditableFile ? 'block' : 'none';
     
-            previewBtn.disabled = count !== 1 || (count === 1 && selectedItems.values().next().value.type === 'folder');
-            shareBtn.disabled = count !== 1;
-            renameBtn.disabled = count !== 1;
+            previewBtn.disabled = !singleSelection || firstSelectedItem.type === 'folder';
+            shareBtn.disabled = !singleSelection;
+            renameBtn.disabled = !singleSelection;
             moveBtn.disabled = count === 0 || isSearchMode;
             downloadBtn.disabled = count === 0;
             deleteBtn.disabled = count === 0;
+            
+            // 加密按钮逻辑
+            lockBtn.disabled = !singleSelection || firstSelectedItem.type !== 'folder';
+            if(singleSelection && firstSelectedItem.type === 'folder'){
+                 const folderElement = document.querySelector(`.item-card[data-id="${selectedItems.keys().next().value}"], .list-item[data-id="${selectedItems.keys().next().value}"]`);
+                 const isLocked = folderElement.dataset.isLocked === 'true' || folderElement.dataset.isLocked === '1';
+                 lockBtn.innerHTML = isLocked ? '<i class="fas fa-unlock"></i> <span class="button-text">管理密码</span>' : '<i class="fas fa-lock"></i> <span class="button-text">加密</span>';
+                 lockBtn.title = isLocked ? '修改或移除密码' : '设定密码';
+            }
+
         } else {
             generalButtons.forEach(btn => btn.style.display = 'block');
             itemSpecificButtons.forEach(btn => btn.style.display = 'none');
@@ -475,7 +518,7 @@ document.addEventListener('DOMContentLoaded', () => {
             textEditBtn.title = '新建文字档';
         }
     };
-    // --- *** 关键修正 开始 *** ---
+
     const updateSortIndicator = () => {
         listHeader.querySelectorAll('[data-sort]').forEach(el => {
             el.classList.remove('sort-asc', 'sort-desc');
@@ -490,7 +533,6 @@ document.addEventListener('DOMContentLoaded', () => {
             activeHeader.appendChild(icon);
         }
     };
-    // --- *** 关键修正 结束 *** ---
 
     const rerenderSelection = () => {
         document.querySelectorAll('.item-card, .list-item').forEach(el => {
@@ -602,9 +644,39 @@ document.addEventListener('DOMContentLoaded', () => {
 
         return { aborted, resolutions };
     }
+    
+    function promptForPassword(title, text, showOldPassword = false) {
+        return new Promise((resolve, reject) => {
+            passwordPromise.resolve = resolve;
+            passwordPromise.reject = reject;
+            passwordModalTitle.textContent = title;
+            passwordPromptText.textContent = text;
+            oldPasswordContainer.style.display = showOldPassword ? 'block' : 'none';
+            passwordInput.value = '';
+            oldPasswordInput.value = '';
+            passwordModal.style.display = 'flex';
+            passwordInput.focus();
+        });
+    }
+
+    passwordForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const password = passwordInput.value;
+        const oldPassword = oldPasswordInput.value;
+        passwordModal.style.display = 'none';
+        if(oldPasswordContainer.style.display === 'block') {
+            passwordPromise.resolve({ password, oldPassword });
+        } else {
+            passwordPromise.resolve(password);
+        }
+    });
+
+    passwordCancelBtn.addEventListener('click', () => {
+        passwordModal.style.display = 'none';
+        passwordPromise.resolve(null);
+    });
 
     // --- 事件监听 ---
-    // --- *** 关键修正 开始 *** ---
     if (listHeader) {
         listHeader.addEventListener('click', (e) => {
             const target = e.target.closest('[data-sort]');
@@ -620,7 +692,6 @@ document.addEventListener('DOMContentLoaded', () => {
             renderItems(currentFolderContents.folders, currentFolderContents.files);
         });
     }
-    // --- *** 关键修正 结束 *** ---
 
     if (logoutBtn) {
         logoutBtn.addEventListener('click', () => {
@@ -855,13 +926,35 @@ document.addEventListener('DOMContentLoaded', () => {
         updateContextMenu();
     };
 
-    const handleItemDblClick = (e) => {
-        if(isMultiSelectMode) return;
+    const handleItemDblClick = async (e) => {
+        if (isMultiSelectMode) return;
         const target = e.target.closest('.item-card, .list-item');
         if (target && target.dataset.type === 'folder') {
             const folderId = parseInt(target.dataset.id, 10);
-            window.history.pushState(null, '', `/folder/${folderId}`);
-            loadFolderContents(folderId);
+            const isLocked = target.dataset.isLocked === 'true' || target.dataset.isLocked === '1';
+
+            if (isLocked) {
+                try {
+                    const password = await promptForPassword(`资料夾 "${target.dataset.name}" 已加密`, '请输入密码以存取:');
+                    if (password === null) return;
+                    await axios.post(`/api/folder/${folderId}/verify`, { password });
+                    window.history.pushState(null, '', `/folder/${folderId}`);
+                    loadFolderContents(folderId);
+                } catch (error) {
+                    alert(error.response?.data?.message || '验证失败');
+                }
+            } else {
+                window.history.pushState(null, '', `/folder/${folderId}`);
+                loadFolderContents(folderId);
+            }
+        } else if (target && target.dataset.type === 'file') {
+            // 双击文件时触发预览
+            if (selectedItems.size !== 1) {
+                selectedItems.clear();
+                selectedItems.set(target.dataset.id, { type: 'file', name: target.dataset.name });
+                rerenderSelection();
+            }
+            previewBtn.click();
         }
     };
     
@@ -943,7 +1036,7 @@ document.addEventListener('DOMContentLoaded', () => {
             contextMenu.style.display = 'none';
             const allVisibleItems = [...currentFolderContents.folders, ...currentFolderContents.files];
             const allVisibleIds = allVisibleItems.map(item => String(item.id));
-            const isAllSelected = allVisibleIds.length > 0 && allVisibleIds.every(id => selectedItems.has(id));
+            const isAllSelected = allVisibleItems.length > 0 && allVisibleIds.every(id => selectedItems.has(id));
             if (isAllSelected) {
                 selectedItems.clear();
             } else {
@@ -985,7 +1078,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 modalContent.innerHTML = `<img src="${downloadUrl}" alt="图片预览">`;
             } else if (file.mimetype && file.mimetype.startsWith('video/')) {
                 modalContent.innerHTML = `<video src="${downloadUrl}" controls autoplay></video>`;
-            } else if (file.mimetype && (file.mimetype.startsWith('text/') || file.name.endsWith('.txt'))) {
+            } else if (file.mimetype && (file.mimetype.startsWith('text/') || isEditableFile(file.name))) {
                 try {
                     const res = await axios.get(`/file/content/${messageId}`);
                     const escapedContent = res.data.replace(/&/g, "&amp;").replace(/</g, "&lt;");
@@ -1307,6 +1400,52 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+    lockBtn.addEventListener('click', async () => {
+        contextMenu.style.display = 'none';
+        const [id, item] = selectedItems.entries().next().value;
+        const folderId = parseInt(id);
+        const folderName = item.name;
+
+        const folderElement = document.querySelector(`.item-card[data-id="${id}"], .list-item[data-id="${id}"]`);
+        const isLocked = folderElement.dataset.isLocked === 'true' || folderElement.dataset.isLocked === '1';
+
+        if (isLocked) {
+            // 解锁或修改密码
+            const action = prompt(`资料夹 "${folderName}" 已加密。\n请输入 "change" 来修改密码，或输入 "unlock" 来移除密码。`);
+            if (action === 'unlock') {
+                const password = await promptForPassword(`移除密码`, `请输入 "${folderName}" 的密码以移除加密:`);
+                if (password === null) return;
+                try {
+                    await axios.post(`/api/folder/${folderId}/unlock`, { password });
+                    showNotification('资料夹密码已移除。', 'success');
+                    loadFolderContents(currentFolderId);
+                } catch (error) {
+                    alert('密码错误或操作失败。');
+                }
+            } else if (action === 'change') {
+                const { password, oldPassword } = await promptForPassword(`修改密码`, `为 "${folderName}" 设定新密码:`, true);
+                if (password === null) return;
+                try {
+                    await axios.post(`/api/folder/${folderId}/lock`, { oldPassword, password });
+                    showNotification('密码修改成功。', 'success');
+                } catch (error) {
+                    alert('操作失败: ' + (error.response?.data?.message || '未知错误'));
+                }
+            }
+        } else {
+            // 设置新密码
+            const password = await promptForPassword(`加密资料夹`, `为 "${folderName}" 设定一个新密码 (至少4个字元):`);
+            if (password === null) return;
+            try {
+                await axios.post(`/api/folder/${folderId}/lock`, { password });
+                showNotification('资料夹已成功加密。', 'success');
+                loadFolderContents(currentFolderId);
+            } catch (error) {
+                alert('加密失败: ' + (error.response?.data?.message || '未知错误'));
+            }
+        }
+    });
 
     window.addEventListener('message', (event) => {
         if (event.data === 'refresh-files') {
