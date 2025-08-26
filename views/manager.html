@@ -107,20 +107,23 @@
   </div>
 
   <div id="passwordModal" class="modal">
-    <div class="move-modal-content">
-        <h3 id="passwordModalTitle">需要密码</h3>
-        <p id="passwordPromptText">请输入密码以继续：</p>
-        <form id="passwordForm" style="display: flex; flex-direction: column; gap: 10px;">
-            <input type="password" id="passwordInput" placeholder="密码" required style="padding: 10px; border-radius: 4px; border: 1px solid #ccc;">
-            <div id="oldPasswordContainer" style="display: none;">
-                <input type="password" id="oldPasswordInput" placeholder="旧密码 (若要修改)" style="padding: 10px; border-radius: 4px; border: 1px solid #ccc;">
-            </div>
-            <div style="display: flex; gap: 10px;">
-                <button type="submit" id="passwordSubmitBtn" class="upload-link-btn" style="flex: 1;">确认</button>
-                <button type="button" id="passwordCancelBtn" class="upload-link-btn" style="flex: 1; background-color: #6c757d;">取消</button>
-            </div>
-        </form>
-    </div>
+      <div class="move-modal-content">
+          <h3 id="passwordModalTitle">需要密码</h3>
+          <p id="passwordPromptText">请输入密码以继续：</p>
+          <form id="passwordForm">
+              <div id="oldPasswordContainer" style="display: none;">
+                  <input type="password" id="oldPasswordInput" placeholder="旧密码 (若要修改)">
+              </div>
+              <input type="password" id="passwordInput" placeholder="密码" required>
+              <div id="confirmPasswordContainer" style="display: none;">
+                   <input type="password" id="confirmPasswordInput" placeholder="确认新密码">
+              </div>
+              <div class="password-modal-actions">
+                  <button type="submit" id="passwordSubmitBtn" class="upload-link-btn">确认</button>
+                  <button type="button" id="passwordCancelBtn" class="upload-link-btn">取消</button>
+              </div>
+          </form>
+      </div>
   </div>
 
   <div id="conflictModal" class="modal">
