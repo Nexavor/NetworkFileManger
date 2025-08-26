@@ -324,6 +324,54 @@ function getFolderPath(folderId, userId) {
     });
 }
 
+// --- *** 关键修正 开始 *** ---
+async function findFolderBySharePath(shareToken, pathSegments = []) {
+    return new Promise(async (resolve, reject) => {
+        try {
+            // 首先，验证 token 并找到根分享资料夹
+            const rootFolder = await getFolderByShareToken(shareToken);
+            if (!rootFolder) {
+                return resolve(null);
+            }
+
+            if (pathSegments.length === 0) {
+                return resolve(rootFolder);
+            }
+
+            // 从根目录开始，逐层验证路径
+            let currentParentId = rootFolder.id;
+            let currentFolder = rootFolder;
+            const userId = rootFolder.user_id;
+
+            for (const segment of pathSegments) {
+                const sql = `SELECT * FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
+                const row = await new Promise((res, rej) => {
+                    db.get(sql, [segment, currentParentId, userId], (err, row) => err ? rej(err) : res(row));
+                });
+
+                if (!row) {
+                    return resolve(null); // 路径无效
+                }
+                
+                // 检查子资料夹是否已加密
+                if(row.password) {
+                    return resolve(null); // 不允许存取加密的子资料夹
+                }
+
+                currentFolder = row;
+                currentParentId = row.id;
+            }
+            
+            // 返回最终找到的子资料夹资讯
+            resolve(currentFolder);
+
+        } catch (error) {
+            reject(error);
+        }
+    });
+}
+// --- *** 关键修正 结束 *** ---
+
 function createFolder(name, parentId, userId) {
     const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
     return new Promise((resolve, reject) => {
@@ -1220,4 +1268,5 @@ module.exports = {
     setFolderPassword,
     verifyFolderPassword,
     isFileAccessible,
+    findFolderBySharePath,
 };
