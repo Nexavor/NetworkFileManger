@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs').promises;
 const fsSync = require('fs');
+const bcrypt = require('bcrypt');
 
 const UPLOAD_DIR = path.resolve(__dirname, 'data', 'uploads');
 const creatingFolders = new Set();
@@ -91,7 +92,7 @@ function searchItems(query, userId) {
     return new Promise((resolve, reject) => {
         const searchQuery = `%${query}%`;
         const sqlFolders = `
-            SELECT id, name, parent_id, 'folder' as type
+            SELECT id, name, parent_id, 'folder' as type, password IS NOT NULL as is_locked
             FROM folders
             WHERE name LIKE ? AND user_id = ? AND parent_id IS NOT NULL
             ORDER BY name ASC`;
@@ -121,11 +122,11 @@ function getItemsByIds(itemIds, userId) {
         if (!itemIds || itemIds.length === 0) return resolve([]);
         const placeholders = itemIds.map(() => '?').join(',');
         const sql = `
-            SELECT id, name, parent_id, 'folder' as type, null as storage_type, null as file_id
+            SELECT id, name, parent_id, 'folder' as type, null as storage_type, null as file_id, password IS NOT NULL as is_locked
             FROM folders 
             WHERE id IN (${placeholders}) AND user_id = ?
             UNION ALL
-            SELECT message_id as id, fileName as name, folder_id as parent_id, 'file' as type, storage_type, file_id
+            SELECT message_id as id, fileName as name, folder_id as parent_id, 'file' as type, storage_type, file_id, 0 as is_locked
             FROM files 
             WHERE message_id IN (${placeholders}) AND user_id = ?
         `;
@@ -176,9 +177,19 @@ async function getAllDescendantFolderIds(folderId, userId) {
     return descendants;
 }
 
+function getFolderDetails(folderId, userId) {
+    return new Promise((resolve, reject) => {
+        const sql = `SELECT id, name, parent_id, password, password IS NOT NULL as is_locked FROM folders WHERE id = ? AND user_id = ?`;
+        db.get(sql, [folderId, userId], (err, row) => {
+            if (err) reject(err);
+            else resolve(row);
+        });
+    });
+}
+
 function getFolderContents(folderId, userId) {
     return new Promise((resolve, reject) => {
-        const sqlFolders = `SELECT id, name, parent_id, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ? ORDER BY name ASC`;
+        const sqlFolders = `SELECT id, name, parent_id, 'folder' as type, password IS NOT NULL as is_locked FROM folders WHERE parent_id = ? AND user_id = ? ORDER BY name ASC`;
         const sqlFiles = `SELECT *, message_id as id, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? ORDER BY name ASC`;
         let contents = { folders: [], files: [] };
         db.all(sqlFolders, [folderId, userId], (err, folders) => {
@@ -360,7 +371,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
                 return report;
             }
 
-            // console.log(`[Data] moveItem: 合并资料夹 "${currentPath}" 到目标资料夹 ID ${existingItemInTarget.id}`);
+            // console.log(`[Data] moveItem: 合并资料夾 "${currentPath}" 到目标资料夾 ID ${existingItemInTarget.id}`);
             const { folders: childFolders, files: childFiles } = await getFolderContents(itemId, userId);
             let allChildrenProcessedSuccessfully = true;
 
@@ -772,7 +783,7 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
 
 async function renameFolder(folderId, newFolderName, userId) {
     const folder = await new Promise((res, rej) => db.get("SELECT * FROM folders WHERE id=?", [folderId], (e,r)=>e?rej(e):res(r)));
-    if (!folder) return { success: false, message: '资料夹未找到。'};
+    if (!folder) return { success: false, message: '资料夾未找到。'};
     
     const storage = require('./storage').getStorage();
 
@@ -815,6 +826,27 @@ async function renameFolder(folderId, newFolderName, userId) {
         });
     });
 }
+
+function setFolderPassword(folderId, password, userId) {
+    return new Promise((resolve, reject) => {
+        const sql = `UPDATE folders SET password = ? WHERE id = ? AND user_id = ?`;
+        db.run(sql, [password, folderId, userId], function(err) {
+            if (err) return reject(err);
+            if (this.changes === 0) return reject(new Error('Folder not found or permission denied'));
+            resolve({ success: true });
+        });
+    });
+}
+
+async function verifyFolderPassword(folderId, password, userId) {
+    const folder = await getFolderDetails(folderId, userId);
+    if (!folder || !folder.password) {
+        throw new Error('Folder is not locked or does not exist.');
+    }
+    const isMatch = await bcrypt.compare(password, folder.password);
+    return isMatch;
+}
+
 
 
 function createShareLink(itemId, itemType, expiresIn, userId) {
@@ -1109,4 +1141,7 @@ module.exports = {
     findItemInFolder,
     findAvailableName,
     renameAndMoveFile,
+    getFolderDetails,
+    setFolderPassword,
+    verifyFolderPassword,
 };
