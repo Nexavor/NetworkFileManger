@@ -82,6 +82,7 @@ app.post('/login', async (req, res) => {
             req.session.loggedIn = true;
             req.session.userId = user.id;
             req.session.isAdmin = !!user.is_admin;
+            req.session.unlockedFolders = [];
             res.redirect('/');
         } else {
             res.status(401).send('帐号或密码错误');
@@ -417,10 +418,27 @@ app.get('/api/search', requireLogin, async (req, res) => {
 app.get('/api/folder/:id', requireLogin, async (req, res) => {
     try {
         const folderId = parseInt(req.params.id, 10);
-        const contents = await data.getFolderContents(folderId, req.session.userId);
-        const path = await data.getFolderPath(folderId, req.session.userId);
+        const userId = req.session.userId;
+
+        const folderDetails = await data.getFolderDetails(folderId, userId);
+
+        if (!folderDetails) {
+            return res.status(404).json({ success: false, message: '找不到资料夹' });
+        }
+
+        if (folderDetails.is_locked && !req.session.unlockedFolders.includes(folderId)) {
+            return res.json({
+                locked: true,
+                path: await data.getFolderPath(folderId, userId)
+            });
+        }
+
+        const contents = await data.getFolderContents(folderId, userId);
+        const path = await data.getFolderPath(folderId, userId);
         res.json({ contents, path });
-    } catch (error) { res.status(500).json({ success: false, message: '读取资料夾内容失败。' }); }
+    } catch (error) {
+        res.status(500).json({ success: false, message: '读取资料夾内容失败。' });
+    }
 });
 
 app.post('/api/folder', requireLogin, async (req, res) => {
@@ -454,6 +472,87 @@ app.post('/api/folder', requireLogin, async (req, res) => {
         res.json(result);
     } catch (error) {
          res.status(500).json({ success: false, message: error.message || '处理资料夾时发生错误。' });
+    }
+});
+
+app.post('/api/folder/:id/lock', requireLogin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { password, oldPassword } = req.body;
+        const userId = req.session.userId;
+        
+        if (!password || password.length < 4) {
+            return res.status(400).json({ success: false, message: '密码长度至少需要 4 个字元。' });
+        }
+
+        const folder = await data.getFolderDetails(id, userId);
+        if (!folder) {
+            return res.status(404).json({ success: false, message: '找不到资料夹。' });
+        }
+
+        if (folder.is_locked) {
+            if (!oldPassword) {
+                return res.status(400).json({ success: false, message: '需要提供旧密码才能修改。' });
+            }
+            const isMatch = await bcrypt.compare(oldPassword, folder.password);
+            if (!isMatch) {
+                return res.status(401).json({ success: false, message: '旧密码不正确。' });
+            }
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+        await data.setFolderPassword(id, hashedPassword, userId);
+
+        res.json({ success: true, message: '资料夹密码已设定/更新。' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '操作失败：' + error.message });
+    }
+});
+
+app.post('/api/folder/:id/unlock', requireLogin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { password } = req.body;
+        const userId = req.session.userId;
+
+        if (!password) {
+            return res.status(400).json({ success: false, message: '需要提供密码才能解锁。' });
+        }
+
+        const isMatch = await data.verifyFolderPassword(id, password, userId);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: '密码不正确。' });
+        }
+
+        await data.setFolderPassword(id, null, userId); // 传入 null 来移除密码
+        if (req.session.unlockedFolders) {
+            req.session.unlockedFolders = req.session.unlockedFolders.filter(folderId => folderId !== parseInt(id));
+        }
+        res.json({ success: true, message: '资料夹已成功解锁（移除密码）。' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '操作失败：' + error.message });
+    }
+});
+
+app.post('/api/folder/:id/verify', requireLogin, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { password } = req.body;
+        const userId = req.session.userId;
+
+        const isMatch = await data.verifyFolderPassword(id, password, userId);
+        if (isMatch) {
+            if (!req.session.unlockedFolders) {
+                req.session.unlockedFolders = [];
+            }
+            req.session.unlockedFolders.push(parseInt(id));
+            res.json({ success: true });
+        } else {
+            res.status(401).json({ success: false, message: '密码错误' });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, message: '验证失败' });
     }
 });
 
