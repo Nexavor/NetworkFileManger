@@ -398,3 +398,7 @@ body.selection-mode-active #dropZone {
     .editor-container { padding: 5px 0; }
     #editor { padding: 10px; font-size: 14px; }
 }
+
+#passwordModal .move-modal-content {
+    max-width: 380px;
+}
