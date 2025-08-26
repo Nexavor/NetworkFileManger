@@ -57,14 +57,15 @@ function createDependentTables() {
             name TEXT NOT NULL,
             parent_id INTEGER,
             user_id INTEGER NOT NULL,
+            password TEXT,
             share_token TEXT,
             share_expires_at INTEGER,
             FOREIGN KEY (parent_id) REFERENCES folders (id) ON DELETE CASCADE,
             FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
             UNIQUE(name, parent_id, user_id)
         )`, (err) => {
-            if (err) {} // console.error("建立 'folders' 表失败:", err.message);
-            else {} // console.log("'folders' 表已确认存在。");
+            if (err) { /* console.error("建立 'folders' 表失败:", err.message); */ }
+            else { /* console.log("'folders' 表已确认存在。"); */ }
         });
 
         db.run(`CREATE TABLE IF NOT EXISTS files (
@@ -84,7 +85,7 @@ function createDependentTables() {
             FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )`, (err) => {
-            if (err) {} // console.error("建立 'files' 表失败:", err.message);
+            if (err) { /* console.error("建立 'files' 表失败:", err.message); */ }
             else {
                 // console.log("'files' 表已确认存在。");
                 // 所有表结构都建立完毕后，再检查并建立管理员帐号
