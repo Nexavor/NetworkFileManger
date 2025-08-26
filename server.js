@@ -1,3 +1,4 @@
+// nexavor/networkfilemanger/NetworkFileManger-43f0ea7b6335ba475c462ec7e432d14b/server.js
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
@@ -984,20 +985,44 @@ app.get('/share/view/file/:token', async (req, res) => {
     } catch (error) { res.status(500).render('share-error', { message: '处理分享请求时发生错误。' }); }
 });
 
-app.get('/share/view/folder/:token', async (req, res) => {
+// --- *** 关键修正 开始 *** ---
+app.get('/share/view/folder/:token/:path(*)?', async (req, res) => {
     try {
-        const token = req.params.token;
-        const folderInfo = await data.getFolderByShareToken(token);
+        const { token, path: requestedPath } = req.params;
+        const pathSegments = requestedPath ? requestedPath.split('/').filter(p => p) : [];
+        
+        const folderInfo = await data.findFolderBySharePath(token, pathSegments);
+
         if (folderInfo) {
             const contents = await data.getFolderContents(folderInfo.id, folderInfo.user_id);
-            res.render('share-folder-view', { folder: folderInfo, contents });
+            const breadcrumbPath = await data.getFolderPath(folderInfo.id, folderInfo.user_id);
+            
+            // 建立分享链接专用的面包屑
+            const rootShareFolder = await data.getFolderByShareToken(token);
+            const rootPathIndex = breadcrumbPath.findIndex(p => p.id === rootShareFolder.id);
+            const shareBreadcrumb = breadcrumbPath.slice(rootPathIndex).map((p, index, arr) => {
+                const relativePath = arr.slice(1, index + 1).map(s => s.name).join('/');
+                return {
+                    name: p.name,
+                    // 只有在不是当前页面时才需要链接
+                    link: index < arr.length - 1 ? `/share/view/folder/${token}/${relativePath}` : null
+                };
+            });
+            
+            res.render('share-folder-view', {
+                folder: folderInfo,
+                contents,
+                breadcrumb: shareBreadcrumb,
+                token: token
+            });
         } else {
-            res.status(404).render('share-error', { message: '此分享连结无效或已过期。' });
+            res.status(404).render('share-error', { message: '此分享连结无效、已过期或路径不正确。' });
         }
     } catch (error) {
         res.status(500).render('share-error', { message: '处理分享请求时发生错误。' });
     }
 });
+// --- *** 关键修正 结束 *** ---
 
 function handleStream(stream, res) {
     stream.on('error', (err) => {
