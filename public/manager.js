@@ -492,22 +492,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 textEditBtn.title = '编辑文字档';
             }
             contextMenuSeparator1.style.display = isSingleEditableFile ? 'block' : 'none';
-    
+
+            // --- *** 关键修正 开始 *** ---
+            const containsLockedFolder = Array.from(selectedItems.keys()).some(id => {
+                const itemEl = document.querySelector(`.item-card[data-id="${id}"], .list-item[data-id="${id}"]`);
+                return itemEl && itemEl.dataset.type === 'folder' && (itemEl.dataset.isLocked === 'true' || itemEl.dataset.isLocked === '1');
+            });
+            const isSingleLockedFolder = singleSelection && firstSelectedItem.type === 'folder' && containsLockedFolder;
+
             previewBtn.disabled = !singleSelection || firstSelectedItem.type === 'folder';
-            shareBtn.disabled = !singleSelection;
             renameBtn.disabled = !singleSelection;
             moveBtn.disabled = count === 0 || isSearchMode;
-            downloadBtn.disabled = count === 0;
-            deleteBtn.disabled = count === 0;
+
+            // 如果选择中包含加密文件夹，则禁用相关操作
+            shareBtn.disabled = !singleSelection || isSingleLockedFolder;
+            downloadBtn.disabled = count === 0 || containsLockedFolder;
+            deleteBtn.disabled = count === 0 || containsLockedFolder;
             
             // 加密按钮逻辑
             lockBtn.disabled = !singleSelection || firstSelectedItem.type !== 'folder';
             if(singleSelection && firstSelectedItem.type === 'folder'){
-                 const folderElement = document.querySelector(`.item-card[data-id="${selectedItems.keys().next().value}"], .list-item[data-id="${selectedItems.keys().next().value}"]`);
-                 const isLocked = folderElement.dataset.isLocked === 'true' || folderElement.dataset.isLocked === '1';
+                 const isLocked = containsLockedFolder;
                  lockBtn.innerHTML = isLocked ? '<i class="fas fa-unlock"></i> <span class="button-text">管理密码</span>' : '<i class="fas fa-lock"></i> <span class="button-text">加密</span>';
                  lockBtn.title = isLocked ? '修改或移除密码' : '设定密码';
             }
+            // --- *** 关键修正 结束 *** ---
 
         } else {
             generalButtons.forEach(btn => btn.style.display = 'block');
@@ -935,7 +944,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (isLocked) {
                 try {
-                    const password = await promptForPassword(`资料夾 "${target.dataset.name}" 已加密`, '请输入密码以存取:');
+                    const password = await promptForPassword(`资料夹 "${target.dataset.name}" 已加密`, '请输入密码以存取:');
                     if (password === null) return;
                     await axios.post(`/api/folder/${folderId}/verify`, { password });
                     window.history.pushState(null, '', `/folder/${folderId}`);
