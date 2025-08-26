@@ -299,6 +299,31 @@ body.selection-mode-active #dropZone {
 #conflictFileName { font-weight: bold; color: #dc3545; }
 #conflictOptions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 20px; }
 #conflictOptions button { width: auto; padding: 8px 16px; }
+#passwordForm {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+#passwordForm input {
+    padding: 10px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    width: 100%;
+    box-sizing: border-box;
+}
+.password-modal-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+.password-modal-actions .upload-link-btn {
+    flex: 1;
+    max-width: 150px;
+    justify-content: center;
+}
+#passwordCancelBtn {
+    background-color: #6c757d;
+}
 .setting-card { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: var(--shadow); margin-top: 20px; }
 .setting-card h2 { margin-top: 0; }
 .setting-card select, .setting-card button, .setting-card input { padding: 10px; border-radius: 5px; border: 1px solid #ccc; margin-top: 10px; }
