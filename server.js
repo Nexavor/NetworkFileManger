@@ -1,4 +1,3 @@
-// nexavor/networkfilemanger/NetworkFileManger-43f0ea7b6335ba475c462ec7e432d14b/server.js
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
@@ -649,11 +648,9 @@ app.post('/rename', requireLogin, async (req, res) => {
     }
 });
 
-// --- *** 关键修正 开始 *** ---
 app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = parseInt(req.params.message_id, 10);
-        // 增加权限检查
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) {
             return res.status(403).send('权限不足');
@@ -674,47 +671,94 @@ app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).send('获取缩图失败'); }
 });
 
-app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
-    try {
-        const messageId = parseInt(req.params.message_id, 10);
-        // 增加权限检查
-        const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
-        if (!accessible) {
-            return res.status(403).send('权限不足');
+// --- *** 关键修正 开始 *** ---
+// 统一的档案串流处理函式
+async function handleFileStream(req, res, fileInfo) {
+    const storage = storageManager.getStorage();
+    const range = req.headers.range;
+    const totalSize = fileInfo.size;
+
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Content-Type', fileInfo.mimetype || 'application/octet-stream');
+    
+    // 如果浏览器请求的是可拖动的影片
+    if (range && totalSize) {
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+        
+        if (start >= totalSize) {
+            res.status(416).send('Requested range not satisfiable\n' + start + ' >= ' + totalSize);
+            return;
         }
 
-        const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
+        const chunksize = (end - start) + 1;
         
-        if (!fileInfo || !fileInfo.file_id) {
-            return res.status(404).send('文件信息未找到');
-        }
-
-        const storage = storageManager.getStorage();
-        
-        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
-        if (fileInfo.mimetype) res.setHeader('Content-Type', fileInfo.mimetype);
-        if (fileInfo.size) res.setHeader('Content-Length', fileInfo.size);
+        res.writeHead(206, {
+            'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+            'Content-Length': chunksize,
+        });
 
         if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
-            const stream = await storage.stream(fileInfo.file_id, req.session.userId);
-            handleStream(stream, res);
+            const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id, { start, end });
+            stream.pipe(res);
+        } else if (fileInfo.storage_type === 'telegram') {
+            const link = await storage.getUrl(fileInfo.file_id);
+            if (link) {
+                const response = await axios({
+                    method: 'get',
+                    url: link,
+                    responseType: 'stream',
+                    headers: { 'Range': `bytes=${start}-${end}` }
+                });
+                response.data.pipe(res);
+            } else {
+                res.status(404).send('无法获取文件链接');
+            }
+        }
+    } else { // 正常下载或档案太小
+        res.setHeader('Content-Length', totalSize || -1); // -1 for unknown
+        res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
+        
+        if (req.query.download) { // 强制下载
+            res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
+        }
+
+        if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
+            const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
+            stream.pipe(res);
         } else if (fileInfo.storage_type === 'telegram') {
             const link = await storage.getUrl(fileInfo.file_id);
             if (link) {
                 const response = await axios({ method: 'get', url: link, responseType: 'stream' });
                 response.data.pipe(res);
-            } else { res.status(404).send('无法获取文件链接'); }
+            } else {
+                res.status(404).send('无法获取文件链接');
+            }
         }
+    }
+}
+
+app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
+    try {
+        const messageId = parseInt(req.params.message_id, 10);
+        const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
+        if (!accessible) return res.status(403).send('权限不足');
+        
+        const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
+        if (!fileInfo) return res.status(404).send('文件信息未找到');
+
+        await handleFileStream(req, res, fileInfo);
 
     } catch (error) {
-        res.status(500).send('下载代理失败: ' + error.message);
+        if (!res.headersSent) res.status(500).send('下载代理失败: ' + error.message);
     }
 });
+// --- *** 关键修正 结束 *** ---
 
 app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = parseInt(req.params.message_id, 10);
-        // 增加权限检查
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) {
             return res.status(403).send('权限不足');
@@ -730,8 +774,8 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
         if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
-            const stream = await storage.stream(fileInfo.file_id, req.session.userId);
-            handleStream(stream, res);
+            const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
+            stream.pipe(res);
         } else if (fileInfo.storage_type === 'telegram') {
             const link = await storage.getUrl(fileInfo.file_id);
             if (link) {
@@ -743,7 +787,6 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
         res.status(500).send('无法获取文件内容');
     }
 });
-// --- *** 关键修正 结束 *** ---
 
 
 app.post('/api/download-archive', requireLogin, async (req, res) => {
@@ -985,7 +1028,6 @@ app.get('/share/view/file/:token', async (req, res) => {
     } catch (error) { res.status(500).render('share-error', { message: '处理分享请求时发生错误。' }); }
 });
 
-// --- *** 关键修正 开始 *** ---
 app.get('/share/view/folder/:token/:path(*)?', async (req, res) => {
     try {
         const { token, path: requestedPath } = req.params;
@@ -997,14 +1039,12 @@ app.get('/share/view/folder/:token/:path(*)?', async (req, res) => {
             const contents = await data.getFolderContents(folderInfo.id, folderInfo.user_id);
             const breadcrumbPath = await data.getFolderPath(folderInfo.id, folderInfo.user_id);
             
-            // 建立分享链接专用的面包屑
             const rootShareFolder = await data.getFolderByShareToken(token);
             const rootPathIndex = breadcrumbPath.findIndex(p => p.id === rootShareFolder.id);
             const shareBreadcrumb = breadcrumbPath.slice(rootPathIndex).map((p, index, arr) => {
                 const relativePath = arr.slice(1, index + 1).map(s => s.name).join('/');
                 return {
                     name: p.name,
-                    // 只有在不是当前页面时才需要链接
                     link: index < arr.length - 1 ? `/share/view/folder/${token}/${relativePath}` : null
                 };
             });
@@ -1022,44 +1062,20 @@ app.get('/share/view/folder/:token/:path(*)?', async (req, res) => {
         res.status(500).render('share-error', { message: '处理分享请求时发生错误。' });
     }
 });
-// --- *** 关键修正 结束 *** ---
 
-function handleStream(stream, res) {
-    stream.on('error', (err) => {
-        if (!res.headersSent) {
-            res.status(500).send('读取文件流时发生错误');
-        }
-        stream.destroy();
-    }).on('close', () => {
-        stream.destroy();
-    }).pipe(res).on('finish', () => {
-        stream.destroy();
-    });
-}
 
+// --- *** 关键修正 开始 *** ---
 app.get('/share/download/file/:token', async (req, res) => {
     try {
         const token = req.params.token;
         const fileInfo = await data.getFileByShareToken(token);
-        if (!fileInfo || !fileInfo.file_id) {
+        if (!fileInfo) {
              return res.status(404).send('文件信息未找到或分享链接已过期');
         }
-
-        const storage = storageManager.getStorage();
-        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
-
-        if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
-            const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
-            handleStream(stream, res);
-        } else if (fileInfo.storage_type === 'telegram') {
-            const link = await storage.getUrl(fileInfo.file_id);
-            if (link) {
-                const response = await axios({ method: 'get', url: link, responseType: 'stream' });
-                response.data.pipe(res);
-            } else { res.status(404).send('无法获取文件链接'); }
-        }
-
-    } catch (error) { res.status(500).send('下载失败'); }
+        await handleFileStream(req, res, fileInfo);
+    } catch (error) { 
+        if (!res.headersSent) res.status(500).send('下载失败: ' + error.message);
+    }
 });
 
 app.get('/share/thumbnail/:folderToken/:fileId', async (req, res) => {
@@ -1087,27 +1103,15 @@ app.get('/share/download/:folderToken/:fileId', async (req, res) => {
         const { folderToken, fileId } = req.params;
         const fileInfo = await data.findFileInSharedFolder(parseInt(fileId, 10), folderToken);
         
-        if (!fileInfo || !fileInfo.file_id) {
+        if (!fileInfo) {
              return res.status(404).send('文件信息未找到或权限不足');
         }
-        
-        const storage = storageManager.getStorage();
-        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
-
-        if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
-            const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
-            handleStream(stream, res);
-        } else if (fileInfo.storage_type === 'telegram') {
-            const link = await storage.getUrl(fileInfo.file_id);
-            if (link) {
-                const response = await axios({ method: 'get', url: link, responseType: 'stream' });
-                response.data.pipe(res);
-            } else { res.status(404).send('无法获取文件链接'); }
-        }
+        await handleFileStream(req, res, fileInfo);
     } catch (error) {
-        res.status(500).send('下载失败');
+        if (!res.headersSent) res.status(500).send('下载失败: ' + error.message);
     }
 });
+// --- *** 关键修正 结束 *** ---
 
 
 app.listen(PORT, () => {
