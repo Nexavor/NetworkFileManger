@@ -181,14 +181,14 @@ async function isFileAccessible(fileId, userId, unlockedFolders = []) {
         });
     });
 
-    // 检查路径上的每个资料夹
+    // 检查路径上的每个资料夾
     for (const folder of path) {
         if (folderStatuses.get(folder.id) && !unlockedFolders.includes(folder.id)) {
-            return false; // 发现一个已加密但在 session 中未解锁的资料夹
+            return false; // 发现一个已加密但在 session 中未解锁的资料夾
         }
     }
 
-    return true; // 路径上所有资料夹都可存取
+    return true; // 路径上所有资料夾都可存取
 }
 // --- *** 关键修正 结束 *** ---
 
@@ -811,43 +811,28 @@ function getFolderByShareToken(token) {
 
 // --- *** 关键修正 开始 *** ---
 async function findFileInSharedFolder(fileId, folderToken) {
-    // 1. 获取分享的根目录
-    const rootSharedFolder = await getFolderByShareToken(folderToken);
-    if (!rootSharedFolder) return null; // Token 无效或已过期
+    return new Promise((resolve, reject) => {
+        const sql = `
+            WITH RECURSIVE shared_folder_tree(id) AS (
+                -- Base case: the root folder with the share token. It must not be locked.
+                SELECT id FROM folders WHERE share_token = ? AND password IS NULL
+                UNION ALL
+                -- Recursive step: find all children of the folders already in the tree.
+                -- Crucially, do not include children that are themselves locked.
+                SELECT f.id FROM folders f
+                JOIN shared_folder_tree sft ON f.parent_id = sft.id
+                WHERE f.password IS NULL
+            )
+            -- Final selection: get the file if its folder_id is in our allowed tree.
+            SELECT f.* FROM files f
+            WHERE f.message_id = ? AND f.folder_id IN (SELECT id FROM shared_folder_tree);
+        `;
 
-    // 2. 获取文件信息
-    const files = await getFilesByIds([fileId], rootSharedFolder.user_id);
-    if (files.length === 0) return null; // 找不到文件
-    const file = files[0];
-
-    // 3. 从文件的父目录开始向上遍历
-    let currentFolderId = file.folder_id;
-    const userId = rootSharedFolder.user_id;
-
-    while (currentFolderId) {
-        // 如果当前目录就是分享的根目录，验证成功
-        if (currentFolderId === rootSharedFolder.id) {
-            return file;
-        }
-
-        // 获取当前目录的父目录 ID 和加密状态
-        const currentFolderDetails = await new Promise((resolve, reject) => {
-            db.get("SELECT parent_id, password FROM folders WHERE id = ? AND user_id = ?", [currentFolderId, userId], (err, row) => {
-                if (err) return reject(err);
-                resolve(row);
-            });
+        db.get(sql, [folderToken, fileId], (err, row) => {
+            if (err) return reject(err);
+            resolve(row); // row will be the file object or null if not found/not allowed
         });
-
-        // 如果找不到父目录（路径中断），或路径上的目录已加密，则验证失败
-        if (!currentFolderDetails || currentFolderDetails.password) {
-            return null;
-        }
-
-        currentFolderId = currentFolderDetails.parent_id;
-    }
-
-    // 如果循环结束仍未找到分享的根目录，说明文件不在分享树中
-    return null;
+    });
 }
 // --- *** 关键修正 结束 *** ---
 
@@ -971,7 +956,7 @@ async function renameFolder(folderId, newFolderName, userId) {
     return new Promise((resolve, reject) => {
         db.run(sql, [newFolderName, folderId, userId], function(err) {
             if (err) reject(err);
-            else if (this.changes === 0) resolve({ success: false, message: '资料夹未找到。' });
+            else if (this.changes === 0) resolve({ success: false, message: '资料夾未找到。' });
             else resolve({ success: true });
         });
     });
