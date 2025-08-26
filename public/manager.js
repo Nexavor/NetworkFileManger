@@ -503,7 +503,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             previewBtn.disabled = !singleSelection || firstSelectedItem.type === 'folder';
             renameBtn.disabled = !singleSelection;
-            moveBtn.disabled = count === 0 || isSearchMode;
+            // --- *** 关键修正 开始 *** ---
+            moveBtn.disabled = count === 0 || isSearchMode || containsLockedFolder;
+            // --- *** 关键修正 结束 *** ---
 
             shareBtn.disabled = !singleSelection || isSingleLockedFolder;
             downloadBtn.disabled = count === 0 || containsLockedFolder;
@@ -1453,7 +1455,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             try {
                 await axios.post(`/api/folder/${folderId}/lock`, { password });
-                showNotification('资料夹已成功加密。', 'success');
+                showNotification('资料夾已成功加密。', 'success');
                 loadFolderContents(currentFolderId);
             } catch (error) {
                 alert('加密失败: ' + (error.response?.data?.message || '未知错误'));
