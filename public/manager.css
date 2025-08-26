@@ -120,7 +120,7 @@ body.selection-mode-active #dropZone {
     width: 100%; aspect-ratio: 4 / 3; display: flex; justify-content: center;
     align-items: center; background-color: #f1f3f5; font-size: 64px; overflow: hidden;
 }
-.item-icon .fa-folder { color: #ffc107; }
+.item-icon .fa-folder, .item-icon .fa-lock { color: #ffc107; }
 .item-icon i.fa-file-pdf { color: #e63946; }
 .item-icon i.fa-file-archive { color: #f77f00; }
 .item-icon i.fa-file-video { color: #8338ec; }
@@ -156,7 +156,7 @@ body.selection-mode-active #dropZone {
 .list-item:hover { background-color: #f1f3f5; }
 .list-item.selected { background-color: #cfe2ff; border-left: 4px solid var(--primary-color); padding-left: 6px; }
 .list-icon { width: 30px; text-align: center; margin-right: 15px; font-size: 1.2em; }
-.list-icon .fa-folder { color: #ffc107; }
+.list-icon .fa-folder, .list-icon .fa-lock { color: #ffc107; }
 .list-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* --- *** 关键修正 开始 *** --- */
 .list-size {
