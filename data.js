@@ -809,20 +809,47 @@ function getFolderByShareToken(token) {
     });
 }
 
-function findFileInSharedFolder(fileId, folderToken) {
-    return new Promise((resolve, reject) => {
-        const sql = `
-            SELECT f.*
-            FROM files f
-            JOIN folders fo ON f.folder_id = fo.id
-            WHERE f.message_id = ? AND fo.share_token = ?
-        `;
-        db.get(sql, [fileId, folderToken], (err, row) => {
-            if (err) return reject(err);
-            resolve(row);
+// --- *** 关键修正 开始 *** ---
+async function findFileInSharedFolder(fileId, folderToken) {
+    // 1. 获取分享的根目录
+    const rootSharedFolder = await getFolderByShareToken(folderToken);
+    if (!rootSharedFolder) return null; // Token 无效或已过期
+
+    // 2. 获取文件信息
+    const files = await getFilesByIds([fileId], rootSharedFolder.user_id);
+    if (files.length === 0) return null; // 找不到文件
+    const file = files[0];
+
+    // 3. 从文件的父目录开始向上遍历
+    let currentFolderId = file.folder_id;
+    const userId = rootSharedFolder.user_id;
+
+    while (currentFolderId) {
+        // 如果当前目录就是分享的根目录，验证成功
+        if (currentFolderId === rootSharedFolder.id) {
+            return file;
+        }
+
+        // 获取当前目录的父目录 ID 和加密状态
+        const currentFolderDetails = await new Promise((resolve, reject) => {
+            db.get("SELECT parent_id, password FROM folders WHERE id = ? AND user_id = ?", [currentFolderId, userId], (err, row) => {
+                if (err) return reject(err);
+                resolve(row);
+            });
         });
-    });
+
+        // 如果找不到父目录（路径中断），或路径上的目录已加密，则验证失败
+        if (!currentFolderDetails || currentFolderDetails.password) {
+            return null;
+        }
+
+        currentFolderId = currentFolderDetails.parent_id;
+    }
+
+    // 如果循环结束仍未找到分享的根目录，说明文件不在分享树中
+    return null;
 }
+// --- *** 关键修正 结束 *** ---
 
 async function renameFile(messageId, newFileName, userId) {
     const file = (await getFilesByIds([messageId], userId))[0];
