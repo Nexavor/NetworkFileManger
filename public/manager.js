@@ -410,7 +410,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (fullFile.mimetype && fullFile.mimetype.startsWith('video/')) {
                 iconHtml = `<video src="/download/proxy/${item.id}#t=0.1" preload="metadata" muted></video>`;
             } else {
-                 iconHtml = `<i class="fas ${getFileIconClass(item.mimetype)}"></i>`;
+                 iconHtml = `<i class="fas ${getFileIconClass(item.mimetype, item.name)}"></i>`;
             }
         } else { // folder
             iconHtml = `<i class="fas ${item.is_locked ? 'fa-lock' : 'fa-folder'}"></i>`;
@@ -432,7 +432,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         itemDiv.setAttribute('tabindex', '0'); // --- *** 关键修正 *** ---
 
-        const icon = item.type === 'folder' ? (item.is_locked ? 'fa-lock' : 'fa-folder') : getFileIconClass(item.mimetype);
+        const icon = item.type === 'folder' ? (item.is_locked ? 'fa-lock' : 'fa-folder') : getFileIconClass(item.mimetype, item.name);
         const name = item.name === '/' ? '根目录' : item.name;
         const size = item.type === 'file' && item.size ? formatBytes(item.size) : '—';
         const date = item.date ? formatDateTime(item.date) : '—';
@@ -452,15 +452,30 @@ document.addEventListener('DOMContentLoaded', () => {
         return itemDiv;
     };
 
-    const getFileIconClass = (mimetype) => {
+    // --- *** 关键修正 开始 *** ---
+    const getFileIconClass = (mimetype, fileName) => {
+        const lowerFileName = (fileName || '').toLowerCase();
+        const archiveExtensions = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso', 'dmg'];
+        const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tiff'];
+
+        for (const ext of archiveExtensions) {
+            if (lowerFileName.endsWith('.' + ext)) return 'fa-file-archive';
+        }
+        for (const ext of imageExtensions) {
+            if (lowerFileName.endsWith('.' + ext)) return 'fa-file-image';
+        }
+
         if (!mimetype) return 'fa-file';
         if (mimetype.startsWith('image/')) return 'fa-file-image';
         if (mimetype.startsWith('video/')) return 'fa-file-video';
         if (mimetype.startsWith('audio/')) return 'fa-file-audio';
         if (mimetype.includes('pdf')) return 'fa-file-pdf';
         if (mimetype.includes('archive') || mimetype.includes('zip')) return 'fa-file-archive';
-        return 'fa-file-alt';
+        if (mimetype.startsWith('text/')) return 'fa-file-alt';
+        
+        return 'fa-file';
     };
+    // --- *** 关键修正 结束 *** ---
     
     const updateContextMenu = (targetItem = null) => {
         const count = selectedItems.size;
@@ -1486,7 +1501,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (password === null) return;
                 try {
                     await axios.post(`/api/folder/${folderId}/unlock`, { password });
-                    showNotification('资料夹密码已移除。', 'success');
+                    showNotification('资料夾密码已移除。', 'success');
                     loadFolderContents(currentFolderId);
                 } catch (error) {
                     alert('密码错误或操作失败。');
