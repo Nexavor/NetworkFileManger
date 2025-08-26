@@ -1,4 +1,3 @@
-// nexavor/networkfilemanger/NetworkFileManger-43f0ea7b6335ba475c462ec7e432d14b/server.js
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
@@ -649,9 +648,16 @@ app.post('/rename', requireLogin, async (req, res) => {
     }
 });
 
+// --- *** 关键修正 开始 *** ---
 app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = parseInt(req.params.message_id, 10);
+        // 增加权限检查
+        const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
+        if (!accessible) {
+            return res.status(403).send('权限不足');
+        }
+
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
 
         if (fileInfo && fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
@@ -670,6 +676,12 @@ app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
 app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = parseInt(req.params.message_id, 10);
+        // 增加权限检查
+        const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
+        if (!accessible) {
+            return res.status(403).send('权限不足');
+        }
+
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
         
         if (!fileInfo || !fileInfo.file_id) {
@@ -701,6 +713,12 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
 app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = parseInt(req.params.message_id, 10);
+        // 增加权限检查
+        const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
+        if (!accessible) {
+            return res.status(403).send('权限不足');
+        }
+
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
 
         if (!fileInfo || !fileInfo.file_id) {
@@ -724,6 +742,7 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
         res.status(500).send('无法获取文件内容');
     }
 });
+// --- *** 关键修正 结束 *** ---
 
 
 app.post('/api/download-archive', requireLogin, async (req, res) => {
