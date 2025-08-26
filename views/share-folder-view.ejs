@@ -28,27 +28,30 @@
             margin: 0 auto;
         }
         .main-header {
-            flex-shrink: 0; 
+            flex-shrink: 0;
         }
         /* --- 滚动条核心样式 --- */
         .scrollable-content {
-            flex-grow: 1; /* 让此区域填满剩余空间 */
-            overflow-y: auto; /* 当内容超出时，显示垂直滚动条 */
+            flex-grow: 1;
+            /* 让此区域填满剩余空间 */
+            overflow-y: auto;
+            /* 当内容超出时，显示垂直滚动条 */
             padding: 15px;
-            margin: -15px; /* 抵销内边距以对齐 */
+            margin: -15px;
+            /* 抵销内边距以对齐 */
         }
         
         .item-card { 
-            cursor: pointer; 
+            cursor: pointer;
             text-decoration: none; 
             color: inherit;
         }
         .item-card:hover { 
-            transform: translateY(-3px); 
+            transform: translateY(-3px);
             box-shadow: 0 6px 12px rgba(0,0,0,0.15);
         }
         .item-icon video { 
-            width: 100%; 
+            width: 100%;
             height: 100%; 
             object-fit: cover;
         }
@@ -57,29 +60,59 @@
 <body>
     <div class="container">
         <header class="main-header">
-            <h1><i class="fas fa-folder-open"></i> 分享的文件夹: <%= folder.name === '/' ? '根目录' : folder.name %></h1>
+            <h1><i class="fas fa-folder-open"></i> 分享的内容</h1>
         </header>
-        
+
+        <nav class="breadcrumb" style="margin-bottom: 20px;">
+            <% breadcrumb.forEach(part => { %>
+                <% if (part.link) { %>
+                    <a href="<%= part.link %>"><%= part.name === '/' ? '根目录' : part.name %></a>
+                    <span class="separator">/</span>
+                <% } else { %>
+                    <span><%= part.name === '/' ? '根目录' : part.name %></span>
+                <% } %>
+            <% }); %>
+        </nav>
         <div class="scrollable-content"> 
             <div class="item-grid">
                 <% contents.folders.forEach(f => { %>
-                    <div class="item-card" data-id="<%= f.id %>" data-type="folder" title="不支援在分享页面中打开子文件夹">
+                    <% const currentPath = breadcrumb.slice(1).map(p=>p.name).join('/') %>
+                    <a href="/share/view/folder/<%= token %>/<%= currentPath ? currentPath + '/' : '' %><%= f.name %>" class="item-card">
                         <div class="item-icon"><i class="fas fa-folder"></i></div>
                         <div class="item-info"><h5 title="<%= f.name %>"><%= f.name %></h5></div>
-                    </div>
-                <% }); %>
+                    </a>
+                    <% }); %>
                 <% contents.files.forEach(f => { %>
-                    <a href="/share/download/<%= folder.share_token %>/<%= f.id %>" class="item-card" data-id="<%= f.id %>" data-type="file" target="_blank" rel="noopener noreferrer">
+                    <a href="/share/download/<%= token %>/<%= f.id %>" class="item-card" data-id="<%= f.id %>" data-type="file" target="_blank" rel="noopener noreferrer">
                         <div class="item-icon">
-                            <% if (f.storage_type === 'telegram' && f.thumb_file_id) { %>
-                                <img src="/share/thumbnail/<%= folder.share_token %>/<%= f.id %>" alt="缩图" loading="lazy">
+                      
+                             <% if (f.storage_type === 'telegram' && f.thumb_file_id) { %>
+                                <img src="/share/thumbnail/<%= token %>/<%= f.id %>" alt="缩图" loading="lazy">
                             <% } else if (f.mimetype && f.mimetype.startsWith('image/')) { %>
-                                <img src="/share/download/<%= folder.share_token %>/<%= f.id %>" alt="图片" loading="lazy">
+           
+                                 <img src="/share/download/<%= token %>/<%= f.id %>" alt="图片" loading="lazy">
                             <% } else if (f.mimetype && f.mimetype.startsWith('video/')) { %>
-                                <video src="/share/download/<%= folder.share_token %>/<%= f.id %>#t=0.1" preload="metadata" muted></video>
+                                <video src="/share/download/<%= token %>/<%= f.id %>#t=0.1" preload="metadata" muted></video>
                             <% } else { 
                                 let iconClass = 'fa-file';
-                                if (f.mimetype) {
+                                const lowerFileName = (f.fileName || '').toLowerCase();
+                                const archiveExtensions = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso', 'dmg'];
+                                const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tiff'];
+                                let isArchive = false;
+                                let isImage = false;
+
+                                for (const ext of archiveExtensions) {
+                                    if (lowerFileName.endsWith('.' + ext)) { isArchive = true; break; }
+                                }
+                                for (const ext of imageExtensions) {
+                                    if (lowerFileName.endsWith('.' + ext)) { isImage = true; break; }
+                                }
+                                
+                                if (isArchive) {
+                                    iconClass = 'fa-file-archive';
+                                } else if (isImage) {
+                                    iconClass = 'fa-file-image';
+                                } else if (f.mimetype) {
                                     if (f.mimetype.startsWith('text/')) iconClass = 'fa-file-alt';
                                     else if (f.mimetype.includes('pdf')) iconClass = 'fa-file-pdf';
                                     else if (f.mimetype.includes('archive') || f.mimetype.includes('zip')) iconClass = 'fa-file-archive';
@@ -87,7 +120,8 @@
                             %>
                                 <i class="fas <%= iconClass %>"></i>
                             <% } %>
-                        </div>
+      
+                         </div>
                         <div class="item-info"><h5 title="<%= f.fileName %>"><%= f.fileName %></h5></div>
                     </a>
                 <% }); %>
