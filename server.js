@@ -251,46 +251,77 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
 
-    // --- *** 关键修正 开始 *** ---
     if (!fileName) {
         return res.status(400).json({ success: false, message: '档名无效' });
     }
-    // --- *** 关键修正 结束 *** ---
 
     const tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.txt`);
 
     try {
         await fsp.writeFile(tempFilePath, content, 'utf8');
-        const fileStream = fs.createReadStream(tempFilePath);
-        let result;
-
+        
         if (mode === 'edit' && fileId) {
             const filesToUpdate = await data.getFilesByIds([fileId], userId);
-            if (filesToUpdate.length > 0) {
-                const originalFile = filesToUpdate[0];
-                
-                if (fileName !== originalFile.fileName) {
-                    const conflict = await data.checkFullConflict(fileName, originalFile.folder_id, userId);
-                    if (conflict) {
-                        return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
-                    }
-                }
-                
-                await data.unifiedDelete(originalFile.message_id, 'file', userId);
-                result = await storage.upload(fileStream, fileName, 'text/plain', userId, originalFile.folder_id);
-            } else {
+            if (filesToUpdate.length === 0) {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
             }
+            const originalFile = filesToUpdate[0];
+
+            if (fileName !== originalFile.fileName) {
+                const conflict = await data.checkFullConflict(fileName, originalFile.folder_id, userId);
+                if (conflict) {
+                    return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
+                }
+            }
+
+            if (originalFile.storage_type === 'telegram') {
+                const fileStream = fs.createReadStream(tempFilePath);
+                await data.unifiedDelete(originalFile.message_id, 'file', userId);
+                const result = await storage.upload(fileStream, fileName, 'text/plain', userId, originalFile.folder_id);
+                // 对于 Telegram，我们返回新的 fileId，前端介面已处理这种情况
+                return res.json({ success: true, fileId: result.fileId });
+            } else {
+                // 对于 local 和 webdav，我们执行更新
+                const newRelativePath = path.posix.join(path.posix.dirname(originalFile.file_id), fileName);
+
+                if (originalFile.storage_type === 'local') {
+                    const newFullPath = path.join(__dirname, 'data', 'uploads', String(userId), newRelativePath);
+                    await fsp.mkdir(path.dirname(newFullPath), { recursive: true });
+                    await fsp.copyFile(tempFilePath, newFullPath);
+                    if (originalFile.file_id !== newRelativePath && fsSync.existsSync(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id))) {
+                         await fsp.unlink(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id));
+                    }
+                } else if (originalFile.storage_type === 'webdav') {
+                    const fileStream = fs.createReadStream(tempFilePath);
+                    const client = storage.getClient();
+                    await client.putFileContents(newRelativePath, fileStream, { overwrite: true });
+                    if (originalFile.file_id !== newRelativePath) {
+                        await client.deleteFile(originalFile.file_id);
+                    }
+                }
+
+                const stats = await fsp.stat(tempFilePath);
+                await data.updateFile(fileId, {
+                    fileName: fileName,
+                    size: stats.size,
+                    date: Date.now(),
+                    file_id: newRelativePath
+                }, userId);
+                
+                // 关键：返回原始 fileId，因为我们是更新，不是建立
+                return res.json({ success: true, fileId: fileId });
+            }
         } else if (mode === 'create' && folderId) {
-             const conflict = await data.checkFullConflict(fileName, folderId, userId);
+            const conflict = await data.checkFullConflict(fileName, folderId, userId);
             if (conflict) {
                 return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
             }
-            result = await storage.upload(fileStream, fileName, 'text/plain', userId, folderId);
+            const fileStream = fs.createReadStream(tempFilePath);
+            const result = await storage.upload(fileStream, fileName, 'text/plain', userId, folderId);
+            res.json({ success: true, fileId: result.fileId });
         } else {
             return res.status(400).json({ success: false, message: '请求参数无效' });
         }
-        res.json({ success: true, fileId: result.fileId });
     } catch (error) {
         res.status(500).json({ success: false, message: '伺服器内部错误: ' + error.message });
     } finally {
