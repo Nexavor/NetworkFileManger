@@ -398,6 +398,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (item.type === 'folder') {
             card.dataset.isLocked = item.is_locked;
         }
+        card.setAttribute('tabindex', '0'); // --- *** 关键修正 *** ---
 
         let iconHtml = '';
         if (item.type === 'file') {
@@ -429,6 +430,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (item.type === 'folder') {
             itemDiv.dataset.isLocked = item.is_locked;
         }
+        itemDiv.setAttribute('tabindex', '0'); // --- *** 关键修正 *** ---
 
         const icon = item.type === 'folder' ? (item.is_locked ? 'fa-lock' : 'fa-folder') : getFileIconClass(item.mimetype);
         const name = item.name === '/' ? '根目录' : item.name;
@@ -503,9 +505,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             previewBtn.disabled = !singleSelection || firstSelectedItem.type === 'folder';
             renameBtn.disabled = !singleSelection;
-            // --- *** 关键修正 开始 *** ---
             moveBtn.disabled = count === 0 || isSearchMode || containsLockedFolder;
-            // --- *** 关键修正 结束 *** ---
 
             shareBtn.disabled = !singleSelection || isSingleLockedFolder;
             downloadBtn.disabled = count === 0 || containsLockedFolder;
@@ -685,6 +685,66 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // --- 事件监听 ---
+    // --- *** 关键修正 开始 *** ---
+    const handleKeyDown = (e) => {
+        const activeElement = document.activeElement;
+        const isItem = activeElement && (activeElement.classList.contains('item-card') || activeElement.classList.contains('list-item'));
+
+        if (!isItem) return;
+
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            handleItemDblClick({ target: activeElement });
+        } else if (e.key === ' ') {
+            e.preventDefault();
+            handleItemClick({ target: activeElement, ctrlKey: true });
+        } else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+            e.preventDefault();
+            
+            const items = Array.from(dropZone.querySelectorAll('.item-card:not([style*="display: none"]), .list-item:not([style*="display: none"])'));
+            if (items.length === 0) return;
+
+            const currentIndex = items.indexOf(activeElement);
+            let nextIndex = currentIndex;
+
+            if (currentView === 'grid') {
+                const style = window.getComputedStyle(itemGrid);
+                const columns = style.getPropertyValue('grid-template-columns').split(' ').length;
+                switch (e.key) {
+                    case 'ArrowUp':
+                        nextIndex = Math.max(0, currentIndex - columns);
+                        break;
+                    case 'ArrowDown':
+                        nextIndex = Math.min(items.length - 1, currentIndex + columns);
+                        break;
+                    case 'ArrowLeft':
+                        nextIndex = Math.max(0, currentIndex - 1);
+                        break;
+                    case 'ArrowRight':
+                        nextIndex = Math.min(items.length - 1, currentIndex + 1);
+                        break;
+                }
+            } else { // list view
+                switch (e.key) {
+                    case 'ArrowUp':
+                        nextIndex = Math.max(0, currentIndex - 1);
+                        break;
+                    case 'ArrowDown':
+                        nextIndex = Math.min(items.length - 1, currentIndex + 1);
+                        break;
+                }
+            }
+            
+            if (nextIndex !== currentIndex) {
+                items[nextIndex].focus();
+            }
+        }
+    };
+    if (dropZone) {
+        dropZone.addEventListener('keydown', handleKeyDown);
+    }
+    // --- *** 关键修正 结束 *** ---
+
     if (listHeader) {
         listHeader.addEventListener('click', (e) => {
             const target = e.target.closest('[data-sort]');
@@ -1447,7 +1507,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } else {
             // 设置新密码
-            const { password, confirmPassword } = await promptForPassword(`加密资料夹`, `为 "${folderName}" 设定一个新密码 (至少4个字元):`, false, true);
+            const { password, confirmPassword } = await promptForPassword(`加密资料夾`, `为 "${folderName}" 设定一个新密码 (至少4个字元):`, false, true);
             if (password === null) return;
             if (password !== confirmPassword) {
                 alert('两次输入的密码不匹配！');
