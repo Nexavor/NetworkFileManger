@@ -164,7 +164,7 @@
                     alert('档名不能为空！');
                     return;
                 }
-                // --- *** 关键修正：移除强制添加 .txt 的逻辑 *** ---
+                
                 const content = editor.value;
                 saveBtn.disabled = true;
                 saveBtn.textContent = '储存中...';
@@ -172,7 +172,7 @@
 
                 try {
                     const response = await axios.post('/api/text-file', {
-                        mode: fileId ? 'edit' : 'create', 
+                        mode: mode,
                         fileId: fileId,
                         folderId: folderId,
                         fileName,
@@ -190,14 +190,19 @@
 
                     initialFileName = fileName;
                     initialContent = content;
-
+                    
                     if (response.data.success && response.data.fileId) {
-                        fileId = response.data.fileId;
-                        mode = 'edit';
-                        const newUrl = `${window.location.pathname}?mode=edit&fileId=${fileId}`;
-                        history.pushState({}, '', newUrl);
+                        const newFileId = response.data.fileId;
+                        if (fileId !== newFileId) {
+                            fileId = newFileId;
+                            mode = 'edit';
+                            const newUrl = `${window.location.pathname}?mode=edit&fileId=${fileId}`;
+                            history.pushState({}, '', newUrl);
+                        }
                         fileNameInput.value = fileName;
                     }
+                    checkForChanges();
+
                 } catch (error) {
                     alert('储存失败：' + (error.response?.data?.message || '伺服器错误'));
                     checkForChanges();
