@@ -755,7 +755,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         nextIndex = Math.min(items.length - 1, currentIndex + 1);
                         break;
                 }
-            } else { // list view
+            } else { 
                 switch (e.key) {
                     case 'ArrowUp':
                         nextIndex = Math.max(0, currentIndex - 1);
@@ -768,21 +768,23 @@ document.addEventListener('DOMContentLoaded', () => {
             
             if (nextIndex !== currentIndex && items[nextIndex]) {
                 items[nextIndex].focus();
-                // --- *** 关键修正 开始 *** ---
-                // 在单选模式下，用键盘导航时，更新选择状态
-                if (!isMultiSelectMode) {
-                    const nextItem = items[nextIndex];
-                    selectedItems.clear();
-                    selectedItems.set(nextItem.dataset.id, { type: nextItem.dataset.type, name: nextItem.dataset.name });
-                    rerenderSelection();
-                    updateContextMenu();
-                }
-                // --- *** 关键修正 结束 *** ---
             }
         }
     };
     if (dropZone) {
         dropZone.addEventListener('keydown', handleKeyDown);
+        
+        // --- *** 关键修正 开始 *** ---
+        dropZone.addEventListener('focusin', (e) => {
+            const target = e.target.closest('.item-card, .list-item');
+            if (target && body.classList.contains('using-keyboard') && !isMultiSelectMode) {
+                selectedItems.clear();
+                selectedItems.set(target.dataset.id, { type: target.dataset.type, name: target.dataset.name });
+                rerenderSelection();
+                updateContextMenu();
+            }
+        });
+        // --- *** 关键修正 结束 *** ---
     }
 
     if (listHeader) {
@@ -1040,7 +1042,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (isLocked) {
                 try {
-                    const { password } = await promptForPassword(`资料夹 "${target.dataset.name}" 已加密`, '请输入密码以存取:');
+                    const { password } = await promptForPassword(`资料夾 "${target.dataset.name}" 已加密`, '请输入密码以存取:');
                     if (password === null) return;
                     await axios.post(`/api/folder/${folderId}/verify`, { password });
                     window.history.pushState(null, '', `/folder/${folderId}`);
