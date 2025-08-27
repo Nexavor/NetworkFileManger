@@ -1,5 +1,4 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // --- *** 关键修正 开始 *** ---
     // 追踪最后互动方式 (滑鼠 vs 键盘)
     const body = document.body;
     body.classList.add('using-mouse'); // 预设是滑鼠
@@ -12,7 +11,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     window.addEventListener('mousemove', () => {
-        // 当滑鼠移动时，才切换回滑鼠模式，避免点击后立即切换
         if (!body.classList.contains('using-mouse')) {
             body.classList.remove('using-keyboard');
             body.classList.add('using-mouse');
@@ -20,11 +18,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     window.addEventListener('mousedown', () => {
-        // 点击时也设定为滑鼠模式，确保点击不会留下键盘焦点框
         body.classList.remove('using-keyboard');
         body.classList.add('using-mouse');
     });
-    // --- *** 关键修正 结束 *** ---
 
     // DOM 元素
     const homeLink = document.getElementById('homeLink');
@@ -113,7 +109,6 @@ document.addEventListener('DOMContentLoaded', () => {
         order: 'asc' 
     };
     
-    // 储存密码操作的 Promise resolve/reject
     let passwordPromise = {};
 
     const EDITABLE_EXTENSIONS = [
@@ -148,7 +143,6 @@ document.addEventListener('DOMContentLoaded', () => {
             hour12: false
         }).replace(/\//g, '-');
     };
-
 
     function showNotification(message, type = 'info', container = null) {
         const notification = document.createElement('div');
@@ -298,7 +292,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 try {
                     await axios.post(`/api/folder/${folderId}/verify`, { password });
-                    loadFolderContents(folderId); // 验证成功后重新加载
+                    loadFolderContents(folderId);
                 } catch (error) {
                     alert('密码错误！');
                     const parentId = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2].id : null;
@@ -310,7 +304,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             currentFolderContents = res.data.contents;
-            // 清理已不存在的选择项
             const currentIds = new Set([...res.data.contents.folders.map(f => String(f.id)), ...res.data.contents.files.map(f => String(f.id))]);
             selectedItems.forEach((_, key) => {
                 if (!currentIds.has(key)) {
@@ -369,7 +362,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (key === 'name') {
                 return a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true }) * direction;
             }
-            // 文件夹没有大小和日期，保持名称排序
             return a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true });
         });
 
@@ -776,6 +768,16 @@ document.addEventListener('DOMContentLoaded', () => {
             
             if (nextIndex !== currentIndex && items[nextIndex]) {
                 items[nextIndex].focus();
+                // --- *** 关键修正 开始 *** ---
+                // 在单选模式下，用键盘导航时，更新选择状态
+                if (!isMultiSelectMode) {
+                    const nextItem = items[nextIndex];
+                    selectedItems.clear();
+                    selectedItems.set(nextItem.dataset.id, { type: nextItem.dataset.type, name: nextItem.dataset.name });
+                    rerenderSelection();
+                    updateContextMenu();
+                }
+                // --- *** 关键修正 结束 *** ---
             }
         }
     };
@@ -845,7 +847,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     fileListContainer.appendChild(li);
                 }
                 uploadSubmitBtn.style.display = 'block';
-                 // 确保文件夹输入框被清空
                 folderInput.value = '';
             }
         });
@@ -858,7 +859,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 const folderName = files[0].webkitRelativePath.split('/')[0];
                 fileListContainer.innerHTML = `<li>已选择文件夹: <b>${folderName}</b> (包含 ${files.length} 个文件)</li>`;
                 uploadSubmitBtn.style.display = 'block';
-                // 确保文件输入框被清空，这样我们只处理文件夹
                 fileInput.value = '';
             }
         });
@@ -867,7 +867,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (uploadForm) {
         uploadForm.addEventListener('submit', (e) => {
             e.preventDefault();
-            // 优先处理文件夹上传，如果文件夹有文件，则忽略单文件选择
             const filesToProcess = folderInput.files.length > 0 ? folderInput.files : fileInput.files;
             const targetFolderId = folderSelect.value;
             uploadFiles(Array.from(filesToProcess), targetFolderId, false);
@@ -1054,7 +1053,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 loadFolderContents(folderId);
             }
         } else if (target && target.dataset.type === 'file') {
-            // 双击文件时触发预览
             if (selectedItems.size !== 1) {
                 selectedItems.clear();
                 selectedItems.set(target.dataset.id, { type: 'file', name: target.dataset.name });
@@ -1517,7 +1515,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const isLocked = folderElement.dataset.isLocked === 'true' || folderElement.dataset.isLocked === '1';
 
         if (isLocked) {
-            // 解锁或修改密码
             const action = prompt(`资料夹 "${folderName}" 已加密。\n请输入 "change" 来修改密码，或输入 "unlock" 来移除密码。`);
             if (action === 'unlock') {
                 const { password } = await promptForPassword(`移除密码`, `请输入 "${folderName}" 的密码以移除加密:`);
@@ -1544,7 +1541,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         } else {
-            // 设置新密码
             const { password, confirmPassword } = await promptForPassword(`加密资料夾`, `为 "${folderName}" 设定一个新密码 (至少4个字元):`, false, true);
             if (password === null) return;
             if (password !== confirmPassword) {
