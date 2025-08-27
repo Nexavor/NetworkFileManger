@@ -114,7 +114,6 @@ body.selection-mode-active #dropZone {
     overflow: hidden; display: flex; flex-direction: column; position: relative;
     transition: all 0.2s; cursor: pointer; border: 2px solid transparent;
 }
-/* --- *** 关键修正 开始 *** --- */
 body.using-mouse .item-card:hover { 
     transform: translateY(-3px); 
     box-shadow: 0 6px 12px rgba(0,0,0,0.15); 
@@ -124,15 +123,13 @@ body.using-mouse .item-card:hover {
     box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.5); 
 }
 .item-card:focus, .list-item:focus {
-    outline: none; /* 移除所有情况下的预设焦点外框 */
+    outline: none;
 }
 body.using-keyboard .item-card:focus, 
 body.using-keyboard .list-item:focus {
-    /* 这个样式只会在键盘导航时显示 */
     outline: 2px solid var(--primary-color);
     outline-offset: 2px;
 }
-/* --- *** 关键修正 结束 *** --- */
 .item-icon {
     width: 100%; aspect-ratio: 4 / 3; display: flex; justify-content: center;
     align-items: center; background-color: #f1f3f5; font-size: 64px; overflow: hidden;
@@ -154,7 +151,7 @@ body.using-keyboard .list-item:focus {
     cursor: pointer;
     user-select: none;
     position: relative;
-    padding-right: 20px; 
+    padding-right: 20px;
 }
 .list-header > div:hover {
     background-color: #d1d9e0;
@@ -170,8 +167,15 @@ body.using-keyboard .list-item:focus {
     background-color: #cfe2ff;
 }
 .list-item { cursor: pointer; transition: background-color 0.2s; }
-.list-item:hover { background-color: #f1f3f5; }
-.list-item.selected { background-color: #cfe2ff; border-left: 4px solid var(--primary-color); padding-left: 6px; }
+/* --- *** 关键修正 *** --- */
+body.using-mouse .list-item:hover { 
+    background-color: #f1f3f5; 
+}
+.list-item.selected { 
+    background-color: #cfe2ff; 
+    border-left: 4px solid var(--primary-color); 
+    padding-left: 6px; 
+}
 .list-icon { width: 30px; text-align: center; margin-right: 15px; font-size: 1.2em; }
 .list-icon .fa-folder, .list-icon .fa-lock { color: #ffc107; }
 .list-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
