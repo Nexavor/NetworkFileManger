@@ -118,12 +118,12 @@ body.selection-mode-active #dropZone {
 .item-card.selected { border-color: var(--primary-color); box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.5); }
 /* --- *** 关键修正 开始 *** --- */
 .item-card:focus, .list-item:focus {
-    /* 移除旧的 focus 样式，因为它会对滑鼠和键盘都生效 */
+    /* 移除所有情况下的预设焦点外框 */
     outline: none;
 }
 
 .item-card:focus-visible, .list-item:focus-visible {
-    /* 这个样式只会在键盘导航时显示 */
+    /* 只在浏览器判断为键盘操作时，才显示此自订外框 */
     outline: 2px solid var(--primary-color);
     outline-offset: 2px;
 }
@@ -149,7 +149,7 @@ body.selection-mode-active #dropZone {
     cursor: pointer;
     user-select: none;
     position: relative;
-    padding-right: 20px;
+    padding-right: 20px; 
 }
 .list-header > div:hover {
     background-color: #d1d9e0;
