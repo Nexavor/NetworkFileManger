@@ -149,7 +149,7 @@ body.selection-mode-active #dropZone {
     cursor: pointer;
     user-select: none;
     position: relative;
-    padding-right: 20px; 
+    padding-right: 20px;
 }
 .list-header > div:hover {
     background-color: #d1d9e0;
