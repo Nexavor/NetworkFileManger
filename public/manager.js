@@ -1,4 +1,31 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // --- *** 关键修正 开始 *** ---
+    // 追踪最后互动方式 (滑鼠 vs 键盘)
+    const body = document.body;
+    body.classList.add('using-mouse'); // 预设是滑鼠
+
+    window.addEventListener('keydown', (e) => {
+        if (['Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', ' '].includes(e.key)) {
+            body.classList.remove('using-mouse');
+            body.classList.add('using-keyboard');
+        }
+    });
+
+    window.addEventListener('mousemove', () => {
+        // 当滑鼠移动时，才切换回滑鼠模式，避免点击后立即切换
+        if (!body.classList.contains('using-mouse')) {
+            body.classList.remove('using-keyboard');
+            body.classList.add('using-mouse');
+        }
+    });
+
+    window.addEventListener('mousedown', () => {
+        // 点击时也设定为滑鼠模式，确保点击不会留下键盘焦点框
+        body.classList.remove('using-keyboard');
+        body.classList.add('using-mouse');
+    });
+    // --- *** 关键修正 结束 *** ---
+
     // DOM 元素
     const homeLink = document.getElementById('homeLink');
     const itemGrid = document.getElementById('itemGrid');
@@ -398,7 +425,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (item.type === 'folder') {
             card.dataset.isLocked = item.is_locked;
         }
-        card.setAttribute('tabindex', '0'); // --- *** 关键修正 *** ---
+        card.setAttribute('tabindex', '0');
 
         let iconHtml = '';
         if (item.type === 'file') {
@@ -430,7 +457,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (item.type === 'folder') {
             itemDiv.dataset.isLocked = item.is_locked;
         }
-        itemDiv.setAttribute('tabindex', '0'); // --- *** 关键修正 *** ---
+        itemDiv.setAttribute('tabindex', '0');
 
         const icon = item.type === 'folder' ? (item.is_locked ? 'fa-lock' : 'fa-folder') : getFileIconClass(item.mimetype, item.name);
         const name = item.name === '/' ? '根目录' : item.name;
@@ -452,7 +479,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return itemDiv;
     };
 
-    // --- *** 关键修正 开始 *** ---
     const getFileIconClass = (mimetype, fileName) => {
         const lowerFileName = (fileName || '').toLowerCase();
         const archiveExtensions = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso', 'dmg'];
@@ -475,7 +501,6 @@ document.addEventListener('DOMContentLoaded', () => {
         
         return 'fa-file';
     };
-    // --- *** 关键修正 结束 *** ---
     
     const updateContextMenu = (targetItem = null) => {
         const count = selectedItems.size;
@@ -700,7 +725,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // --- 事件监听 ---
-    // --- *** 关键修正 开始 *** ---
     const handleKeyDown = (e) => {
         const activeElement = document.activeElement;
         const isItem = activeElement && (activeElement.classList.contains('item-card') || activeElement.classList.contains('list-item'));
@@ -750,7 +774,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
             
-            if (nextIndex !== currentIndex) {
+            if (nextIndex !== currentIndex && items[nextIndex]) {
                 items[nextIndex].focus();
             }
         }
@@ -758,7 +782,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (dropZone) {
         dropZone.addEventListener('keydown', handleKeyDown);
     }
-    // --- *** 关键修正 结束 *** ---
 
     if (listHeader) {
         listHeader.addEventListener('click', (e) => {
