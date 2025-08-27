@@ -167,7 +167,6 @@ body.using-keyboard .list-item:focus {
     background-color: #cfe2ff;
 }
 .list-item { cursor: pointer; transition: background-color 0.2s; }
-/* --- *** 关键修正 *** --- */
 body.using-mouse .list-item:hover { 
     background-color: #f1f3f5; 
 }
