@@ -13,6 +13,8 @@ const db = require('./database.js');
 const data = require('./data.js');
 const storageManager = require('./storage');
 
+BigInt.prototype.toJSON = function() { return this.toString(); };
+
 const app = express();
 
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
@@ -1257,3 +1259,4 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
         res.status(500).json({ success: false, message: '删除设定失败' });
     }
 });
+
