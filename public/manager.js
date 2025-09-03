@@ -106,14 +106,14 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentView = 'grid';
     let currentSort = {
         key: 'name',
-        order: 'asc' 
+        order: 'asc'
     };
     
     let passwordPromise = {};
 
     const EDITABLE_EXTENSIONS = [
-        '.txt', '.md', '.json', '.js', '.css', '.html', '.xml', '.yaml', '.yml', 
-        '.log', '.ini', '.cfg', '.conf', '.sh', '.bat', '.py', '.java', '.c', 
+        '.txt', '.md', '.json', '.js', '.css', '.html', '.xml', '.yaml', '.yml',
+        '.log', '.ini', '.cfg', '.conf', '.sh', '.bat', '.py', '.java', '.c',
         '.cpp', '.h', '.hpp', '.cs', '.php', '.rb', '.go', '.rs', '.ts', '.sql'
     ];
 
@@ -282,7 +282,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await axios.get(`/api/folder/${folderId}`);
             
             if (res.data.locked) {
-                const { password } = await promptForPassword(`资料夹 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
+                const { password } = await promptForPassword(`资料夾 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
                 if (password === null) { 
                     const parentId = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2].id : null;
                     if (parentId) {
@@ -1008,8 +1008,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (homeLink) {
         homeLink.addEventListener('click', (e) => {
             e.preventDefault();
-            window.history.pushState(null, '', '/');
-            window.location.href = '/';
+            // window.history.pushState(null, '', '/');
+            // window.location.href = '/';
+            // --- 关键修正 开始 ---
+            // 直接加载根目录内容，而不是刷新页面或更改 URL
+            loadFolderContents(1);
+            // --- 关键修正 结束 ---
         });
     }
     const handleItemClick = (e) => {
@@ -1045,13 +1049,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     const { password } = await promptForPassword(`资料夾 "${target.dataset.name}" 已加密`, '请输入密码以存取:');
                     if (password === null) return;
                     await axios.post(`/api/folder/${folderId}/verify`, { password });
-                    window.history.pushState(null, '', `/folder/${folderId}`);
+                    // window.history.pushState(null, '', `/folder/${folderId}`); // 注释掉此行
                     loadFolderContents(folderId);
                 } catch (error) {
                     alert(error.response?.data?.message || '验证失败');
                 }
             } else {
-                window.history.pushState(null, '', `/folder/${folderId}`);
+                // window.history.pushState(null, '', `/folder/${folderId}`); // 注释掉此行
                 loadFolderContents(folderId);
             }
         } else if (target && target.dataset.type === 'file') {
@@ -1099,11 +1103,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const link = e.target.closest('a');
             if (link && link.dataset.folderId) {
                 const folderId = parseInt(link.dataset.folderId, 10);
-                window.history.pushState(null, '', `/folder/${folderId}`);
+                // window.history.pushState(null, '', `/folder/${folderId}`); // 注释掉此行
                 loadFolderContents(folderId);
             }
         });
     }
+    /* --- 关键修正 开始 ---
+    // 由于我们不再改变 URL，所以需要停用 popstate 监听器以避免错误
     window.addEventListener('popstate', () => {
         if (document.getElementById('itemGrid')) {
             const pathParts = window.location.pathname.split('/');
@@ -1116,6 +1122,7 @@ document.addEventListener('DOMContentLoaded', () => {
             loadFolderContents(folderId);
         }
     });
+    --- 关键修正 结束 --- */
     if (createFolderBtn) {
         createFolderBtn.addEventListener('click', async () => {
             contextMenu.style.display = 'none';
@@ -1517,7 +1524,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const isLocked = folderElement.dataset.isLocked === 'true' || folderElement.dataset.isLocked === '1';
 
         if (isLocked) {
-            const action = prompt(`资料夹 "${folderName}" 已加密。\n请输入 "change" 来修改密码，或输入 "unlock" 来移除密码。`);
+            const action = prompt(`资料夾 "${folderName}" 已加密。\n请输入 "change" 来修改密码，或输入 "unlock" 来移除密码。`);
             if (action === 'unlock') {
                 const { password } = await promptForPassword(`移除密码`, `请输入 "${folderName}" 的密码以移除加密:`);
                 if (password === null) return;
