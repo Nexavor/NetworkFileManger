@@ -9,40 +9,12 @@ const bcrypt = require('bcrypt');
 const fs = require('fs');
 const fsp = require('fs').promises;
 const crypto = require('crypto');
+const { encryptId, decryptId } = require('./crypto-utils.js'); // 引入新的工具檔
 const db = require('./database.js');
 const data = require('./data.js');
 const storageManager = require('./storage');
 
 const app = express();
-
-// --- 新增加密相关设定 ---
-const ENCRYPTION_KEY = crypto.scryptSync(process.env.SESSION_SECRET || 'default-secret-for-crypto', 'salt', 32);
-const IV_LENGTH = 16;
-const ALGORITHM = 'aes-256-cbc';
-
-function encryptId(id) {
-    const iv = crypto.randomBytes(IV_LENGTH);
-    const cipher = crypto.createCipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
-    let encrypted = cipher.update(String(id), 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    return iv.toString('hex') + ':' + encrypted;
-}
-
-function decryptId(encryptedId) {
-    try {
-        const textParts = encryptedId.split(':');
-        const iv = Buffer.from(textParts.shift(), 'hex');
-        const encryptedText = Buffer.from(textParts.join(':'), 'hex');
-        const decipher = crypto.createDecipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
-        let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
-        decrypted += decipher.final('utf8');
-        return parseInt(decrypted, 10);
-    } catch (error) {
-        // console.error("解密失败:", error);
-        return null;
-    }
-}
-// --- 加密相关设定结束 ---
 
 
 // --- 关键修正 开始 ---
@@ -169,21 +141,18 @@ app.get('/', requireLogin, (req, res) => {
     db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [req.session.userId], (err, rootFolder) => {
         if (err || !rootFolder) {
             data.createFolder('/', null, req.session.userId)
-                .then(newRoot => res.redirect(`/folder/${encryptId(newRoot.id)}`))
+                .then(newRoot => res.redirect(`/view/${encryptId(newRoot.id)}`))
                 .catch(() => res.status(500).send("找不到您的根目录，也无法建立。"));
             return;
         }
-        res.redirect(`/folder/${encryptId(rootFolder.id)}`);
+        res.redirect(`/view/${encryptId(rootFolder.id)}`);
     });
 });
-
-app.get('/folder/:encryptedId', requireLogin, (req, res) => {
-    // 解密 ID
+app.get('/view/:encryptedId', requireLogin, (req, res) => {
     const folderId = decryptId(req.params.encryptedId);
     if (folderId === null) {
         return res.status(400).send('无效的资料夹连结');
     }
-    // 验证使用者是否有权限存取此资料夹
     db.get("SELECT id FROM folders WHERE id = ? AND user_id = ?", [folderId, req.session.userId], (err, folder) => {
         if (err || !folder) {
             return res.status(404).send('找不到资料夹或无权限');
@@ -499,18 +468,16 @@ app.get('/api/folder/:encryptedId', requireLogin, async (req, res) => {
 
         if (folderDetails.is_locked && !req.session.unlockedFolders.includes(folderId)) {
             const folderPath = await data.getFolderPath(folderId, userId);
-            const encryptedPath = await Promise.all(folderPath.map(async p => ({...p, encryptedId: encryptId(p.id) })));
             return res.json({
                 locked: true,
-                path: encryptedPath
+                path: folderPath
             });
         }
 
         const contents = await data.getFolderContents(folderId, userId);
         const folderPath = await data.getFolderPath(folderId, userId);
-        const encryptedPath = await Promise.all(folderPath.map(async p => ({...p, encryptedId: encryptId(p.id) })));
 
-        res.json({ contents, path: encryptedPath });
+        res.json({ contents, path: folderPath });
     } catch (error) {
         res.status(500).json({ success: false, message: '读取资料夾内容失败。' });
     }
