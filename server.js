@@ -12,34 +12,21 @@ const crypto = require('crypto');
 const db = require('./database.js');
 const data = require('./data.js');
 const storageManager = require('./storage');
-// --- *** 关键修正 开始 *** ---
-// 引入新的加密工具
+// --- 新增：引入加密工具 ---
 const { encrypt, decrypt } = require('./utils.js');
-// --- *** 关键修正 结束 *** ---
-
 
 const app = express();
 
-// --- 关键修正 开始 ---
-// 1. 定义通用的 JSON replacer 函数
 const jsonReplacer = (key, value) => {
-    // 如果值的类型是 BigInt，则将其转换为字符串
     if (typeof value === 'bigint') {
         return value.toString();
     }
-    // 其他类型保持原样
     return value;
 };
-
-// 2. 将 replacer 函数设定为 Express 应用的全局设定
-//    这一步必须在 const app = express() 之后执行
 app.set('json replacer', jsonReplacer);
-// --- 关键修正 结束 ---
-
 
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
-// --- 日志辅助函数 ---
 const log = (level, file, func, message, ...args) => {
     // const timestamp = new Date().toISOString();
     // console.log(`[${timestamp}] [${level}] [${file}:${func}] - ${message}`, ...args);
@@ -71,14 +58,12 @@ app.use(session({
 }));
 
 app.set('trust proxy', 1);
-
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// --- 中介软体 ---
 function requireLogin(req, res, next) {
   if (req.session.loggedIn) return next();
   res.redirect('/login');
@@ -91,7 +76,6 @@ function requireAdmin(req, res, next) {
     res.status(403).send('权限不足');
 }
 
-// --- 路由 ---
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views/login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views/register.html')));
 app.get('/editor', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/editor.html')));
@@ -140,23 +124,21 @@ app.get('/logout', (req, res) => {
     });
 });
 
+// --- 修改：根目录重定向到加密后的网址 ---
 app.get('/', requireLogin, (req, res) => {
     db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [req.session.userId], (err, rootFolder) => {
         if (err || !rootFolder) {
             data.createFolder('/', null, req.session.userId)
-                // --- *** 关键修正：将重定向到新的加密路由 *** ---
                 .then(newRoot => res.redirect(`/view/${encrypt(`folder/${newRoot.id}`)}`))
                 .catch(() => res.status(500).send("找不到您的根目录，也无法建立。"));
             return;
         }
-        // --- *** 关键修正：将重定向到新的加密路由 *** ---
         res.redirect(`/view/${encrypt(`folder/${rootFolder.id}`)}`);
     });
 });
 
-// --- *** 关键修正：修改旧路由为新的加密路由 *** ---
+// --- 修改：使用新的加密路由来显示档案管理员介面 ---
 app.get('/view/:encryptedPath', requireLogin, (req, res) => {
-    // 只是为了渲染页面，实际的资料获取会透过 API
     res.sendFile(path.join(__dirname, 'views/manager.html'));
 });
 
@@ -197,7 +179,7 @@ app.post('/upload', requireLogin, (req, res) => {
                 if (action === 'skip') {
                     log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 跳过文件: "${relativePath}"`);
                     fileStream.resume();
-                    return { skipped: true }; // 关键修正: 返回跳过状态
+                    return { skipped: true };
                 }
 
                 const pathParts = relativePath.split('/').filter(p => p);
@@ -221,13 +203,13 @@ app.post('/upload', requireLogin, (req, res) => {
                     if (conflict) {
                         log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 发现冲突且无解决方案，跳过文件: "${finalFilename}"`);
                         fileStream.resume();
-                        return { skipped: true }; // 关键修正: 返回跳过状态
+                        return { skipped: true };
                     }
                 }
                 
                 await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '');
                 log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 储存引擎成功处理了文件: "${finalFilename}"`);
-                return { skipped: false }; // 关键修正: 返回成功状态
+                return { skipped: false };
             })().catch(err => {
                 log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 处理文件 "${relativePath}" 时发生严重错误:`, err);
                 fileStream.resume();
@@ -236,7 +218,6 @@ app.post('/upload', requireLogin, (req, res) => {
             uploadPromises.push(fileUploadPromise);
         });
 
-        // --- *** 关键修正 开始 *** ---
         busboy.on('finish', async () => {
             log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 'finish' 事件触发。等待所有上传任务完成...`);
             try {
@@ -257,7 +238,6 @@ app.post('/upload', requireLogin, (req, res) => {
                 }
             }
         });
-        // --- *** 关键修正 结束 *** ---
 
         busboy.on('error', (err) => {
             log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 发生错误:`, err);
@@ -308,10 +288,8 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                 const fileStream = fs.createReadStream(tempFilePath);
                 await data.unifiedDelete(originalFile.message_id, 'file', userId);
                 const result = await storage.upload(fileStream, fileName, 'text/plain', userId, originalFile.folder_id);
-                // 对于 Telegram，我们返回新的 fileId，前端介面已处理这种情况
                 return res.json({ success: true, fileId: result.fileId });
             } else {
-                // 对于 local 和 webdav，我们执行更新
                 const newRelativePath = path.posix.join(path.posix.dirname(originalFile.file_id), fileName);
 
                 if (originalFile.storage_type === 'local') {
@@ -338,7 +316,6 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                     file_id: newRelativePath
                 }, userId);
                 
-                // 关键：返回原始 fileId，因为我们是更新，不是建立
                 return res.json({ success: true, fileId: fileId });
             }
         } else if (mode === 'create' && folderId) {
@@ -444,7 +421,7 @@ app.get('/api/search', requireLogin, async (req, res) => {
     }
 });
 
-// --- *** 关键修正：API 路由也需要解密 *** ---
+// --- 修改：API 路由现在接收加密路径 ---
 app.get('/api/folder/:encryptedPath', requireLogin, async (req, res) => {
     try {
         const decryptedPath = decrypt(req.params.encryptedPath);
@@ -723,8 +700,6 @@ app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).send('获取缩图失败'); }
 });
 
-// --- *** 关键修正 开始 *** ---
-// 统一的档案串流处理函式
 async function handleFileStream(req, res, fileInfo) {
     const storage = storageManager.getStorage();
     const range = req.headers.range;
@@ -733,7 +708,6 @@ async function handleFileStream(req, res, fileInfo) {
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Content-Type', fileInfo.mimetype || 'application/octet-stream');
     
-    // 如果浏览器请求的是可拖动的影片
     if (range && totalSize) {
         const parts = range.replace(/bytes=/, "").split("-");
         const start = parseInt(parts[0], 10);
@@ -768,11 +742,11 @@ async function handleFileStream(req, res, fileInfo) {
                 res.status(404).send('无法获取文件链接');
             }
         }
-    } else { // 正常下载或档案太小
-        res.setHeader('Content-Length', totalSize || -1); // -1 for unknown
+    } else {
+        res.setHeader('Content-Length', totalSize || -1);
         res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
         
-        if (req.query.download) { // 强制下载
+        if (req.query.download) {
             res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
         }
 
@@ -806,7 +780,6 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
         if (!res.headersSent) res.status(500).send('下载代理失败: ' + error.message);
     }
 });
-// --- *** 关键修正 结束 *** ---
 
 app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     try {
@@ -928,7 +901,6 @@ app.post('/api/cancel-share', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: '取消分享失败' }); }
 });
 
-// --- 扫描器端点 ---
 app.post('/api/scan/local', requireAdmin, async (req, res) => {
     const { userId } = req.body;
     const log = [];
@@ -951,7 +923,7 @@ app.post('/api/scan/local', requireAdmin, async (req, res) => {
             for (const entry of entries) {
                 const fullPath = path.join(dir, entry.name);
                 const relativePath = path.relative(userUploadDir, fullPath).replace(/\\/g, '/');
-                const fileId = relativePath; // file_id 是相对路径
+                const fileId = relativePath;
 
                 if (entry.isDirectory()) {
                     await scanDirectory(fullPath);
@@ -1116,7 +1088,6 @@ app.get('/share/view/folder/:token/:path(*)?', async (req, res) => {
 });
 
 
-// --- *** 关键修正 开始 *** ---
 app.get('/share/download/file/:token', async (req, res) => {
     try {
         const token = req.params.token;
@@ -1163,8 +1134,6 @@ app.get('/share/download/:folderToken/:fileId', async (req, res) => {
         if (!res.headersSent) res.status(500).send('下载失败: ' + error.message);
     }
 });
-// --- *** 关键修正 结束 *** ---
-
 
 app.listen(PORT, () => {
     log('INFO', 'server.js', 'listen', `✅ 伺服器已在 http://localhost:${PORT} 上运行`);
