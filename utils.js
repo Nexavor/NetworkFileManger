@@ -1,3 +1,4 @@
+require('dotenv').config(); // 关键修正：确保此模块能读取 .env 档案
 const crypto = require('crypto');
 
 // 从 .env 档案中取得密钥，确保有预设值
@@ -9,14 +10,14 @@ const iv = Buffer.alloc(16, 0); // 初始化向量 (IV)，为了简单起见我�
 /**
  * 加密函式
  * @param {string} text 要加密的文字 (例如: 'folder/2')
- * @returns {string} Base64 编码的加密后字串
+ * @returns {string} Base64 URL-safe 编码的加密后字串
  */
 function encrypt(text) {
     try {
         const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(key), iv);
         let encrypted = cipher.update(text, 'utf8', 'hex');
         encrypted += cipher.final('hex');
-        // 使用 Base64 URL-safe 编码，替换特殊字元
+        // 使用 Base64 URL-safe 编码，替换特殊字元以确保网址安全
         return Buffer.from(encrypted, 'hex').toString('base64url');
     } catch (error) {
         console.error("加密失败:", error);
