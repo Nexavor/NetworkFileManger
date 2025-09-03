@@ -13,7 +13,22 @@ const db = require('./database.js');
 const data = require('./data.js');
 const storageManager = require('./storage');
 
-BigInt.prototype.toJSON = function() { return this.toString(); };
+// --- 关键修正 开始 ---
+// 移除之前的 BigInt.prototype.toJSON 修改
+// 新增一个通用的 JSON replacer 函数
+const jsonReplacer = (key, value) => {
+    // 如果值的类型是 BigInt，则将其转换为字符串
+    if (typeof value === 'bigint') {
+        return value.toString();
+    }
+    // 对于其他所有类型，保持原样
+    // 未来如果遇到其他不支持的类型，只需在此处增加新的判断逻辑即可
+    return value;
+};
+
+// 将 replacer 函数设定为 Express 应用的全局设定
+app.set('json replacer', jsonReplacer);
+// --- 关键修正 结束 ---
 
 const app = express();
 
@@ -1259,4 +1274,5 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
         res.status(500).json({ success: false, message: '删除设定失败' });
     }
 });
+
 
