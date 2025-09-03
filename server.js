@@ -12,6 +12,11 @@ const crypto = require('crypto');
 const db = require('./database.js');
 const data = require('./data.js');
 const storageManager = require('./storage');
+// --- *** 关键修正 开始 *** ---
+// 引入新的加密工具
+const { encrypt, decrypt } = require('./utils.js');
+// --- *** 关键修正 结束 *** ---
+
 
 const app = express();
 
@@ -139,14 +144,22 @@ app.get('/', requireLogin, (req, res) => {
     db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [req.session.userId], (err, rootFolder) => {
         if (err || !rootFolder) {
             data.createFolder('/', null, req.session.userId)
-                .then(newRoot => res.redirect(`/folder/${newRoot.id}`))
+                // --- *** 关键修正：将重定向到新的加密路由 *** ---
+                .then(newRoot => res.redirect(`/view/${encrypt(`folder/${newRoot.id}`)}`))
                 .catch(() => res.status(500).send("找不到您的根目录，也无法建立。"));
             return;
         }
-        res.redirect(`/folder/${rootFolder.id}`);
+        // --- *** 关键修正：将重定向到新的加密路由 *** ---
+        res.redirect(`/view/${encrypt(`folder/${rootFolder.id}`)}`);
     });
 });
-app.get('/folder/:id', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/manager.html')));
+
+// --- *** 关键修正：修改旧路由为新的加密路由 *** ---
+app.get('/view/:encryptedPath', requireLogin, (req, res) => {
+    // 只是为了渲染页面，实际的资料获取会透过 API
+    res.sendFile(path.join(__dirname, 'views/manager.html'));
+});
+
 app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/shares.html')));
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
@@ -431,9 +444,19 @@ app.get('/api/search', requireLogin, async (req, res) => {
     }
 });
 
-app.get('/api/folder/:id', requireLogin, async (req, res) => {
+// --- *** 关键修正：API 路由也需要解密 *** ---
+app.get('/api/folder/:encryptedPath', requireLogin, async (req, res) => {
     try {
-        const folderId = parseInt(req.params.id, 10);
+        const decryptedPath = decrypt(req.params.encryptedPath);
+        if (!decryptedPath || !decryptedPath.startsWith('folder/')) {
+            return res.status(400).json({ success: false, message: '无效的资料夹路径' });
+        }
+        
+        const folderId = parseInt(decryptedPath.split('/')[1], 10);
+        if (isNaN(folderId)) {
+            return res.status(400).json({ success: false, message: '无效的资料夹 ID' });
+        }
+
         const userId = req.session.userId;
 
         const folderDetails = await data.getFolderDetails(folderId, userId);
@@ -443,19 +466,31 @@ app.get('/api/folder/:id', requireLogin, async (req, res) => {
         }
 
         if (folderDetails.is_locked && !req.session.unlockedFolders.includes(folderId)) {
+            const breadcrumb = await data.getFolderPath(folderId, userId);
+            // 对路径中的每个 ID 进行加密
+            const encryptedPath = breadcrumb.map(p => ({
+                id: encrypt(`folder/${p.id}`),
+                name: p.name
+            }));
             return res.json({
                 locked: true,
-                path: await data.getFolderPath(folderId, userId)
+                path: encryptedPath
             });
         }
 
         const contents = await data.getFolderContents(folderId, userId);
-        const path = await data.getFolderPath(folderId, userId);
-        res.json({ contents, path });
+        const breadcrumb = await data.getFolderPath(folderId, userId);
+        // 对路径中的每个 ID 进行加密
+        const encryptedPath = breadcrumb.map(p => ({
+            id: encrypt(`folder/${p.id}`),
+            name: p.name
+        }));
+        res.json({ contents, path: encryptedPath });
     } catch (error) {
         res.status(500).json({ success: false, message: '读取资料夾内容失败。' });
     }
 });
+
 
 app.post('/api/folder', requireLogin, async (req, res) => {
     const { name, parentId } = req.body;
@@ -1274,6 +1309,3 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
         res.status(500).json({ success: false, message: '删除设定失败' });
     }
 });
-
-
-
