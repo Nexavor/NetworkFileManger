@@ -279,14 +279,13 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             isSearchMode = false;
             if (searchInput) searchInput.value = '';
-            currentEncryptedFolderId = encryptedFolderId; // 更新加密ID
+            currentEncryptedFolderId = encryptedFolderId;
             const res = await axios.get(`/api/folder/${encryptedFolderId}`);
             
-            // 从回应中取得解密后的 folderId
             currentFolderId = res.data.path[res.data.path.length - 1].id;
 
             if (res.data.locked) {
-                const { password } = await promptForPassword(`资料夹 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
+                const { password } = await promptForPassword(`资料夾 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
                 if (password === null) { 
                     const parent = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2] : null;
                     if (parent) {
@@ -353,7 +352,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (link.tagName === 'A') {
                 link.href = '#';
                 link.dataset.folderId = p.id;
-                link.dataset.encryptedId = p.encryptedId; // 储存加密ID
+                link.dataset.encryptedId = p.encryptedId;
             }
             breadcrumb.appendChild(link);
         });
@@ -1055,7 +1054,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     await axios.post(`/api/folder/${folderId}/verify`, { password });
                 }
                 
-                window.history.pushState({ encryptedId }, '', `/folder/${encryptedId}`);
+                window.history.pushState({ encryptedId }, '', `/view/${encryptedId}`);
                 loadFolderContents(encryptedId);
             } catch (error) {
                 alert(error.response?.data?.message || '操作失败');
@@ -1106,7 +1105,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const link = e.target.closest('a');
             if (link && link.dataset.encryptedId) {
                 const encryptedId = link.dataset.encryptedId;
-                window.history.pushState({ encryptedId }, '', `/folder/${encryptedId}`);
+                window.history.pushState({ encryptedId }, '', `/view/${encryptedId}`);
                 loadFolderContents(encryptedId);
             }
         });
@@ -1116,7 +1115,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const pathParts = window.location.pathname.split('/');
             const encryptedId = pathParts.filter(p => p).pop();
             
-            if (encryptedId && encryptedId !== 'folder') {
+            if (encryptedId && (pathParts[pathParts.length - 2] === 'view' || pathParts[pathParts.length - 2] === 'folder') ) {
                 loadFolderContents(encryptedId);
             } else {
                  window.location.href = '/';
@@ -1368,8 +1367,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     targetFolderId: currentTargetFolderId
                 });
                 const { fileConflicts, folderConflicts } = conflictCheckRes.data;
-    
-                const destFolderContentsRes = await axios.get(`/api/folder/${(await axios.get(`/api/encrypt-id/${currentTargetFolderId}`)).data.encryptedId}`);
+                const encryptedTargetId = (await axios.get(`/api/encrypt-id/${currentTargetFolderId}`)).data.encryptedId;
+                const destFolderContentsRes = await axios.get(`/api/folder/${encryptedTargetId}`);
                 const destFolderMap = new Map(destFolderContentsRes.data.contents.folders.map(f => [f.name, f.id]));
     
                 for (const folderName of folderConflicts) {
@@ -1396,7 +1395,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         const sourceFolder = itemsToMove.find(item => item.name === folderName && item.type === 'folder');
                         const destSubFolderId = destFolderMap.get(folderName);
                         if (sourceFolder && destSubFolderId) {
-                            const sourceSubFolderContentsRes = await axios.get(`/api/folder/${(await axios.get(`/api/encrypt-id/${sourceFolder.id}`)).data.encryptedId}`);
+                            const encryptedSourceId = (await axios.get(`/api/encrypt-id/${sourceFolder.id}`)).data.encryptedId;
+                            const sourceSubFolderContentsRes = await axios.get(`/api/folder/${encryptedSourceId}`);
                             const subItemsToMove = [...sourceSubFolderContentsRes.data.contents.folders, ...sourceSubFolderContentsRes.data.contents.files].map(item => ({
                                 id: item.id,
                                 name: item.name,
@@ -1575,9 +1575,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // 初始化
     if (document.getElementById('itemGrid')) {
         const pathParts = window.location.pathname.split('/');
-        const encryptedId = pathParts[pathParts.length - 1];
-        if (encryptedId && pathParts[pathParts.length - 2] === 'folder') {
-            loadFolderContents(encryptedId);
+        const lastPart = pathParts.filter(p => p).pop();
+        if (lastPart && (pathParts[pathParts.length - 2] === 'view' || pathParts[pathParts.length - 2] === 'folder')) {
+            loadFolderContents(lastPart);
         } else {
             window.location.href = '/';
         }
