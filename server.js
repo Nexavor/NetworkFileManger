@@ -253,13 +253,6 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         await fsp.writeFile(tempFilePath, content, 'utf8');
         
         if (mode === 'edit' && fileId) {
-            // --- *** 关键修正：新增存取权限检查 *** ---
-            const accessible = await data.isFileAccessible(fileId, userId, req.session.unlockedFolders);
-            if (!accessible) {
-                return res.status(403).json({ success: false, message: '权限不足' });
-            }
-            // --- 修正结束 ---
-
             const filesToUpdate = await data.getFilesByIds([fileId], userId);
             if (filesToUpdate.length === 0) {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
@@ -321,12 +314,6 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
 app.get('/api/file-info/:id', requireLogin, async (req, res) => {
     try {
         const fileId = parseInt(req.params.id, 10);
-        // --- *** 关键修正：新增存取权限检查 *** ---
-        const accessible = await data.isFileAccessible(fileId, req.session.userId, req.session.unlockedFolders);
-        if (!accessible) {
-            return res.status(403).json({ success: false, message: '权限不足' });
-        }
-        // --- 修正结束 ---
         const [fileInfo] = await data.getFilesByIds([fileId], req.session.userId);
         if (fileInfo) {
             res.json(fileInfo);
@@ -601,12 +588,10 @@ app.post('/rename', requireLogin, async (req, res) => {
 app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = parseInt(req.params.message_id, 10);
-        // --- *** 关键修正：新增存取权限检查 *** ---
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) {
             return res.status(403).send('权限不足');
         }
-        // --- 修正结束 ---
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
         if (fileInfo && fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
             const storage = storageManager.getStorage();
@@ -678,10 +663,8 @@ async function handleFileStream(req, res, fileInfo) {
 app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = parseInt(req.params.message_id, 10);
-        // --- *** 关键修正：新增存取权限检查 *** ---
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) return res.status(403).send('权限不足');
-        // --- 修正结束 ---
         
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
         if (!fileInfo) return res.status(404).send('文件信息未找到');
@@ -695,12 +678,10 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
 app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = parseInt(req.params.message_id, 10);
-        // --- *** 关键修正：新增存取权限检查 *** ---
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) {
             return res.status(403).send('权限不足');
         }
-        // --- 修正结束 ---
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
         if (!fileInfo || !fileInfo.file_id) {
             return res.status(404).send('文件信息未找到');

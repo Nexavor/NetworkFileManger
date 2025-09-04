@@ -216,27 +216,19 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     
     const uploadFiles = async (filesOrData, targetFolderId, isDrag = false) => {
-        // --- *** 关键修正：重构 allFilesData 的生成逻辑以确保一致性 *** ---
-        let allFilesData;
-        const notificationContainer = isDrag ? null : uploadNotificationArea;
+        const isDataArray = filesOrData.length > 0 && filesOrData[0].file;
 
-        // isDrag 为 true 时, filesOrData 是已经处理好的 {relativePath, file} 数组
-        // isDrag 为 false 时, filesOrData 是 File 对象数组
-        if (isDrag) {
-            allFilesData = filesOrData;
-        } else {
-            allFilesData = Array.from(filesOrData).map(f => ({
-                // 对于文件夹上传, webkitRelativePath 存在; 对于文件上传, 使用 f.name
-                relativePath: f.webkitRelativePath || f.name,
-                file: f
-            }));
-        }
-        
-        if (allFilesData.length === 0) {
-            showNotification('请选择文件或文件夹。', 'error', notificationContainer);
+        if (filesOrData.length === 0) {
+            showNotification('请选择文件或文件夹。', 'error', !isDrag ? uploadNotificationArea : null);
             return;
         }
-        // --- 修正结束 ---
+
+        const notificationContainer = isDrag ? null : uploadNotificationArea;
+
+        const allFilesData = isDataArray ? filesOrData : Array.from(filesOrData).map(f => ({
+            relativePath: f.webkitRelativePath || f.name,
+            file: f
+        }));
 
         const oversizedFiles = allFilesData.filter(data => data.file.size > MAX_TELEGRAM_SIZE);
         if (oversizedFiles.length > 0) {
@@ -893,7 +885,7 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             const filesToProcess = folderInput.files.length > 0 ? folderInput.files : fileInput.files;
             const targetFolderId = folderSelect.value;
-            uploadFiles(filesToProcess, targetFolderId, false);
+            uploadFiles(Array.from(filesToProcess), targetFolderId, false);
         });
     }
 
@@ -1194,17 +1186,14 @@ document.addEventListener('DOMContentLoaded', () => {
             uploadModal.style.display = 'none';
         });
     }
-    // --- *** 关键修正：将 FileList 转换为 Array 后再传递 *** ---
     if (uploadForm) {
         uploadForm.addEventListener('submit', (e) => {
             e.preventDefault();
             const filesToProcess = folderInput.files.length > 0 ? folderInput.files : fileInput.files;
             const targetFolderId = folderSelect.value;
-            // 将 FileList 转换为数组，确保 uploadFiles 函数接收到的是一致的数组类型
             uploadFiles(Array.from(filesToProcess), targetFolderId, false);
         });
     }
-    // --- 修正结束 ---
     
     if (shareBtn && shareModal) {
         const shareOptions = document.getElementById('shareOptions');

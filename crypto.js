@@ -8,7 +8,7 @@ const IV_LENGTH = 16;
 /**
  * 加密函数
  * @param {string | number} text 要加密的文字或数字
- * @returns {string|null} 加密后的字串, 加密失败则返回 null
+ * @returns {string} 加密后的字串
  */
 function encrypt(text) {
     try {
@@ -20,7 +20,7 @@ function encrypt(text) {
         return iv.toString('base64url') + ':' + encrypted.toString('base64url');
     } catch (error) {
         console.error("加密失败:", error);
-        return null; // 加密失败时返回 null
+        return text; // 加密失败时返回原文字
     }
 }
 

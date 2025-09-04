@@ -1,10 +1,11 @@
+// database.js (最終正式版 - 恢復自動管理員建立)
+
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcrypt');
 
-// --- *** 关键修正：将资料库档名从 'database.db' 改为 'file-manager.db' 以保持一致 *** ---
-const dbPath = path.join(__dirname, 'data', 'file-manager.db');
+const dbPath = path.join(__dirname, 'data', 'database.db');
 
 const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
@@ -22,7 +23,7 @@ function createTables() {
             password TEXT NOT NULL,
             is_admin INTEGER DEFAULT 0
         )`, (err) => {
-            if (err) { /* console.error("建立 'users' 表失败:", err.message); */ return; }
+            if (err) { /* console.error("建立 'users' 表失敗:", err.message); */ return; }
             createDependentTables();
         });
     });
@@ -42,15 +43,15 @@ function createDependentTables() {
             FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
             UNIQUE(name, parent_id, user_id)
         )`, (err) => {
-            if (err) { /* console.error("建立 'folders' 表失败:", err.message); */ return; }
+            if (err) { /* console.error("建立 'folders' 表失敗:", err.message); */ return; }
 
             db.all("PRAGMA table_info(folders)", (pragmaErr, columns) => {
-                if (pragmaErr) { /* console.error("无法读取 'folders' 表结构:", pragmaErr.message); */ return; }
+                if (pragmaErr) { /* console.error("無法讀取 'folders' 表結構:", pragmaErr.message); */ return; }
 
                 const hasSharePassword = columns.some(col => col.name === 'share_password');
                 if (!hasSharePassword) {
                     db.run("ALTER TABLE folders ADD COLUMN share_password TEXT", (alterErr) => {
-                        if (alterErr) { /* console.error("为 'folders' 表新增 'share_password' 失败:", alterErr.message); */ return; }
+                        if (alterErr) { /* console.error("為 'folders' 表新增 'share_password' 失敗:", alterErr.message); */ return; }
                         createFilesTable();
                     });
                 } else {
@@ -80,15 +81,15 @@ function createFilesTable() {
             FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )`, (err) => {
-            if (err) { /* console.error("建立 'files' 表失败:", err.message); */ return; }
+            if (err) { /* console.error("建立 'files' 表失敗:", err.message); */ return; }
 
             db.all("PRAGMA table_info(files)", (pragmaErr, columns) => {
-                if (pragmaErr) { /* console.error("无法读取 'files' 表结构:", pragmaErr.message); */ return; }
+                if (pragmaErr) { /* console.error("無法讀取 'files' 表結構:", pragmaErr.message); */ return; }
 
                 const hasSharePassword = columns.some(col => col.name === 'share_password');
                 if (!hasSharePassword) {
                     db.run("ALTER TABLE files ADD COLUMN share_password TEXT", (alterErr) => {
-                        if (alterErr) { /* console.error("为 'files' 表新增 'share_password' 失败:", alterErr.message); */ return; }
+                        if (alterErr) { /* console.error("為 'files' 表新增 'share_password' 失敗:", alterErr.message); */ return; }
                         checkAndCreateAdmin();
                     });
                 } else {
@@ -101,15 +102,15 @@ function createFilesTable() {
 
 function checkAndCreateAdmin() {
     db.get("SELECT * FROM users WHERE is_admin = 1", (err, admin) => {
-        if (err) { /* console.error("查询管理员时出错:", err.message); */ return; }
+        if (err) { /* console.error("查詢管理員時出錯:", err.message); */ return; }
         
         if (!admin) {
-            // 如果找不到管理员，则建立一个预设的
+            // 如果找不到管理員，則建立一個預設的
             const adminUser = 'admin';
             const adminPass = 'admin';
             
             bcrypt.genSalt(10, (saltErr, salt) => {
-                if (saltErr) { /* console.error("生成 salt 失败:", saltErr); */ return; }
+                if (saltErr) { /* console.error("生成 salt 失敗:", saltErr); */ return; }
                 bcrypt.hash(adminPass, salt, (hashErr, hashedPassword) => {
                     if (hashErr) { /* console.error("密碼雜湊失敗:", hashErr); */ return; }
 
@@ -118,9 +119,9 @@ function checkAndCreateAdmin() {
                         
                         const adminId = this.lastID;
                         
-                        // 为新管理員建立根目錄
+                        // 為新管理員建立根目錄
                         db.run("INSERT INTO folders (name, parent_id, user_id) VALUES (?, NULL, ?)", ['/', adminId], (folderErr) => {
-                            if(folderErr) { /* console.error("为管理員建立根目錄失败:", folderErr.message); */ }
+                            if(folderErr) { /* console.error("為管理員建立根目錄失敗:", folderErr.message); */ }
                         });
                     });
                 });
