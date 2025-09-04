@@ -15,30 +15,17 @@ const storageManager = require('./storage');
 
 const app = express();
 
-// --- 关键修正 开始 ---
-// 1. 定义通用的 JSON replacer 函数
 const jsonReplacer = (key, value) => {
-    // 如果值的类型是 BigInt，则将其转换为字符串
     if (typeof value === 'bigint') {
         return value.toString();
     }
-    // 其他类型保持原样
     return value;
 };
-
-// 2. 将 replacer 函数设定为 Express 应用的全局设定
-//    这一步必须在 const app = express() 之后执行
 app.set('json replacer', jsonReplacer);
-// --- 关键修正 结束 ---
-
 
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
-// --- 日志辅助函数 ---
-const log = (level, file, func, message, ...args) => {
-    // const timestamp = new Date().toISOString();
-    // console.log(`[${timestamp}] [${level}] [${file}:${func}] - ${message}`, ...args);
-};
+const log = (level, file, func, message, ...args) => {};
 
 async function cleanupTempDir() {
     try {
@@ -66,14 +53,12 @@ app.use(session({
 }));
 
 app.set('trust proxy', 1);
-
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// --- 中介软体 ---
 function requireLogin(req, res, next) {
   if (req.session.loggedIn) return next();
   res.redirect('/login');
@@ -86,7 +71,6 @@ function requireAdmin(req, res, next) {
     res.status(403).send('权限不足');
 }
 
-// --- 路由 ---
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views/login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views/register.html')));
 app.get('/editor', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/editor.html')));
@@ -127,9 +111,7 @@ app.post('/register', async (req, res) => {
 
 app.get('/logout', (req, res) => {
     req.session.destroy(err => {
-        if (err) {
-            return res.redirect('/');
-        }
+        if (err) return res.redirect('/');
         res.clearCookie('connect.sid');
         res.redirect('/login');
     });
@@ -146,6 +128,7 @@ app.get('/', requireLogin, (req, res) => {
         res.redirect(`/folder/${rootFolder.id}`);
     });
 });
+
 app.get('/folder/:id', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/manager.html')));
 app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/shares.html')));
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
@@ -167,25 +150,18 @@ app.post('/upload', requireLogin, (req, res) => {
         if (isNaN(initialFolderId)) throw new Error('Invalid folderId');
         
         const resolutions = JSON.parse(resolutionsJSON || '{}');
-        log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 已从URL获取元数据: folderId=${initialFolderId}`);
-
         const busboy = Busboy({ headers: req.headers });
         const uploadPromises = [];
 
-        // --- 关键修正：引入路径长度限制和哈希策略 ---
-        const MAX_PATH_LENGTH = 240; // 为安全起见，设定一个比大多数系统（255/260）略短的限制
-
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
             const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
-            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 发现文件流: "${relativePath}" (原始文件名: "${fileInfo.filename}")，立即处理。`);
+            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 发现文件流: "${relativePath}"`);
             
             const fileUploadPromise = (async () => {
                 const { mimeType } = fileInfo;
                 const action = resolutions[relativePath] || 'upload';
-                log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 文件 "${relativePath}" 的处理动作是: ${action}`);
 
                 if (action === 'skip') {
-                    log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 跳过文件: "${relativePath}"`);
                     fileStream.resume();
                     return { skipped: true }; 
                 }
@@ -194,45 +170,25 @@ app.post('/upload', requireLogin, (req, res) => {
                 const originalFileName = pathParts.pop() || relativePath;
                 let finalFileName = originalFileName;
                 const folderPathParts = pathParts;
-
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                 
                 if (action === 'overwrite') {
                     const existingItem = await data.findItemInFolder(finalFileName, targetFolderId, userId);
                     if (existingItem) {
-                        log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 正在覆盖文件: "${finalFileName}"`);
                         await data.unifiedDelete(existingItem.id, existingItem.type, userId);
                     }
                 } else if (action === 'rename') {
-                    const oldName = finalFileName;
-                    finalFileName = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
-                    log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 重命名文件: "${oldName}" -> "${finalFileName}"`);
+                    finalFileName = await data.findAvailableName(finalFileName, targetFolderId, userId, false);
                 } else {
                     const conflict = await data.findItemInFolder(finalFileName, targetFolderId, userId);
                     if (conflict) {
-                        log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 发现冲突且无解决方案，跳过文件: "${finalFilename}"`);
                         fileStream.resume();
                         return { skipped: true };
                     }
                 }
                 
-                let safeStorageFileName = finalFileName;
-
-                // --- 关键修正：针对 local 和 webdav，检查完整路径长度并使用哈希 ---
-                if (storage.type === 'local' || storage.type === 'webdav') {
-                    const targetFolderPathParts = await data.getFolderPath(targetFolderId, userId);
-                    const targetFolderRelativePath = path.posix.join(...targetFolderPathParts.slice(1).map(p => p.name));
-                    const fullPathForCheck = path.posix.join(targetFolderRelativePath, finalFileName);
-
-                    if (fullPathForCheck.length > MAX_PATH_LENGTH) {
-                        const ext = path.extname(finalFileName);
-                        const hash = crypto.createHash('sha1').update(finalFileName).digest('hex').substring(0, 16);
-                        safeStorageFileName = `${hash}${ext}`;
-                        log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 路径过长，文件名 "${finalFileName}" 将以哈希 "${safeStorageFileName}" 储存`);
-                    }
-                }
-                
-                await storage.upload(fileStream, { originalFileName: finalFileName, safeFileName: safeStorageFileName }, mimeType, userId, targetFolderId, caption || '');
+                // --- 关键修正：不再检查路径长度，直接将最终档名传递给储存后端 ---
+                await storage.upload(fileStream, finalFileName, mimeType, userId, targetFolderId, caption || '');
                 log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 储存引擎成功处理了文件: "${finalFileName}"`);
                 return { skipped: false };
             })().catch(err => {
@@ -244,11 +200,9 @@ app.post('/upload', requireLogin, (req, res) => {
         });
 
         busboy.on('finish', async () => {
-            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 'finish' 事件触发。等待所有上传任务完成...`);
+            log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 'finish' 事件触发。`);
             try {
                 const results = await Promise.all(uploadPromises);
-                log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 所有上传任务完成。发送成功响应。`);
-
                 const allSkipped = results.length > 0 && results.every(r => r.skipped);
 
                 if (allSkipped) {
@@ -257,7 +211,6 @@ app.post('/upload', requireLogin, (req, res) => {
                      res.json({ success: true, message: '上传完成' });
                 }
             } catch (error) {
-                log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 等待上传任务完成时发生错误:`, error);
                 if (!res.headersSent) {
                     res.status(500).json({ success: false, message: `上传任务执行失败: ${error.message}` });
                 }
@@ -265,7 +218,6 @@ app.post('/upload', requireLogin, (req, res) => {
         });
 
         busboy.on('error', (err) => {
-            log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 发生错误:`, err);
             req.unpipe(busboy);
             if (!res.headersSent) {
                 res.status(500).json({ success: false, message: '上传解析失败' });
@@ -275,20 +227,16 @@ app.post('/upload', requireLogin, (req, res) => {
         req.pipe(busboy);
 
     } catch (err) {
-        log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 预处理上传请求时失败:`, err);
         res.status(400).json({ success: false, message: `请求预处理失败: ${err.message}` });
     }
 });
 
-// --- API 端点 ---
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
 
-    if (!fileName) {
-        return res.status(400).json({ success: false, message: '档名无效' });
-    }
+    if (!fileName) return res.status(400).json({ success: false, message: '档名无效' });
 
     const tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.txt`);
 
@@ -296,60 +244,26 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         await fsp.writeFile(tempFilePath, content, 'utf8');
         
         if (mode === 'edit' && fileId) {
-            const filesToUpdate = await data.getFilesByIds([fileId], userId);
-            if (filesToUpdate.length === 0) {
-                return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
-            }
-            const originalFile = filesToUpdate[0];
+            const [originalFile] = await data.getFilesByIds([fileId], userId);
+            if (!originalFile) return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
 
             if (fileName !== originalFile.fileName) {
-                const conflict = await data.checkFullConflict(fileName, originalFile.folder_id, userId);
-                if (conflict) {
+                if (await data.checkFullConflict(fileName, originalFile.folder_id, userId)) {
                     return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
                 }
             }
+            
+            await data.unifiedDelete(originalFile.message_id, 'file', userId);
+            const fileStream = fs.createReadStream(tempFilePath);
+            const result = await storage.upload(fileStream, fileName, 'text/plain', userId, originalFile.folder_id);
+            return res.json({ success: true, fileId: result.fileId });
 
-            if (originalFile.storage_type === 'telegram') {
-                const fileStream = fs.createReadStream(tempFilePath);
-                await data.unifiedDelete(originalFile.message_id, 'file', userId);
-                const result = await storage.upload(fileStream, { originalFileName: fileName, safeFileName: fileName }, 'text/plain', userId, originalFile.folder_id);
-                return res.json({ success: true, fileId: result.fileId });
-            } else {
-                const newRelativePath = path.posix.join(path.posix.dirname(originalFile.file_id), fileName);
-
-                if (originalFile.storage_type === 'local') {
-                    const newFullPath = path.join(__dirname, 'data', 'uploads', String(userId), newRelativePath);
-                    await fsp.mkdir(path.dirname(newFullPath), { recursive: true });
-                    await fsp.copyFile(tempFilePath, newFullPath);
-                    if (originalFile.file_id !== newRelativePath && fsSync.existsSync(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id))) {
-                         await fsp.unlink(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id));
-                    }
-                } else if (originalFile.storage_type === 'webdav') {
-                    const fileStream = fs.createReadStream(tempFilePath);
-                    const client = storage.getClient();
-                    await client.putFileContents(newRelativePath, fileStream, { overwrite: true });
-                    if (originalFile.file_id !== newRelativePath) {
-                        await client.deleteFile(originalFile.file_id);
-                    }
-                }
-
-                const stats = await fsp.stat(tempFilePath);
-                await data.updateFile(fileId, {
-                    fileName: fileName,
-                    size: stats.size,
-                    date: Date.now(),
-                    file_id: newRelativePath
-                }, userId);
-                
-                return res.json({ success: true, fileId: fileId });
-            }
         } else if (mode === 'create' && folderId) {
-            const conflict = await data.checkFullConflict(fileName, folderId, userId);
-            if (conflict) {
+            if (await data.checkFullConflict(fileName, folderId, userId)) {
                 return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
             }
             const fileStream = fs.createReadStream(tempFilePath);
-            const result = await storage.upload(fileStream, { originalFileName: fileName, safeFileName: fileName }, 'text/plain', userId, folderId);
+            const result = await storage.upload(fileStream, fileName, 'text/plain', userId, folderId);
             res.json({ success: true, fileId: result.fileId });
         } else {
             return res.status(400).json({ success: false, message: '请求参数无效' });
@@ -362,6 +276,11 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         }
     }
 });
+// ... (保留其他路由代码, 此处省略以保持简洁)
+
+// =========================================================================
+// 其他路由代码... 从 /api/file-info/:id 开始到文件末尾的所有代码都保持不变
+// =========================================================================
 app.get('/api/file-info/:id', requireLogin, async (req, res) => {
     try {
         const fileId = parseInt(req.params.id, 10);
@@ -703,8 +622,6 @@ app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).send('获取缩图失败'); }
 });
 
-// --- *** 关键修正 开始 *** ---
-// 统一的档案串流处理函式
 async function handleFileStream(req, res, fileInfo) {
     const storage = storageManager.getStorage();
     const range = req.headers.range;
@@ -713,7 +630,6 @@ async function handleFileStream(req, res, fileInfo) {
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Content-Type', fileInfo.mimetype || 'application/octet-stream');
     
-    // 如果浏览器请求的是可拖动的影片
     if (range && totalSize) {
         const parts = range.replace(/bytes=/, "").split("-");
         const start = parseInt(parts[0], 10);
@@ -748,11 +664,11 @@ async function handleFileStream(req, res, fileInfo) {
                 res.status(404).send('无法获取文件链接');
             }
         }
-    } else { // 正常下载或档案太小
-        res.setHeader('Content-Length', totalSize || -1); // -1 for unknown
+    } else { 
+        res.setHeader('Content-Length', totalSize || -1); 
         res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
         
-        if (req.query.download) { // 强制下载
+        if (req.query.download) { 
             res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
         }
 
@@ -786,7 +702,6 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
         if (!res.headersSent) res.status(500).send('下载代理失败: ' + error.message);
     }
 });
-// --- *** 关键修正 结束 *** ---
 
 app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     try {
@@ -908,7 +823,6 @@ app.post('/api/cancel-share', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: '取消分享失败' }); }
 });
 
-// --- 扫描器端点 ---
 app.post('/api/scan/local', requireAdmin, async (req, res) => {
     const { userId } = req.body;
     const log = [];
@@ -1021,7 +935,6 @@ app.post('/api/scan/webdav', requireAdmin, async (req, res) => {
     }
 });
 
-// --- 分享路由 ---
 app.get('/share/view/file/:token', async (req, res) => {
     try {
         const token = req.params.token;
@@ -1095,8 +1008,6 @@ app.get('/share/view/folder/:token/:path(*)?', async (req, res) => {
     }
 });
 
-
-// --- *** 关键修正 开始 *** ---
 app.get('/share/download/file/:token', async (req, res) => {
     try {
         const token = req.params.token;
@@ -1143,14 +1054,11 @@ app.get('/share/download/:folderToken/:fileId', async (req, res) => {
         if (!res.headersSent) res.status(500).send('下载失败: ' + error.message);
     }
 });
-// --- *** 关键修正 结束 *** ---
-
 
 app.listen(PORT, () => {
     log('INFO', 'server.js', 'listen', `✅ 伺服器已在 http://localhost:${PORT} 上运行`);
 });
 
-// --- API 端点 ---
 app.post('/api/user/change-password', requireLogin, async (req, res) => {
     const { oldPassword, newPassword } = req.body;
     
