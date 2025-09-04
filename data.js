@@ -892,6 +892,7 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
     });
 }
 
+
 async function renameFolder(folderId, newFolderName, userId) {
     const folder = await new Promise((res, rej) => db.get("SELECT * FROM folders WHERE id=?", [folderId], (e,r)=>e?rej(e):res(r)));
     if (!folder) return { success: false, message: '资料夾未找到。'};
