@@ -109,6 +109,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentFolderContents = { folders: [], files: [] };
     let selectedItems = new Map();
     let moveTargetFolderId = null;
+    let moveTargetEncryptedFolderId = null; // 修正：新增状态以储存加密ID
     let isSearchMode = false;
     const MAX_TELEGRAM_SIZE = 1000 * 1024 * 1024;
     let foldersLoaded = false;
@@ -430,6 +431,7 @@ document.addEventListener('DOMContentLoaded', () => {
         card.dataset.name = item.name === '/' ? '根目录' : item.name;
         if (item.type === 'folder') {
             card.dataset.isLocked = item.is_locked;
+            card.dataset.encryptedFolderId = item.encrypted_id; // 修正：添加加密ID
         }
         card.setAttribute('tabindex', '0');
 
@@ -462,6 +464,7 @@ document.addEventListener('DOMContentLoaded', () => {
         itemDiv.dataset.name = item.name === '/' ? '根目录' : item.name;
         if (item.type === 'folder') {
             itemDiv.dataset.isLocked = item.is_locked;
+            itemDiv.dataset.encryptedFolderId = item.encrypted_id; // 修正：添加加密ID
         }
         itemDiv.setAttribute('tabindex', '0');
 
@@ -793,7 +796,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const target = e.target.closest('.item-card, .list-item');
             if (target && body.classList.contains('using-keyboard') && !isMultiSelectMode) {
                 selectedItems.clear();
-                selectedItems.set(target.dataset.id, { type: target.dataset.type, name: target.dataset.name });
+                selectedItems.set(target.dataset.id, { type: target.dataset.type, name: target.dataset.name, encrypted_id: target.dataset.encryptedFolderId });
                 rerenderSelection();
                 updateContextMenu();
             }
@@ -899,7 +902,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     selectedItems.clear();
                     selectedItems.set(targetItem.dataset.id, {
                         type: targetItem.dataset.type,
-                        name: targetItem.dataset.name
+                        name: targetItem.dataset.name,
+                        encrypted_id: targetItem.dataset.encryptedFolderId
                     });
                     rerenderSelection();
                 }
@@ -1032,16 +1036,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const id = target.dataset.id;
         const type = target.dataset.type;
         const name = target.dataset.name;
+        const encrypted_id = target.dataset.encryptedFolderId; // 修正：取得加密ID
 
         if (isMultiSelectMode || e.ctrlKey || e.metaKey) {
             if (selectedItems.has(id)) {
                 selectedItems.delete(id);
             } else {
-                selectedItems.set(id, { type, name });
+                selectedItems.set(id, { type, name, encrypted_id }); // 修正：储存加密ID
             }
         } else {
             selectedItems.clear();
-            selectedItems.set(id, { type, name });
+            selectedItems.set(id, { type, name, encrypted_id }); // 修正：储存加密ID
         }
         rerenderSelection();
         updateContextMenu();
@@ -1053,10 +1058,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (target && target.dataset.type === 'folder') {
             const folderId = parseInt(target.dataset.id, 10);
             const isLocked = target.dataset.isLocked === 'true' || target.dataset.isLocked === '1';
-            const folderData = currentFolderContents.folders.find(f => f.id === folderId);
-            const encryptedId = folderData ? folderData.encrypted_id : null;
+            const encryptedId = target.dataset.encryptedFolderId;
 
-            if (!encryptedId) return; // 如果找不到加密 ID 则不执行任何操作
+            if (!encryptedId) return;
 
             if (isLocked) {
                 try {
@@ -1164,7 +1168,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isAllSelected) {
                 selectedItems.clear();
             } else {
-                allVisibleItems.forEach(item => selectedItems.set(String(item.id), { type: item.type, name: item.name }));
+                allVisibleItems.forEach(item => selectedItems.set(String(item.id), { type: item.type, name: item.name, encrypted_id: item.encrypted_id }));
             }
             rerenderSelection();
             updateContextMenu();
@@ -1423,6 +1427,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const item = document.createElement('div');
                     item.className = 'folder-item';
                     item.dataset.folderId = node.id;
+                    item.dataset.encryptedFolderId = node.encrypted_id; // 修正：添加加密ID
                     item.textContent = prefix + (node.name === '/' ? '根目录' : node.name);
 
                     if (isDisabled) {
@@ -1437,6 +1442,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 moveModal.style.display = 'flex';
                 moveTargetFolderId = null;
+                moveTargetEncryptedFolderId = null;
                 confirmMoveBtn.disabled = true;
             } catch { alert('无法获取资料夾列表。'); }
         });
@@ -1450,6 +1456,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (previouslySelected) previouslySelected.classList.remove('selected');
             target.classList.add('selected');
             moveTargetFolderId = parseInt(target.dataset.folderId);
+            moveTargetEncryptedFolderId = target.dataset.encryptedFolderId; // 修正：储存加密ID
             confirmMoveBtn.disabled = false;
         });
     }
@@ -1462,7 +1469,8 @@ document.addEventListener('DOMContentLoaded', () => {
             let isAborted = false;
             let applyToAllFolderAction = null;
 
-            async function resolveConflictsRecursively(itemsToMove, currentTargetFolderId, pathPrefix = '') {
+            // 修正：更新函数签名以接收加密ID
+            async function resolveConflictsRecursively(itemsToMove, currentTargetFolderId, currentTargetEncryptedFolderId, pathPrefix = '') {
                 if (isAborted) return;
     
                 const conflictCheckRes = await axios.post('/api/check-move-conflict', {
@@ -1471,8 +1479,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 const { fileConflicts, folderConflicts } = conflictCheckRes.data;
     
-                const destFolderContentsRes = await axios.get(`/api/folder/${encrypt(currentTargetFolderId)}`);
-                const destFolderMap = new Map(destFolderContentsRes.data.contents.folders.map(f => [f.name, f.id]));
+                // 修正：使用加密ID获取目标资料夹内容
+                const destFolderContentsRes = await axios.get(`/api/folder/${currentTargetEncryptedFolderId}`);
+                // 修正：储存加密ID以供递回呼叫
+                const destFolderMap = new Map(destFolderContentsRes.data.contents.folders.map(f => [f.name, { id: f.id, encrypted_id: f.encrypted_id }]));
     
                 for (const folderName of folderConflicts) {
                     const fullPath = pathPrefix ? `${pathPrefix}/${folderName}` : folderName;
@@ -1496,17 +1506,20 @@ document.addEventListener('DOMContentLoaded', () => {
     
                     if (action === 'merge') {
                         const sourceFolder = itemsToMove.find(item => item.name === folderName && item.type === 'folder');
-                        const destSubFolderId = destFolderMap.get(folderName);
-                        if (sourceFolder && destSubFolderId) {
-                            const sourceSubFolderContentsRes = await axios.get(`/api/folder/${encrypt(sourceFolder.id)}`);
+                        const destSubFolderData = destFolderMap.get(folderName);
+                        if (sourceFolder && destSubFolderData) {
+                            // 修正：使用源子资料夹的加密ID获取其内容
+                            const sourceSubFolderContentsRes = await axios.get(`/api/folder/${sourceFolder.encrypted_id}`);
                             const subItemsToMove = [...sourceSubFolderContentsRes.data.contents.folders, ...sourceSubFolderContentsRes.data.contents.files].map(item => ({
                                 id: item.id,
                                 name: item.name,
-                                type: item.type
+                                type: item.type,
+                                encrypted_id: item.encrypted_id // 修正：传递加密ID
                             }));
                             
                             if(subItemsToMove.length > 0) {
-                               await resolveConflictsRecursively(subItemsToMove, destSubFolderId, fullPath);
+                               // 修正：递回呼叫时传递加密ID
+                               await resolveConflictsRecursively(subItemsToMove, destSubFolderData.id, destSubFolderData.encrypted_id, fullPath);
                             }
                             if (isAborted) return;
                         }
@@ -1526,9 +1539,16 @@ document.addEventListener('DOMContentLoaded', () => {
             }
     
             try {
-                const topLevelItems = Array.from(selectedItems.entries()).map(([id, { type, name }]) => ({ id: parseInt(id), type, name }));
+                // 修正：从 selectedItems 中提取所有必要数据，包括加密ID
+                const topLevelItems = Array.from(selectedItems.entries()).map(([id, item]) => ({
+                    id: parseInt(id),
+                    type: item.type,
+                    name: item.name,
+                    encrypted_id: item.encrypted_id
+                }));
                 
-                await resolveConflictsRecursively(topLevelItems, moveTargetFolderId);
+                // 修正：初始呼叫，传递加密和未加密的ID
+                await resolveConflictsRecursively(topLevelItems, moveTargetFolderId, moveTargetEncryptedFolderId);
     
                 if (isAborted) {
                     moveModal.style.display = 'none';
