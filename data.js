@@ -4,7 +4,6 @@ const path = require('path');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const bcrypt = require('bcrypt');
-const { encrypt, decrypt } = require('./crypto.js');
 
 const UPLOAD_DIR = path.resolve(__dirname, 'data', 'uploads');
 const creatingFolders = new Set();
@@ -98,7 +97,7 @@ function searchItems(query, userId) {
         // 并确定路径中是否有任何一个资料夹被加密。
         const baseQuery = `
             WITH RECURSIVE folder_ancestry(id, parent_id, is_locked) AS (
-                -- 基底查询: 选出该使用者的所有资料夾，并标记其自身的加密状态
+                -- 基底查询: 选出该使用者的所有资料夹，并标记其自身的加密状态
                 SELECT id, parent_id, (password IS NOT NULL) as is_locked
                 FROM folders
                 WHERE user_id = ?
@@ -130,7 +129,7 @@ function searchItems(query, userId) {
             ORDER BY f.date DESC;
         `;
         
-        // 查询未被加密路径下的资料夾
+        // 查询未被加密路径下的资料夹
         const sqlFolders = baseQuery + `
             SELECT 
                 f.id, 
@@ -148,7 +147,7 @@ function searchItems(query, userId) {
 
         db.all(sqlFolders, [userId, userId, searchQuery, userId], (err, folders) => {
             if (err) return reject(err);
-            contents.folders = folders.map(f => ({ ...f, encrypted_id: encrypt(f.id) }));
+            contents.folders = folders;
             db.all(sqlFiles, [userId, userId, searchQuery, userId], (err, files) => {
                 if (err) return reject(err);
                 contents.files = files.map(f => ({ ...f, message_id: f.id }));
@@ -270,7 +269,7 @@ function getFolderContents(folderId, userId) {
         let contents = { folders: [], files: [] };
         db.all(sqlFolders, [folderId, userId], (err, folders) => {
             if (err) return reject(err);
-            contents.folders = folders.map(f => ({ ...f, encrypted_id: encrypt(f.id) }));
+            contents.folders = folders;
             db.all(sqlFiles, [folderId, userId], (err, files) => {
                 if (err) return reject(err);
                 contents.files = files.map(f => ({ ...f, message_id: f.id }));
@@ -314,7 +313,7 @@ function getFolderPath(folderId, userId) {
             db.get("SELECT id, name, parent_id FROM folders WHERE id = ? AND user_id = ?", [id, userId], (err, folder) => {
                 if (err) return reject(err);
                 if (folder) {
-                    pathArr.push({ id: folder.id, name: folder.name, encrypted_id: encrypt(folder.id) });
+                    pathArr.push({ id: folder.id, name: folder.name });
                     findParent(folder.parent_id);
                 } else {
                     resolve(pathArr.reverse());
@@ -329,7 +328,7 @@ function getFolderPath(folderId, userId) {
 async function findFolderBySharePath(shareToken, pathSegments = []) {
     return new Promise(async (resolve, reject) => {
         try {
-            // 首先，验证 token 并找到根分享资料夾
+            // 首先，验证 token 并找到根分享资料夹
             const rootFolder = await getFolderByShareToken(shareToken);
             if (!rootFolder) {
                 return resolve(null);
@@ -354,7 +353,7 @@ async function findFolderBySharePath(shareToken, pathSegments = []) {
                     return resolve(null); // 路径无效
                 }
                 
-                // 检查子资料夾是否已加密
+                // 检查子资料夹是否已加密
                 if(row.password) {
                     return resolve(null); // 不允许存取加密的子资料夹
                 }
@@ -419,19 +418,11 @@ function getAllFolders(userId) {
     return new Promise((resolve, reject) => {
         const sql = "SELECT id, name, parent_id FROM folders WHERE user_id = ? ORDER BY parent_id, name ASC";
         db.all(sql, [userId], (err, rows) => {
-            if (err) {
-                reject(err);
-            } else {
-                const foldersWithEncryptedId = rows.map(folder => ({
-                    ...folder,
-                    encrypted_id: encrypt(folder.id)
-                }));
-                resolve(foldersWithEncryptedId);
-            }
+            if (err) reject(err);
+            else resolve(rows);
         });
     });
 }
-
 
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, depth = 0) {
     // console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}, 深度: ${depth}`);
@@ -530,7 +521,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
             }
             
             if (allChildrenProcessedSuccessfully) {
-                // console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夾 ID ${itemId}`);
+                // console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夹 ID ${itemId}`);
                 await unifiedDelete(itemId, 'folder', userId);
             } else {
                  // console.warn(`[Data] moveItem: 部分子项目未能成功合并，保留原始资料夾 ID ${itemId}`);
@@ -577,7 +568,7 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         const client = storage.type === 'webdav' ? storage.getClient() : null;
         
         const targetPathParts = await getFolderPath(targetFolderId, userId);
-        const targetFullPath = path.posix.join(...targetPathParts.slice(1).map(p => p.name));
+        const targetFullPath = path.posix.join(...targetPathParts.map(p => p.name));
 
         const filesToMove = await getFilesByIds(fileIds, userId);
         for (const file of filesToMove) {
@@ -604,7 +595,7 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         const foldersToMove = (await getItemsByIds(folderIds, userId)).filter(i => i.type === 'folder');
         for (const folder of foldersToMove) {
             const oldPathParts = await getFolderPath(folder.id, userId);
-            const oldFullPath = path.posix.join(...oldPathParts.slice(1).map(p => p.name));
+            const oldFullPath = path.posix.join(...oldPathParts.map(p => p.name));
             const newFullPath = path.posix.join(targetFullPath, folder.name);
 
             try {
@@ -791,7 +782,7 @@ function getFileByShareToken(token) {
             if (err) return reject(err);
             if (!row) return resolve(null);
             if (row.share_expires_at && Date.now() > row.share_expires_at) {
-                const updateSql = "UPDATE files SET share_token = NULL, share_expires_at = NULL, share_password = NULL WHERE message_id = ?";
+                const updateSql = "UPDATE files SET share_token = NULL, share_expires_at = NULL WHERE message_id = ?";
                 db.run(updateSql, [row.message_id]);
                 resolve(null);
             } else {
@@ -808,7 +799,7 @@ function getFolderByShareToken(token) {
             if (err) return reject(err);
             if (!row) return resolve(null);
             if (row.share_expires_at && Date.now() > row.share_expires_at) {
-                const updateSql = "UPDATE folders SET share_token = NULL, share_expires_at = NULL, share_password = NULL WHERE id = ?";
+                const updateSql = "UPDATE folders SET share_token = NULL, share_expires_at = NULL WHERE id = ?";
                 db.run(updateSql, [row.id]);
                 resolve(null);
             } else {
@@ -894,7 +885,7 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
     const storage = require('./storage').getStorage();
     if (storage.type === 'local' || storage.type === 'webdav') {
         const targetPathParts = await getFolderPath(targetFolderId, userId);
-        const targetRelativePath = path.posix.join(...targetPathParts.slice(1).map(p => p.name));
+        const targetRelativePath = path.posix.join(...targetPathParts.map(p => p.name));
         const newRelativePath = path.posix.join(targetRelativePath, newFileName);
         const oldRelativePath = file.file_id;
         
@@ -933,7 +924,7 @@ async function renameFolder(folderId, newFolderName, userId) {
 
     if (storage.type === 'local' || storage.type === 'webdav') {
         const oldPathParts = await getFolderPath(folderId, userId);
-        const oldFullPath = path.posix.join(...oldPathParts.slice(1).map(p => p.name));
+        const oldFullPath = path.posix.join(...oldPathParts.map(p => p.name));
         const newFullPath = path.posix.join(path.posix.dirname(oldFullPath), newFolderName);
 
         try {
@@ -993,40 +984,30 @@ async function verifyFolderPassword(folderId, password, userId) {
 
 
 
-function createShareLink(itemId, itemType, expiresIn, userId, password = null, customExpiresAt = null) {
+function createShareLink(itemId, itemType, expiresIn, userId) {
     const token = crypto.randomBytes(16).toString('hex');
     let expiresAt = null;
-
-    if (expiresIn === 'custom' && customExpiresAt) {
-        expiresAt = parseInt(customExpiresAt, 10);
-    } else {
-        const now = Date.now();
-        const hours = (h) => h * 60 * 60 * 1000;
-        const days = (d) => d * 24 * hours(1);
-        switch (expiresIn) {
-            case '1h': expiresAt = now + hours(1); break;
-            case '3h': expiresAt = now + hours(3); break;
-            case '5h': expiresAt = now + hours(5); break;
-            case '7h': expiresAt = now + hours(7); break;
-            case '24h': expiresAt = now + hours(24); break;
-            case '7d': expiresAt = now + days(7); break;
-            case '0': expiresAt = null; break;
-            default: expiresAt = now + hours(24);
-        }
+    const now = Date.now();
+    const hours = (h) => h * 60 * 60 * 1000;
+    const days = (d) => d * 24 * hours(1);
+    switch (expiresIn) {
+        case '1h': expiresAt = now + hours(1); break;
+        case '3h': expiresAt = now + hours(3); break;
+        case '5h': expiresAt = now + hours(5); break;
+        case '7h': expiresAt = now + hours(7); break;
+        case '24h': expiresAt = now + hours(24); break;
+        case '7d': expiresAt = now + days(7); break;
+        case '0': expiresAt = null; break;
+        default: expiresAt = now + hours(24);
     }
 
     const table = itemType === 'folder' ? 'folders' : 'files';
     const idColumn = itemType === 'folder' ? 'id' : 'message_id';
 
-    return new Promise(async (resolve, reject) => {
-        let hashedPassword = null;
-        if (password && password.length > 0) {
-            const salt = await bcrypt.genSalt(10);
-            hashedPassword = await bcrypt.hash(password, salt);
-        }
+    const sql = `UPDATE ${table} SET share_token = ?, share_expires_at = ? WHERE ${idColumn} = ? AND user_id = ?`;
 
-        const sql = `UPDATE ${table} SET share_token = ?, share_expires_at = ?, share_password = ? WHERE ${idColumn} = ? AND user_id = ?`;
-        db.run(sql, [token, expiresAt, hashedPassword, itemId, userId], function(err) {
+    return new Promise((resolve, reject) => {
+        db.run(sql, [token, expiresAt, itemId, userId], function(err) {
             if (err) reject(err);
             else if (this.changes === 0) resolve({ success: false, message: '项目未找到。' });
             else resolve({ success: true, token });
@@ -1070,7 +1051,7 @@ function getActiveShares(userId) {
 function cancelShare(itemId, itemType, userId) {
     const table = itemType === 'folder' ? 'folders' : 'files';
     const idColumn = itemType === 'folder' ? 'id' : 'message_id';
-    const sql = `UPDATE ${table} SET share_token = NULL, share_expires_at = NULL, share_password = NULL WHERE ${idColumn} = ? AND user_id = ?`;
+    const sql = `UPDATE ${table} SET share_token = NULL, share_expires_at = NULL WHERE ${idColumn} = ? AND user_id = ?`;
 
     return new Promise((resolve, reject) => {
         db.run(sql, [itemId, userId], function(err) {
