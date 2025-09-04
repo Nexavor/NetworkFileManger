@@ -325,6 +325,23 @@ function getFolderPath(folderId, userId) {
     });
 }
 
+async function isDescendant(folderId, potentialAncestorId, userId) {
+    let currentId = folderId;
+    while (currentId) {
+        if (currentId === potentialAncestorId) {
+            return true;
+        }
+        const parent = await new Promise((resolve, reject) => {
+            db.get("SELECT parent_id FROM folders WHERE id = ? AND user_id = ?", [currentId, userId], (err, row) => {
+                if (err) return reject(err);
+                resolve(row);
+            });
+        });
+        currentId = parent ? parent.parent_id : null;
+    }
+    return false;
+}
+
 // --- *** 关键修正 开始 *** ---
 async function findFolderBySharePath(shareToken, pathSegments = []) {
     return new Promise(async (resolve, reject) => {
@@ -1290,5 +1307,6 @@ module.exports = {
     setFolderPassword,
     verifyFolderPassword,
     isFileAccessible,
+    isDescendant,
     findFolderBySharePath,
 };
