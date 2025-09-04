@@ -2,77 +2,76 @@ require('dotenv').config();
 const axios = require('axios');
 const FormData = require('form-data');
 const data = require('../data.js');
-const path = require('path'); // 新增引用
+const path = require('path');
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 const FILE_NAME = 'storage/telegram.js';
 
-// --- 日志辅助函数 ---
 const log = (level, func, message, ...args) => {
     // const timestamp = new Date().toISOString();
     // console.log(`[${timestamp}] [${level}] [${FILE_NAME}:${func}] - ${message}`, ...args);
 };
 
-// 新增：文件名截断函数
 function truncateFilename(filename, maxLength = 200) {
     if (filename.length <= maxLength) {
         return filename;
     }
     const ext = path.extname(filename);
     const baseName = path.basename(filename, ext);
-    // 确保即使扩展名很长，我们也不会得到负数的可用长度
-    const availableLength = maxLength - ext.length - 1; // 减去1以防万一
+    const availableLength = maxLength - ext.length - 1; 
     if (availableLength <= 0) {
-        // 如果扩展名本身就超长，则截断整个文件名
         return filename.substring(filename.length - maxLength);
     }
     const truncatedBaseName = baseName.substring(0, availableLength);
     return truncatedBaseName + ext;
 }
 
-async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '') {
+async function upload(fileStream, fileNameObject, mimetype, userId, folderId, caption = '') {
     const FUNC_NAME = 'upload';
-    log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 Telegram...`);
+    // --- 关键修正：Telegram 模式下，original 和 safe 档名是相同的 ---
+    const { originalFileName } = fileNameObject;
+    log('INFO', FUNC_NAME, `开始上传文件: "${originalFileName}" 到 Telegram...`);
   
     return new Promise(async (resolve, reject) => {
         try {
             const formData = new FormData();
-            const safeFileName = truncateFilename(fileName); // 截断文件名以符合API限制
-            formData.append('chat_id', process.env.CHANNEL_ID);
-            formData.append('caption', caption || fileName); // Caption 保持原始完整名称
-            formData.append('document', fileStream, { filename: safeFileName }); // 使用安全的文件名
+            // server.js 不会对 telegram 模式进行哈希，但为安全起见，我们依然截断档名
+            const truncatedApiFileName = truncateFilename(originalFileName); 
             
-            // 关键：监听输入流的错误，防止它静默失败
+            formData.append('chat_id', process.env.CHANNEL_ID);
+            formData.append('caption', caption || originalFileName); // Caption 保持原始完整名称
+            formData.append('document', fileStream, { filename: truncatedApiFileName }); // 使用截断后的档名
+            
             fileStream.on('error', err => {
-                log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for "${fileName}":`, err);
+                log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for "${originalFileName}":`, err);
                 reject(new Error(`输入文件流中断: ${err.message}`));
             });
 
-            log('DEBUG', FUNC_NAME, `正在发送 POST 请求到 Telegram API for "${fileName}"`);
+            log('DEBUG', FUNC_NAME, `正在发送 POST 请求到 Telegram API for "${originalFileName}"`);
             const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
                 headers: formData.getHeaders(),
                 maxContentLength: Infinity,
                 maxBodyLength: Infinity,
             });
-            log('DEBUG', FUNC_NAME, `收到 Telegram API 的响应 for "${fileName}"`);
+            log('DEBUG', FUNC_NAME, `收到 Telegram API 的响应 for "${originalFileName}"`);
 
             if (res.data.ok) {
                 const result = res.data.result;
                 const fileData = result.document || result.video || result.audio || result.photo;
 
                 if (fileData && fileData.file_id) {
-                    log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: "${fileName}"`);
-                    // 数据库中仍然储存原始的完整文件名
+                    log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: "${originalFileName}"`);
+                    // --- 关键修正：向 data.js 传入原始档名和 file_id 作为安全路径 ---
                     const dbResult = await data.addFile({
                       message_id: result.message_id,
-                      fileName,
+                      originalFileName: originalFileName,
                       mimetype: fileData.mime_type || mimetype,
                       size: fileData.file_size,
-                      file_id: fileData.file_id,
+                      safeStoragePath: fileData.file_id, // Telegram 的 file_id 就是其安全路径
                       thumb_file_id: fileData.thumb ? fileData.thumb.file_id : null,
                       date: Date.now(),
                     }, folderId, userId, 'telegram');
-                    log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
+                    log('INFO', FUNC_NAME, `文件 "${originalFileName}" 已成功存入资料库。`);
                     resolve({ success: true, data: res.data, fileId: dbResult.fileId });
                 } else {
                      reject(new Error('Telegram API 响应成功，但缺少 file_id'));
@@ -82,8 +81,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             }
         } catch (error) {
             const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
-            log('ERROR', FUNC_NAME, `上传到 Telegram 失败 for "${fileName}": ${errorDescription}`);
-            // 确保流在任何错误情况下都被消耗掉
+            log('ERROR', FUNC_NAME, `上传到 Telegram 失败 for "${originalFileName}": ${errorDescription}`);
             if (fileStream && typeof fileStream.resume === 'function') {
                 fileStream.resume();
             }
