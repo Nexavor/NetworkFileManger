@@ -2,6 +2,7 @@ require('dotenv').config();
 const axios = require('axios');
 const FormData = require('form-data');
 const data = require('../data.js');
+const path = require('path'); // 新增引用
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 const FILE_NAME = 'storage/telegram.js';
@@ -12,6 +13,23 @@ const log = (level, func, message, ...args) => {
     // console.log(`[${timestamp}] [${level}] [${FILE_NAME}:${func}] - ${message}`, ...args);
 };
 
+// 新增：文件名截断函数
+function truncateFilename(filename, maxLength = 200) {
+    if (filename.length <= maxLength) {
+        return filename;
+    }
+    const ext = path.extname(filename);
+    const baseName = path.basename(filename, ext);
+    // 确保即使扩展名很长，我们也不会得到负数的可用长度
+    const availableLength = maxLength - ext.length - 1; // 减去1以防万一
+    if (availableLength <= 0) {
+        // 如果扩展名本身就超长，则截断整个文件名
+        return filename.substring(filename.length - maxLength);
+    }
+    const truncatedBaseName = baseName.substring(0, availableLength);
+    return truncatedBaseName + ext;
+}
+
 async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '') {
     const FUNC_NAME = 'upload';
     log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 Telegram...`);
@@ -19,9 +37,10 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
     return new Promise(async (resolve, reject) => {
         try {
             const formData = new FormData();
+            const safeFileName = truncateFilename(fileName); // 截断文件名以符合API限制
             formData.append('chat_id', process.env.CHANNEL_ID);
-            formData.append('caption', caption || fileName);
-            formData.append('document', fileStream, { filename: fileName });
+            formData.append('caption', caption || fileName); // Caption 保持原始完整名称
+            formData.append('document', fileStream, { filename: safeFileName }); // 使用安全的文件名
             
             // 关键：监听输入流的错误，防止它静默失败
             fileStream.on('error', err => {
@@ -43,6 +62,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
 
                 if (fileData && fileData.file_id) {
                     log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: "${fileName}"`);
+                    // 数据库中仍然储存原始的完整文件名
                     const dbResult = await data.addFile({
                       message_id: result.message_id,
                       fileName,
