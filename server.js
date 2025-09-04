@@ -521,6 +521,22 @@ app.post('/api/move', requireLogin, async (req, res) => {
         if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0 || !targetFolderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
+
+        for (const itemId of itemIds) {
+            const items = await data.getItemsByIds([itemId], userId);
+            if (items.length === 0) continue;
+            const item = items[0];
+            if (item.type === 'folder') {
+                if (item.id === targetFolderId) {
+                    return res.status(400).json({ success: false, message: '无法将资料夹移动到其自身内部。' });
+                }
+                const isMovingIntoDescendant = await data.isDescendant(targetFolderId, item.id, userId);
+                if (isMovingIntoDescendant) {
+                    return res.status(400).json({ success: false, message: '无法将资料夹移动到其子资料夹中。' });
+                }
+            }
+        }
+
         let totalMoved = 0, totalSkipped = 0;
         const errors = [];
         for (const itemId of itemIds) {
