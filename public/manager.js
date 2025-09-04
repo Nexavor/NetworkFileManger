@@ -1,4 +1,14 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // --- 关键修正：将进度条从DOM中移到文件显示区外部 ---
+    const dropZone = document.getElementById('dropZone');
+    const container = document.querySelector('.container');
+    const dragUploadProgressArea = document.getElementById('dragUploadProgressArea');
+    if (container && dragUploadProgressArea && dropZone) {
+        // 将进度条元素移动到 #dropZone 之后，成为其兄弟元素
+        dropZone.parentNode.insertBefore(dragUploadProgressArea, dropZone.nextSibling);
+    }
+    // --- 修正结束 ---
+
     // 追踪最后互动方式 (滑鼠 vs 键盘)
     const body = document.body;
     body.classList.add('using-mouse'); // 预设是滑鼠
@@ -71,8 +81,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const fileListContainer = document.getElementById('file-selection-list');
     const folderSelect = document.getElementById('folderSelect');
     const uploadNotificationArea = document.getElementById('uploadNotificationArea');
-    const dropZone = document.getElementById('dropZone');
-    const dragUploadProgressArea = document.getElementById('dragUploadProgressArea');
     const dragUploadProgressBar = document.getElementById('dragUploadProgressBar');
     const viewSwitchBtn = document.getElementById('view-switch-btn');
     const itemListView = document.getElementById('itemListView');
