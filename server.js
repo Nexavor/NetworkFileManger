@@ -172,6 +172,9 @@ app.post('/upload', requireLogin, (req, res) => {
         const busboy = Busboy({ headers: req.headers });
         const uploadPromises = [];
 
+        // --- 关键修正：引入路径长度限制和哈希策略 ---
+        const MAX_PATH_LENGTH = 240; // 为安全起见，设定一个比大多数系统（255/260）略短的限制
+
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
             const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
             log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 发现文件流: "${relativePath}" (原始文件名: "${fileInfo.filename}")，立即处理。`);
@@ -184,11 +187,12 @@ app.post('/upload', requireLogin, (req, res) => {
                 if (action === 'skip') {
                     log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 跳过文件: "${relativePath}"`);
                     fileStream.resume();
-                    return { skipped: true }; // 关键修正: 返回跳过状态
+                    return { skipped: true }; 
                 }
 
                 const pathParts = relativePath.split('/').filter(p => p);
-                let finalFilename = pathParts.pop() || relativePath;
+                const originalFileName = pathParts.pop() || relativePath;
+                let finalFilename = originalFileName;
                 const folderPathParts = pathParts;
 
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
@@ -208,13 +212,28 @@ app.post('/upload', requireLogin, (req, res) => {
                     if (conflict) {
                         log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 发现冲突且无解决方案，跳过文件: "${finalFilename}"`);
                         fileStream.resume();
-                        return { skipped: true }; // 关键修正: 返回跳过状态
+                        return { skipped: true };
+                    }
+                }
+
+                // --- 关键修正：针对 local 和 webdav，检查完整路径长度并使用哈希 ---
+                if (storage.type === 'local' || storage.type === 'webdav') {
+                    const targetFolderPath = (await data.getFolderPath(targetFolderId, userId)).slice(1).map(p => p.name).join('/');
+                    const fullPathForCheck = path.posix.join(targetFolderPath, finalFilename);
+
+                    if (fullPathForCheck.length > MAX_PATH_LENGTH) {
+                        const ext = path.extname(finalFilename);
+                        // 使用 SHA1 哈希并取前16个字符作为安全的文件名
+                        const hash = crypto.createHash('sha1').update(finalFilename).digest('hex').substring(0, 16);
+                        finalFilename = `${hash}${ext}`;
+                        log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 路径过长，文件名 "${originalFileName}" 被哈希为 "${finalFilename}"`);
                     }
                 }
                 
+                // 注意：无论文件名是否被哈希，传递给 storage.upload 的都是最终要使用的文件名
                 await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '');
                 log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 储存引擎成功处理了文件: "${finalFilename}"`);
-                return { skipped: false }; // 关键修正: 返回成功状态
+                return { skipped: false };
             })().catch(err => {
                 log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 处理文件 "${relativePath}" 时发生严重错误:`, err);
                 fileStream.resume();
@@ -223,7 +242,6 @@ app.post('/upload', requireLogin, (req, res) => {
             uploadPromises.push(fileUploadPromise);
         });
 
-        // --- *** 关键修正 开始 *** ---
         busboy.on('finish', async () => {
             log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 'finish' 事件触发。等待所有上传任务完成...`);
             try {
@@ -244,7 +262,6 @@ app.post('/upload', requireLogin, (req, res) => {
                 }
             }
         });
-        // --- *** 关键修正 结束 *** ---
 
         busboy.on('error', (err) => {
             log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 发生错误:`, err);
@@ -520,7 +537,7 @@ app.post('/api/folder/:id/lock', requireLogin, async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, salt);
         await data.setFolderPassword(id, hashedPassword, userId);
 
-        res.json({ success: true, message: '资料夹密码已设定/更新。' });
+        res.json({ success: true, message: '资料夾密码已设定/更新。' });
     } catch (error) {
         res.status(500).json({ success: false, message: '操作失败：' + error.message });
     }
@@ -545,7 +562,7 @@ app.post('/api/folder/:id/unlock', requireLogin, async (req, res) => {
         if (req.session.unlockedFolders) {
             req.session.unlockedFolders = req.session.unlockedFolders.filter(folderId => folderId !== parseInt(id));
         }
-        res.json({ success: true, message: '资料夹已成功解锁（移除密码）。' });
+        res.json({ success: true, message: '资料夾已成功解锁（移除密码）。' });
     } catch (error) {
         res.status(500).json({ success: false, message: '操作失败：' + error.message });
     }
@@ -1274,6 +1291,3 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
         res.status(500).json({ success: false, message: '删除设定失败' });
     }
 });
-
-
-
