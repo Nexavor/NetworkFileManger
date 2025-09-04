@@ -1,66 +1,57 @@
 const fsp = require('fs').promises;
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const data = require('../data.js');
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
 const FILE_NAME = 'storage/local.js';
+const MAX_PATH_LENGTH = 240; // 为安全起见，设定一个比大多数系统（255/260）略短的限制
 
-// --- 日志辅助函数 ---
-const log = (level, func, message, ...args) => {
-    // const timestamp = new Date().toISOString();
-    // console.log(`[${timestamp}] [${level}] [${FILE_NAME}:${func}] - ${message}`, ...args);
-};
+const log = (level, func, message, ...args) => {};
 
 async function setup() {
-    try {
-        await fsp.mkdir(UPLOAD_DIR, { recursive: true });
-    } catch (e) {}
+    try { await fsp.mkdir(UPLOAD_DIR, { recursive: true }); } catch (e) {}
 }
 setup();
 
-async function upload(fileStream, fileNameObject, mimetype, userId, folderId) {
+async function upload(fileStream, originalFileName, mimetype, userId, folderId) {
     const FUNC_NAME = 'upload';
-    // --- 关键修正：从物件中解构出原始档名和安全档名 ---
-    const { originalFileName, safeFileName } = fileNameObject;
     
-    log('INFO', FUNC_NAME, `开始上传文件: "${originalFileName}" (储存为 "${safeFileName}") 到本地储存...`);
-    
-    const userDir = path.join(UPLOAD_DIR, String(userId));
-    
+    const userBaseDir = path.join(UPLOAD_DIR, String(userId));
     const folderPathParts = await data.getFolderPath(folderId, userId);
     const relativeFolderPath = path.join(...folderPathParts.slice(1).map(p => p.name)); 
-    const finalFolderPath = path.join(userDir, relativeFolderPath);
+    
+    let safeFileName = originalFileName;
+    const finalFolderAbsPath = path.join(userBaseDir, relativeFolderPath);
+    const originalFileAbsPath = path.join(finalFolderAbsPath, originalFileName);
 
-    await fsp.mkdir(finalFolderPath, { recursive: true });
+    // --- 关键修正：检查最终的绝对路径长度 ---
+    if (originalFileAbsPath.length > MAX_PATH_LENGTH) {
+        const ext = path.extname(originalFileName);
+        const hash = crypto.createHash('sha1').update(originalFileName).digest('hex').substring(0, 16);
+        safeFileName = `${hash}${ext}`;
+        log('WARN', FUNC_NAME, `路径过长，文件名 "${originalFileName}" 被哈希为 "${safeFileName}"`);
+    }
 
-    // --- 关键修正：使用安全档名建立储存路径 ---
-    const finalFilePath = path.join(finalFolderPath, safeFileName);
+    const finalFileAbsPath = path.join(finalFolderAbsPath, safeFileName);
     const safeStoragePath = path.join(relativeFolderPath, safeFileName).replace(/\\/g, '/');
 
+    await fsp.mkdir(finalFolderAbsPath, { recursive: true });
 
     return new Promise((resolve, reject) => {
-        log('DEBUG', FUNC_NAME, `创建写入流到: "${finalFilePath}"`);
-        const writeStream = fs.createWriteStream(finalFilePath);
+        const writeStream = fs.createWriteStream(finalFileAbsPath);
 
         fileStream.on('error', err => {
-            log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for "${originalFileName}":`, err);
             writeStream.close();
             reject(err);
         });
-
-        writeStream.on('pipe', () => { log('DEBUG', FUNC_NAME, `输入流已接入 (pipe) 写入流 for "${originalFileName}"`); });
-        writeStream.on('drain', () => { log('DEBUG', FUNC_NAME, `写入流 'drain' 事件触发 for "${originalFileName}"。可以继续写入。`); });
         
         writeStream.on('finish', async () => {
-            log('INFO', FUNC_NAME, `文件写入磁盘完成 (finish): "${safeFileName}"`);
             try {
-                const stats = await fsp.stat(finalFilePath);
-                log('DEBUG', FUNC_NAME, `获取文件状态成功，大小: ${stats.size}`);
+                const stats = await fsp.stat(finalFileAbsPath);
                 const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
                 
-                log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: "${originalFileName}"`);
-                // --- 关键修正：向 data.js 传入原始档名和安全路径 ---
                 const dbResult = await data.addFile({
                     message_id: messageId,
                     originalFileName: originalFileName,
@@ -71,19 +62,13 @@ async function upload(fileStream, fileNameObject, mimetype, userId, folderId) {
                     date: Date.now(),
                 }, folderId, userId, 'local');
                 
-                log('INFO', FUNC_NAME, `文件 "${originalFileName}" 已成功存入资料库。`);
                 resolve({ success: true, message: '文件已储存至本地。', fileId: dbResult.fileId });
             } catch (err) {
-                 log('ERROR', FUNC_NAME, `写入资料库时发生错误 for "${originalFileName}":`, err);
                  reject(err);
             }
         });
-        writeStream.on('error', err => {
-            log('ERROR', FUNC_NAME, `写入流 (writeStream) 发生错误 for "${originalFileName}":`, err);
-            reject(err);
-        });
+        writeStream.on('error', err => reject(err));
         
-        log('DEBUG', FUNC_NAME, `正在将输入流 pipe 到写入流 for "${originalFileName}"`);
         fileStream.pipe(writeStream);
     });
 }
