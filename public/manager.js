@@ -216,20 +216,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
     
-    const uploadFiles = async (filesOrData, targetFolderId, isDrag = false) => {
-        const isDataArray = filesOrData.length > 0 && filesOrData[0].file;
+    const uploadFiles = async (allFilesData, targetFolderId, isDrag = false) => {
 
-        if (filesOrData.length === 0) {
+        if (allFilesData.length === 0) {
             showNotification('请选择文件或文件夹。', 'error', !isDrag ? uploadNotificationArea : null);
             return;
         }
 
         const notificationContainer = isDrag ? null : uploadNotificationArea;
-
-        const allFilesData = isDataArray ? filesOrData : Array.from(filesOrData).map(f => ({
-            relativePath: f.webkitRelativePath || f.name,
-            file: f
-        }));
 
         const oversizedFiles = allFilesData.filter(data => data.file.size > MAX_TELEGRAM_SIZE);
         if (oversizedFiles.length > 0) {
@@ -888,7 +882,11 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             const filesToProcess = folderInput.files.length > 0 ? folderInput.files : fileInput.files;
             const targetFolderId = folderSelect.value;
-            uploadFiles(Array.from(filesToProcess), targetFolderId, false);
+            const allFilesData = Array.from(filesToProcess).map(f => ({
+                relativePath: f.webkitRelativePath || f.name,
+                file: f
+            }));
+            uploadFiles(allFilesData, targetFolderId, false);
         });
     }
 
@@ -1188,14 +1186,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (closeUploadModalBtn) {
         closeUploadModalBtn.addEventListener('click', () => {
             uploadModal.style.display = 'none';
-        });
-    }
-    if (uploadForm) {
-        uploadForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const filesToProcess = folderInput.files.length > 0 ? folderInput.files : fileInput.files;
-            const targetFolderId = folderSelect.value;
-            uploadFiles(Array.from(filesToProcess), targetFolderId, false);
         });
     }
     
