@@ -2,15 +2,33 @@ require('dotenv').config();
 const axios = require('axios');
 const FormData = require('form-data');
 const data = require('./data.js');
+const path = require('path'); // 新增引用
 
-const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
+// 新增：文件名截断函数
+function truncateFilename(filename, maxLength = 200) {
+    if (filename.length <= maxLength) {
+        return filename;
+    }
+    const ext = path.extname(filename);
+    const baseName = path.basename(filename, ext);
+    // 确保即使扩展名很长，我们也不会得到负数的可用长度
+    const availableLength = maxLength - ext.length - 1; // 减去1以防万一
+    if (availableLength <= 0) {
+        // 如果扩展名本身就超长，则截断整个文件名
+        return filename.substring(filename.length - maxLength);
+    }
+    const truncatedBaseName = baseName.substring(0, availableLength);
+    return truncatedBaseName + ext;
+}
+
 
 async function sendFile(fileBuffer, fileName, mimetype, caption = '', folderId = 1) {
   try {
     const formData = new FormData();
+    const safeFileName = truncateFilename(fileName); // 截断文件名以符合API限制
     formData.append('chat_id', process.env.CHANNEL_ID);
-    formData.append('caption', caption || fileName);
-    formData.append('document', fileBuffer, { filename: fileName });
+    formData.append('caption', caption || fileName); // Caption 保持原始完整名称
+    formData.append('document', fileBuffer, { filename: safeFileName }); // 使用安全的文件名
     
     const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { headers: formData.getHeaders() });
 
@@ -20,6 +38,7 @@ async function sendFile(fileBuffer, fileName, mimetype, caption = '', folderId =
 
         if (fileData && fileData.file_id) {
             // 这是确保新档案能撷取到 thumb_file_id 的关键
+            // 数据库中仍然储存原始的完整文件名
             await data.addFile({
               fileName,
               mimetype: fileData.mime_type || mimetype,
