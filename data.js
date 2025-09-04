@@ -1,3 +1,5 @@
+// nexavor/networkfilemanger/NetworkFileManger-6e0f0f89f45cd0968c837f415cbff537c432395c/data.js
+
 const db = require('./database.js');
 const crypto = require('crypto');
 const path = require('path');
@@ -88,36 +90,26 @@ async function deleteUser(userId) {
     });
 }
 
-// --- *** 关键修正 开始 *** ---
-// 重写 searchItems 函数以正确处理加密
 function searchItems(query, userId) {
     return new Promise((resolve, reject) => {
         const searchQuery = `%${query}%`;
-
-        // 此 CTE (Common Table Expression) 递归地建立每个资料夹的祖先路径，
-        // 并确定路径中是否有任何一个资料夹被加密。
         const baseQuery = `
             WITH RECURSIVE folder_ancestry(id, parent_id, is_locked) AS (
-                -- 基底查询: 选出该使用者的所有资料夹，并标记其自身的加密状态
                 SELECT id, parent_id, (password IS NOT NULL) as is_locked
                 FROM folders
                 WHERE user_id = ?
                 UNION ALL
-                -- 递归步骤: 向上查找父资料夹，并继承其加密状态
                 SELECT fa.id, f.parent_id, (fa.is_locked OR (f.password IS NOT NULL))
                 FROM folders f
                 JOIN folder_ancestry fa ON f.id = fa.parent_id
                 WHERE f.user_id = ?
             ),
-            -- 聚合结果: 对每个资料夹ID，只要其路径上有任一加密，最终状态就是加密
             folder_lock_status AS (
                 SELECT id, MAX(is_locked) as is_path_locked
                 FROM folder_ancestry
                 GROUP BY id
             )
         `;
-
-        // 查询未被加密路径下的文件
         const sqlFiles = baseQuery + `
             SELECT 
                 f.*, 
@@ -130,7 +122,6 @@ function searchItems(query, userId) {
             ORDER BY f.date DESC;
         `;
         
-        // 查询未被加密路径下的资料夹
         const sqlFolders = baseQuery + `
             SELECT 
                 f.id, 
@@ -157,20 +148,16 @@ function searchItems(query, userId) {
         });
     });
 }
-
-// 新增 isFileAccessible 函数用于在直接存取文件前进行权限验证
 async function isFileAccessible(fileId, userId, unlockedFolders = []) {
     const file = (await getFilesByIds([fileId], userId))[0];
     if (!file) {
-        return false; // 找不到档案或档案不属于该使用者
+        return false;
     }
 
     const path = await getFolderPath(file.folder_id, userId);
     if (!path || path.length === 0) {
-        return false; // 资料库不一致，这不应该发生
+        return false;
     }
-
-    // 一次性查询路径上所有资料夹的加密状态
     const folderIds = path.map(p => p.id);
     const placeholders = folderIds.map(() => '?').join(',');
     const sql = `SELECT id, password IS NOT NULL as is_locked FROM folders WHERE id IN (${placeholders}) AND user_id = ?`;
@@ -181,17 +168,14 @@ async function isFileAccessible(fileId, userId, unlockedFolders = []) {
             resolve(new Map(rows.map(row => [row.id, row.is_locked])));
         });
     });
-
-    // 检查路径上的每个资料夾
     for (const folder of path) {
         if (folderStatuses.get(folder.id) && !unlockedFolders.includes(folder.id)) {
-            return false; // 发现一个已加密但在 session 中未解锁的资料夾
+            return false;
         }
     }
 
-    return true; // 路径上所有资料夾都可存取
+    return true;
 }
-// --- *** 关键修正 结束 *** ---
 
 function getItemsByIds(itemIds, userId) {
     return new Promise((resolve, reject) => {
@@ -342,11 +326,9 @@ async function isDescendant(folderId, potentialAncestorId, userId) {
     return false;
 }
 
-// --- *** 关键修正 开始 *** ---
 async function findFolderBySharePath(shareToken, pathSegments = []) {
     return new Promise(async (resolve, reject) => {
         try {
-            // 首先，验证 token 并找到根分享资料夾
             const rootFolder = await getFolderByShareToken(shareToken);
             if (!rootFolder) {
                 return resolve(null);
@@ -355,8 +337,6 @@ async function findFolderBySharePath(shareToken, pathSegments = []) {
             if (pathSegments.length === 0) {
                 return resolve(rootFolder);
             }
-
-            // 从根目录开始，逐层验证路径
             let currentParentId = rootFolder.id;
             let currentFolder = rootFolder;
             const userId = rootFolder.user_id;
@@ -368,19 +348,17 @@ async function findFolderBySharePath(shareToken, pathSegments = []) {
                 });
 
                 if (!row) {
-                    return resolve(null); // 路径无效
+                    return resolve(null);
                 }
                 
-                // 检查子资料夾是否已加密
                 if(row.password) {
-                    return resolve(null); // 不允许存取加密的子资料夹
+                    return resolve(null);
                 }
 
                 currentFolder = row;
                 currentParentId = row.id;
             }
             
-            // 返回最终找到的子资料夹资讯
             resolve(currentFolder);
 
         } catch (error) {
@@ -388,7 +366,6 @@ async function findFolderBySharePath(shareToken, pathSegments = []) {
         }
     });
 }
-// --- *** 关键修正 结束 *** ---
 
 function createFolder(name, parentId, userId) {
     const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
@@ -538,7 +515,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
             }
             
             if (allChildrenProcessedSuccessfully) {
-                console.log(`[data.js] moveItem: 所有子项目成功合并，删除原始资料夹 ID ${itemId}`);
+                console.log(`[data.js] moveItem: 所有子项目成功合并，删除原始资料夾 ID ${itemId}`);
                 await unifiedDelete(itemId, 'folder', userId);
             } else {
                  console.warn(`[data.js] moveItem: 部分子项目未能成功合并，保留原始资料夾 ID ${itemId}`);
@@ -577,66 +554,79 @@ async function unifiedDelete(itemId, itemType, userId) {
     
     await executeDeletion(filesForStorage.map(f => f.message_id), foldersForStorage.map(f => f.id), userId);
 }
-
+// --- *** 关键修正 开始 *** ---
 async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
     const storage = require('./storage').getStorage();
 
     if (storage.type === 'local' || storage.type === 'webdav') {
         const client = storage.type === 'webdav' ? storage.getClient() : null;
-        
+
         const targetPathParts = await getFolderPath(targetFolderId, userId);
-        const targetFullPath = path.posix.join(...targetPathParts.map(p => p.name));
+        
+        // 为不同存储后端生成正确的路径
+        const targetBasePath = storage.type === 'local' 
+            ? path.posix.join(...targetPathParts.slice(1).map(p => p.name))
+            : path.posix.join(...targetPathParts.map(p => p.name));
 
         const filesToMove = await getFilesByIds(fileIds, userId);
         for (const file of filesToMove) {
-            const oldRelativePath = file.file_id;
-            const newRelativePath = path.posix.join(targetFullPath, file.fileName);
+            const oldPath = file.file_id;
+            const newPath = path.posix.join(targetBasePath, file.fileName);
             
             try {
                 if (storage.type === 'local') {
-                    const oldFullPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath);
-                    const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
-                    await fs.mkdir(path.dirname(newFullPath), { recursive: true });
-                    await fs.rename(oldFullPath, newFullPath);
+                    const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldPath);
+                    const newAbsPath = path.join(UPLOAD_DIR, String(userId), newPath);
+                    if (fsSync.existsSync(oldAbsPath)) {
+                        await fs.mkdir(path.dirname(newAbsPath), { recursive: true });
+                        await fs.rename(oldAbsPath, newAbsPath);
+                    }
                 } else if (client) {
-                    await client.moveFile(oldRelativePath, newRelativePath);
+                    await client.moveFile(oldPath, newPath);
                 }
                 
-                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [newRelativePath, file.message_id], (e) => e ? rej(e) : res()));
+                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [newPath, file.message_id], (e) => e ? rej(e) : res()));
 
             } catch (err) {
-                throw new Error(`物理移动文件 ${file.fileName} 失败`);
+                console.error(`[data.js] 物理移动文件 "${file.fileName}" 失败:`, err);
+                throw new Error(`物理移动文件 "${file.fileName}" 失败`);
             }
         }
         
         const foldersToMove = (await getItemsByIds(folderIds, userId)).filter(i => i.type === 'folder');
         for (const folder of foldersToMove) {
             const oldPathParts = await getFolderPath(folder.id, userId);
-            const oldFullPath = path.posix.join(...oldPathParts.map(p => p.name));
-            const newFullPath = path.posix.join(targetFullPath, folder.name);
+
+            const oldBasePath = storage.type === 'local'
+                ? path.posix.join(...oldPathParts.slice(1).map(p => p.name))
+                : path.posix.join(...oldPathParts.map(p => p.name));
+                
+            const newBasePath = path.posix.join(targetBasePath, folder.name);
 
             try {
                  if (storage.type === 'local') {
-                    const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldFullPath);
-                    const newAbsPath = path.join(UPLOAD_DIR, String(userId), newFullPath);
+                    const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldBasePath);
+                    const newAbsPath = path.join(UPLOAD_DIR, String(userId), newBasePath);
                     if (fsSync.existsSync(oldAbsPath)) {
                        await fs.rename(oldAbsPath, newAbsPath);
                     }
                  } else if (client) {
-                    await client.moveFile(oldFullPath, newFullPath);
+                    await client.moveFile(oldBasePath, newBasePath);
                  }
 
                 const descendantFiles = await getFilesRecursive(folder.id, userId);
                 for (const file of descendantFiles) {
-                    const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
+                    const updatedFileId = file.file_id.replace(oldBasePath, newBasePath);
                     await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id], (e) => e ? rej(e) : res()));
                 }
             } catch (err) {
-                throw new Error(`物理移动文件夹 ${folder.name} 失败`);
+                console.error(`[data.js] 物理移动文件夹 "${folder.name}" 失败:`, err);
+                throw new Error(`物理移动文件夹 "${folder.name}" 失败`);
             }
         }
     }
 
+    // 更新数据库中的父子关系
     return new Promise((resolve, reject) => {
         db.serialize(() => {
             db.run("BEGIN TRANSACTION;");
@@ -658,6 +648,7 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         });
     });
 }
+// --- *** 关键修正 结束 *** ---
 
 function deleteSingleFolder(folderId, userId) {
     return new Promise((resolve, reject) => {
@@ -825,33 +816,26 @@ function getFolderByShareToken(token) {
         });
     });
 }
-
-// --- *** 关键修正 开始 *** ---
 async function findFileInSharedFolder(fileId, folderToken) {
     return new Promise((resolve, reject) => {
         const sql = `
             WITH RECURSIVE shared_folder_tree(id) AS (
-                -- Base case: the root folder with the share token. It must not be locked.
                 SELECT id FROM folders WHERE share_token = ? AND password IS NULL
                 UNION ALL
-                -- Recursive step: find all children of the folders already in the tree.
-                -- Crucially, do not include children that are themselves locked.
                 SELECT f.id FROM folders f
                 JOIN shared_folder_tree sft ON f.parent_id = sft.id
                 WHERE f.password IS NULL
             )
-            -- Final selection: get the file if its folder_id is in our allowed tree.
             SELECT f.* FROM files f
             WHERE f.message_id = ? AND f.folder_id IN (SELECT id FROM shared_folder_tree);
         `;
 
         db.get(sql, [folderToken, fileId], (err, row) => {
             if (err) return reject(err);
-            resolve(row); // row will be the file object or null if not found/not allowed
+            resolve(row);
         });
     });
 }
-// --- *** 关键修正 结束 *** ---
 
 async function renameFile(messageId, newFileName, userId) {
     const file = (await getFilesByIds([messageId], userId))[0];
@@ -902,7 +886,7 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
     const storage = require('./storage').getStorage();
     if (storage.type === 'local' || storage.type === 'webdav') {
         const targetPathParts = await getFolderPath(targetFolderId, userId);
-        const targetRelativePath = path.posix.join(...targetPathParts.map(p => p.name));
+        const targetRelativePath = path.posix.join(...targetPathParts.slice(1).map(p => p.name));
         const newRelativePath = path.posix.join(targetRelativePath, newFileName);
         const oldRelativePath = file.file_id;
         
@@ -946,8 +930,8 @@ async function renameFolder(folderId, newFolderName, userId) {
 
         try {
             if (storage.type === 'local') {
-                const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldFullPath);
-                const newAbsPath = path.join(UPLOAD_DIR, String(userId), newFullPath);
+                const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldFullPath.startsWith('/') ? oldFullPath.substring(1) : oldFullPath);
+                const newAbsPath = path.join(UPLOAD_DIR, String(userId), newFullPath.startsWith('/') ? newFullPath.substring(1) : newFullPath);
                 if (fsSync.existsSync(oldAbsPath)) {
                     await fs.rename(oldAbsPath, newAbsPath);
                 }
@@ -1209,8 +1193,6 @@ async function findOrCreateFolderByPath(fullPath, userId) {
     return parentId;
 }
 
-// --- *** 关键修正 开始 *** ---
-// 重构 resolvePathToFolderId 函数以包含锁和原子化数据库操作
 async function resolvePathToFolderId(startFolderId, pathParts, userId) {
     let currentParentId = startFolderId;
 
@@ -1253,7 +1235,6 @@ async function resolvePathToFolderId(startFolderId, pathParts, userId) {
     }
     return currentParentId;
 }
-// --- *** 关键修正 结束 *** ---
 
 module.exports = {
     createUser,
