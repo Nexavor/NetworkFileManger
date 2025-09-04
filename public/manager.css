@@ -305,10 +305,11 @@ body.selection-mode-active #dropZone {
     bottom: 0;
     left: 0;
     width: 100%;
-    padding: 10px 0 0 0;
+    padding: 10px 20px;
     box-sizing: border-box;
     z-index: 20;
-    background-color: var(--background-color);
+    background-color: rgba(255, 255, 255, 0.95);
+    border-top: 1px solid var(--border-color);
 }
 .notification { padding: 12px 20px; border-radius: 5px; z-index: 1000; font-weight: bold; background-color: #e9ecef; color: var(--text-color); }
 .notification.global { position: fixed; top: 20px; right: 20px; }
