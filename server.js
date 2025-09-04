@@ -178,43 +178,37 @@ app.post('/upload', requireLogin, (req, res) => {
             
             const fileUploadPromise = (async () => {
                 const { mimeType } = fileInfo;
+                // --- *** 关键修正 开始 *** ---
                 const action = resolutions[relativePath] || 'upload';
                 log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 文件 "${relativePath}" 的处理动作是: ${action}`);
 
                 if (action === 'skip') {
                     log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 跳过文件: "${relativePath}"`);
                     fileStream.resume();
-                    return { skipped: true }; // 关键修正: 返回跳过状态
+                    return { skipped: true };
                 }
 
                 const pathParts = relativePath.split('/').filter(p => p);
                 let finalFilename = pathParts.pop() || relativePath;
                 const folderPathParts = pathParts;
-
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                 
                 if (action === 'overwrite') {
                     const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                     if (existingItem) {
-                        log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 正在覆盖文件: "${finalFilename}"`);
+                        log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 正在覆盖 (删除旧的): "${finalFilename}"`);
                         await data.unifiedDelete(existingItem.id, existingItem.type, userId);
                     }
                 } else if (action === 'rename') {
                     const oldName = finalFilename;
                     finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
                     log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 重命名文件: "${oldName}" -> "${finalFilename}"`);
-                } else {
-                    const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                    if (conflict) {
-                        log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 发现冲突且无解决方案，跳过文件: "${finalFilename}"`);
-                        fileStream.resume();
-                        return { skipped: true }; // 关键修正: 返回跳过状态
-                    }
                 }
                 
                 await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '');
                 log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 储存引擎成功处理了文件: "${finalFilename}"`);
-                return { skipped: false }; // 关键修正: 返回成功状态
+                return { skipped: false };
+                // --- *** 关键修正 结束 *** ---
             })().catch(err => {
                 log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 处理文件 "${relativePath}" 时发生严重错误:`, err);
                 fileStream.resume();
@@ -223,7 +217,6 @@ app.post('/upload', requireLogin, (req, res) => {
             uploadPromises.push(fileUploadPromise);
         });
 
-        // --- *** 关键修正 开始 *** ---
         busboy.on('finish', async () => {
             log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 'finish' 事件触发。等待所有上传任务完成...`);
             try {
@@ -244,7 +237,6 @@ app.post('/upload', requireLogin, (req, res) => {
                 }
             }
         });
-        // --- *** 关键修正 结束 *** ---
 
         busboy.on('error', (err) => {
             log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] Busboy 发生错误:`, err);
@@ -1274,6 +1266,3 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
         res.status(500).json({ success: false, message: '删除设定失败' });
     }
 });
-
-
-
