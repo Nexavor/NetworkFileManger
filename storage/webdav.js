@@ -10,6 +10,23 @@ let client = null;
 // --- *** 关键修正 开始 *** ---
 // 新增一个 Set 来作为锁，防止并发创建同一个目录
 const creatingDirs = new Set();
+
+// 新增：文件名截断函数
+function truncateFilename(filename, maxLength = 200) {
+    if (filename.length <= maxLength) {
+        return filename;
+    }
+    const ext = path.extname(filename);
+    const baseName = path.basename(filename, ext);
+    // 确保即使扩展名很长，我们也不会得到负数的可用长度
+    const availableLength = maxLength - ext.length - 1; // 减去1以防万一
+    if (availableLength <= 0) {
+        // 如果扩展名本身就超长，则截断整个文件名
+        return filename.substring(filename.length - maxLength);
+    }
+    const truncatedBaseName = baseName.substring(0, availableLength);
+    return truncatedBaseName + ext;
+}
 // --- *** 关键修正 结束 *** ---
 
 
@@ -103,13 +120,16 @@ async function getFolderPath(folderId, userId) {
 
 async function upload(fileStream, fileName, mimetype, userId, folderId) {
     const FUNC_NAME = 'upload';
-    log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 WebDAV...`);
+    // --- 关键修正：使用截断后的安全文件名 ---
+    const safeFileName = truncateFilename(fileName);
+    log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" (储存为 "${safeFileName}") 到 WebDAV...`);
     
     return new Promise(async (resolve, reject) => {
         try {
             const client = getClient();
             const folderPath = await getFolderPath(folderId, userId);
-            const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
+            // --- 关键修正：使用安全的文件名构建路径 ---
+            const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + safeFileName;
             
             // --- *** 关键修正 开始 *** ---
             // 使用新的健壮的目录创建函数
@@ -131,22 +151,23 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
             if (!success) {
                 return reject(new Error('WebDAV putFileContents 操作失败'));
             }
-            log('INFO', FUNC_NAME, `文件成功上传到 WebDAV: "${fileName}"`);
+            log('INFO', FUNC_NAME, `文件成功上传到 WebDAV: "${safeFileName}"`);
 
             const stats = await client.stat(remotePath);
             log('DEBUG', FUNC_NAME, `获取 WebDAV 文件状态成功，大小: ${stats.size}`);
             const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
 
+            // --- 关键修正：向数据库写入安全的文件名和路径 ---
             const dbResult = await data.addFile({
                 message_id: messageId,
-                fileName,
+                fileName: safeFileName,
                 mimetype,
                 size: stats.size,
                 file_id: remotePath,
                 date: Date.now(),
             }, folderId, userId, 'webdav');
             
-            log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
+            log('INFO', FUNC_NAME, `文件 "${safeFileName}" 已成功存入资料库。`);
             resolve({ success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId });
 
         } catch (error) {
