@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const bcrypt = require('bcrypt');
+const { encrypt } = require('./crypto.js');
 
 const UPLOAD_DIR = path.resolve(__dirname, 'data', 'uploads');
 const creatingFolders = new Set();
@@ -147,7 +148,7 @@ function searchItems(query, userId) {
 
         db.all(sqlFolders, [userId, userId, searchQuery, userId], (err, folders) => {
             if (err) return reject(err);
-            contents.folders = folders;
+            contents.folders = folders.map(f => ({ ...f, encrypted_id: encrypt(f.id) }));
             db.all(sqlFiles, [userId, userId, searchQuery, userId], (err, files) => {
                 if (err) return reject(err);
                 contents.files = files.map(f => ({ ...f, message_id: f.id }));
@@ -269,7 +270,7 @@ function getFolderContents(folderId, userId) {
         let contents = { folders: [], files: [] };
         db.all(sqlFolders, [folderId, userId], (err, folders) => {
             if (err) return reject(err);
-            contents.folders = folders;
+            contents.folders = folders.map(f => ({ ...f, encrypted_id: encrypt(f.id) }));
             db.all(sqlFiles, [folderId, userId], (err, files) => {
                 if (err) return reject(err);
                 contents.files = files.map(f => ({ ...f, message_id: f.id }));
@@ -313,7 +314,7 @@ function getFolderPath(folderId, userId) {
             db.get("SELECT id, name, parent_id FROM folders WHERE id = ? AND user_id = ?", [id, userId], (err, folder) => {
                 if (err) return reject(err);
                 if (folder) {
-                    pathArr.push({ id: folder.id, name: folder.name });
+                    pathArr.push({ id: folder.id, name: folder.name, encrypted_id: encrypt(folder.id) });
                     findParent(folder.parent_id);
                 } else {
                     resolve(pathArr.reverse());
@@ -328,7 +329,7 @@ function getFolderPath(folderId, userId) {
 async function findFolderBySharePath(shareToken, pathSegments = []) {
     return new Promise(async (resolve, reject) => {
         try {
-            // 首先，验证 token 并找到根分享资料夹
+            // 首先，验证 token 并找到根分享资料夾
             const rootFolder = await getFolderByShareToken(shareToken);
             if (!rootFolder) {
                 return resolve(null);
