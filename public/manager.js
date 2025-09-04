@@ -265,7 +265,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const formData = new FormData();
         allFilesData.forEach(data => {
-            formData.append(data.relativePath, data.file);
+            // --- *** 关键修正 开始 *** ---
+            // 弃用 data.relativePath 作为 fieldname，改用固定的 'files'，
+            // 并将 data.relativePath 作为第三个参数（檔名）传递。
+            // 这确保了无论来源如何（按钮或拖拽），服务器都能可靠地从 fileInfo.filename 中获取相对路径。
+            formData.append('files', data.file, data.relativePath);
+            // --- *** 关键修正 结束 *** ---
         });
         
         const params = new URLSearchParams();
@@ -1667,3 +1672,4 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 });
+
