@@ -196,11 +196,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!isDrag) {
                     uploadModal.style.display = 'none';
                 }
+                // --- *** 关键修正 开始 *** ---
+                // 使用后端返回的 skippedAll 标志来决定显示哪条讯息
                 if (res.data.skippedAll) {
                     showNotification('没有文件被上传，所有冲突的项目都已被跳过。', 'info');
                 } else {
                     showNotification('上传成功！', 'success');
                 }
+                // --- *** 关键修正 结束 *** ---
                 fileInput.value = '';
                 folderInput.value = '';
                 loadFolderContents(currentEncryptedFolderId);
@@ -293,7 +296,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await axios.get(`/api/folder/${encryptedFolderId}`);
             
             if (res.data.locked) {
-                const { password } = await promptForPassword(`资料夹 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
+                const { password } = await promptForPassword(`资料夾 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
                 if (password === null) { 
                     const parent = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2] : null;
                     if (parent && parent.encrypted_id) {
