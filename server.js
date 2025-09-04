@@ -210,18 +210,14 @@ app.post('/upload', requireLogin, (req, res) => {
         busboy.on('finish', async () => {
             try {
                 const results = await Promise.all(uploadPromises);
-                // --- *** 关键修正 开始 *** ---
-                // 检查是否有任何一个文件被上传成功
                 const anyUploaded = results.some(r => r && r.skipped === false);
                 const allSkipped = results.length > 0 && results.every(r => r && r.skipped === true);
 
                 if (allSkipped) {
                      res.json({ success: true, skippedAll: true, message: '所有文件都因冲突而被跳过' });
                 } else {
-                     // 即使有些文件被跳过，只要有任何一个成功，就返回 overall success
                      res.json({ success: true, message: '上传完成', skippedAll: false });
                 }
-                // --- *** 关键修正 结束 *** ---
             } catch (error) {
                 if (!res.headersSent) {
                     res.status(500).json({ success: false, message: `上传任务执行失败: ${error.message}` });
