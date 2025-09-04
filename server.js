@@ -29,7 +29,44 @@ const jsonReplacer = (key, value) => {
 // 2. 将 replacer 函数设定为 Express 应用的全局设定
 //    这一步必须在 const app = express() 之后执行
 app.set('json replacer', jsonReplacer);
-// --- 关键修正 结束 ---
+
+// --- 路径加密修正 开始 ---
+const ENCRYPTION_KEY = Buffer.from(process.env.SESSION_SECRET.slice(0, 32), 'utf-8'); // 使用 SESSION_SECRET 的前32位作为加密密钥
+const IV_LENGTH = 16; // GCM 模式建议使用 12，但 16 也可以
+const AUTH_TAG_LENGTH = 16;
+
+function encryptPath(id) {
+    if (!ENCRYPTION_KEY) {
+        throw new Error('SESSION_SECRET is not defined in .env file.');
+    }
+    const iv = crypto.randomBytes(IV_LENGTH);
+    const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+    let encrypted = cipher.update(String(id), 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    const authTag = cipher.getAuthTag();
+    return Buffer.concat([iv, authTag, Buffer.from(encrypted, 'hex')]).toString('base64url');
+}
+
+function decryptPath(encryptedId) {
+    if (!ENCRYPTION_KEY) {
+        throw new Error('SESSION_SECRET is not defined in .env file.');
+    }
+    try {
+        const data = Buffer.from(encryptedId, 'base64url');
+        const iv = data.slice(0, IV_LENGTH);
+        const authTag = data.slice(IV_LENGTH, IV_LENGTH + AUTH_TAG_LENGTH);
+        const encrypted = data.slice(IV_LENGTH + AUTH_TAG_LENGTH);
+        const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+        decipher.setAuthTag(authTag);
+        let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return parseInt(decrypted, 10);
+    } catch (error) {
+        console.error("路径解密失败:", error);
+        return null;
+    }
+}
+// --- 路径加密修正 结束 ---
 
 
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
@@ -139,14 +176,21 @@ app.get('/', requireLogin, (req, res) => {
     db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [req.session.userId], (err, rootFolder) => {
         if (err || !rootFolder) {
             data.createFolder('/', null, req.session.userId)
-                .then(newRoot => res.redirect(`/folder/${newRoot.id}`))
+                .then(newRoot => {
+                    const encryptedId = encryptPath(newRoot.id);
+                    res.redirect(`/folder/${encryptedId}`);
+                })
                 .catch(() => res.status(500).send("找不到您的根目录，也无法建立。"));
             return;
         }
-        res.redirect(`/folder/${rootFolder.id}`);
+        const encryptedId = encryptPath(rootFolder.id);
+        res.redirect(`/folder/${encryptedId}`);
     });
 });
-app.get('/folder/:id', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/manager.html')));
+
+// --- 路径加密修正: 修改路由参数 ---
+app.get('/folder/:encryptedId', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/manager.html')));
+
 app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/shares.html')));
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
@@ -163,8 +207,9 @@ app.post('/upload', requireLogin, (req, res) => {
 
     try {
         if (!folderId) throw new Error('folderId is missing from query parameters');
-        const initialFolderId = parseInt(folderId, 10);
-        if (isNaN(initialFolderId)) throw new Error('Invalid folderId');
+        // --- 路径加密修正: 解密 folderId ---
+        const initialFolderId = decryptPath(folderId);
+        if (initialFolderId === null || isNaN(initialFolderId)) throw new Error('Invalid folderId');
         
         const resolutions = JSON.parse(resolutionsJSON || '{}');
         log('DEBUG', FILE_NAME, FUNC_NAME, `[${reqId}] 已从URL获取元数据: folderId=${initialFolderId}`);
@@ -264,7 +309,9 @@ app.post('/upload', requireLogin, (req, res) => {
 
 // --- API 端点 ---
 app.post('/api/text-file', requireLogin, async (req, res) => {
-    const { mode, fileId, folderId, fileName, content } = req.body;
+    // --- 路径加密修正: 解密 folderId ---
+    const { mode, fileId, folderId: encryptedFolderId, fileName, content } = req.body;
+    const folderId = encryptedFolderId ? decryptPath(encryptedFolderId) : null;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
 
@@ -363,10 +410,12 @@ app.get('/api/file-info/:id', requireLogin, async (req, res) => {
 
 app.post('/api/check-existence', requireLogin, async (req, res) => {
     try {
-        const { files: filesToCheck, folderId: initialFolderId } = req.body;
+        // --- 路径加密修正: 解密 folderId ---
+        const { files: filesToCheck, folderId: encryptedFolderId } = req.body;
+        const folderId = decryptPath(encryptedFolderId);
         const userId = req.session.userId;
 
-        if (!filesToCheck || !Array.isArray(filesToCheck) || !initialFolderId) {
+        if (!filesToCheck || !Array.isArray(filesToCheck) || !folderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
 
@@ -377,7 +426,7 @@ app.post('/api/check-existence', requireLogin, async (req, res) => {
                 const fileName = pathParts.pop() || relativePath;
                 const folderPathParts = pathParts;
 
-                const targetFolderId = await data.findFolderByPath(initialFolderId, folderPathParts, userId);
+                const targetFolderId = await data.findFolderByPath(folderId, folderPathParts, userId);
                 
                 if (targetFolderId === null) {
                     return { name: fileName, relativePath, exists: false, messageId: null };
@@ -395,7 +444,9 @@ app.post('/api/check-existence', requireLogin, async (req, res) => {
 
 app.post('/api/check-move-conflict', requireLogin, async (req, res) => {
     try {
-        const { itemIds, targetFolderId } = req.body;
+        // --- 路径加密修正: 解密 targetFolderId ---
+        const { itemIds, targetFolderId: encryptedTargetFolderId } = req.body;
+        const targetFolderId = decryptPath(encryptedTargetFolderId);
         const userId = req.session.userId;
 
         if (!itemIds || !Array.isArray(itemIds) || !targetFolderId) {
@@ -431,9 +482,13 @@ app.get('/api/search', requireLogin, async (req, res) => {
     }
 });
 
-app.get('/api/folder/:id', requireLogin, async (req, res) => {
+// --- 路径加密修正: 修改路由参数并解密 ---
+app.get('/api/folder/:encryptedId', requireLogin, async (req, res) => {
     try {
-        const folderId = parseInt(req.params.id, 10);
+        const folderId = decryptPath(req.params.encryptedId);
+        if (folderId === null) {
+            return res.status(400).json({ success: false, message: '无效的资料夹ID' });
+        }
         const userId = req.session.userId;
 
         const folderDetails = await data.getFolderDetails(folderId, userId);
@@ -443,22 +498,33 @@ app.get('/api/folder/:id', requireLogin, async (req, res) => {
         }
 
         if (folderDetails.is_locked && !req.session.unlockedFolders.includes(folderId)) {
+            const folderPath = await data.getFolderPath(folderId, userId);
+            const encryptedPath = folderPath.map(p => ({ ...p, id: encryptPath(p.id) }));
             return res.json({
                 locked: true,
-                path: await data.getFolderPath(folderId, userId)
+                path: encryptedPath
             });
         }
 
         const contents = await data.getFolderContents(folderId, userId);
-        const path = await data.getFolderPath(folderId, userId);
-        res.json({ contents, path });
+        const folderPath = await data.getFolderPath(folderId, userId);
+
+        // 加密所有返回的 ID
+        contents.folders.forEach(f => f.id = encryptPath(f.id));
+        contents.files.forEach(f => f.id = encryptPath(f.id));
+        const encryptedPath = folderPath.map(p => ({ ...p, id: encryptPath(p.id) }));
+
+        res.json({ contents, path: encryptedPath });
     } catch (error) {
         res.status(500).json({ success: false, message: '读取资料夾内容失败。' });
     }
 });
 
+
 app.post('/api/folder', requireLogin, async (req, res) => {
-    const { name, parentId } = req.body;
+    // --- 路径加密修正: 解密 parentId ---
+    const { name, parentId: encryptedParentId } = req.body;
+    const parentId = decryptPath(encryptedParentId);
     const userId = req.session.userId;
     if (!name || !parentId) {
         return res.status(400).json({ success: false, message: '缺少资料夾名称或父 ID。' });
@@ -491,9 +557,13 @@ app.post('/api/folder', requireLogin, async (req, res) => {
     }
 });
 
-app.post('/api/folder/:id/lock', requireLogin, async (req, res) => {
+// --- 路径加密修正: 修改路由参数并解密 ---
+app.post('/api/folder/:encryptedId/lock', requireLogin, async (req, res) => {
     try {
-        const { id } = req.params;
+        const folderId = decryptPath(req.params.encryptedId);
+        if (folderId === null) {
+            return res.status(400).json({ success: false, message: '无效的资料夹ID' });
+        }
         const { password, oldPassword } = req.body;
         const userId = req.session.userId;
         
@@ -501,7 +571,7 @@ app.post('/api/folder/:id/lock', requireLogin, async (req, res) => {
             return res.status(400).json({ success: false, message: '密码长度至少需要 4 个字元。' });
         }
 
-        const folder = await data.getFolderDetails(id, userId);
+        const folder = await data.getFolderDetails(folderId, userId);
         if (!folder) {
             return res.status(404).json({ success: false, message: '找不到资料夹。' });
         }
@@ -518,17 +588,21 @@ app.post('/api/folder/:id/lock', requireLogin, async (req, res) => {
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-        await data.setFolderPassword(id, hashedPassword, userId);
+        await data.setFolderPassword(folderId, hashedPassword, userId);
 
-        res.json({ success: true, message: '资料夹密码已设定/更新。' });
+        res.json({ success: true, message: '资料夾密码已设定/更新。' });
     } catch (error) {
         res.status(500).json({ success: false, message: '操作失败：' + error.message });
     }
 });
 
-app.post('/api/folder/:id/unlock', requireLogin, async (req, res) => {
+// --- 路径加密修正: 修改路由参数并解密 ---
+app.post('/api/folder/:encryptedId/unlock', requireLogin, async (req, res) => {
     try {
-        const { id } = req.params;
+        const folderId = decryptPath(req.params.encryptedId);
+        if (folderId === null) {
+            return res.status(400).json({ success: false, message: '无效的资料夹ID' });
+        }
         const { password } = req.body;
         const userId = req.session.userId;
 
@@ -536,33 +610,38 @@ app.post('/api/folder/:id/unlock', requireLogin, async (req, res) => {
             return res.status(400).json({ success: false, message: '需要提供密码才能解锁。' });
         }
 
-        const isMatch = await data.verifyFolderPassword(id, password, userId);
+        const isMatch = await data.verifyFolderPassword(folderId, password, userId);
         if (!isMatch) {
             return res.status(401).json({ success: false, message: '密码不正确。' });
         }
 
-        await data.setFolderPassword(id, null, userId); // 传入 null 来移除密码
+        await data.setFolderPassword(folderId, null, userId); // 传入 null 来移除密码
         if (req.session.unlockedFolders) {
-            req.session.unlockedFolders = req.session.unlockedFolders.filter(folderId => folderId !== parseInt(id));
+            req.session.unlockedFolders = req.session.unlockedFolders.filter(id => id !== folderId);
         }
-        res.json({ success: true, message: '资料夹已成功解锁（移除密码）。' });
+        res.json({ success: true, message: '资料夾已成功解锁（移除密码）。' });
     } catch (error) {
         res.status(500).json({ success: false, message: '操作失败：' + error.message });
     }
 });
 
-app.post('/api/folder/:id/verify', requireLogin, async (req, res) => {
+// --- 路径加密修正: 修改路由参数并解密 ---
+app.post('/api/folder/:encryptedId/verify', requireLogin, async (req, res) => {
     try {
-        const { id } = req.params;
+        const folderId = decryptPath(req.params.encryptedId);
+        if (folderId === null) {
+            return res.status(400).json({ success: false, message: '无效的资料夾ID' });
+        }
         const { password } = req.body;
         const userId = req.session.userId;
 
-        const isMatch = await data.verifyFolderPassword(id, password, userId);
+        const isMatch = await data.verifyFolderPassword(folderId, password, userId);
         if (isMatch) {
             if (!req.session.unlockedFolders) {
                 req.session.unlockedFolders = [];
             }
-            req.session.unlockedFolders.push(parseInt(id));
+            // --- 路径加密修正: session 中存储原始 ID ---
+            req.session.unlockedFolders.push(folderId);
             res.json({ success: true });
         } else {
             res.status(401).json({ success: false, message: '密码错误' });
@@ -572,15 +651,24 @@ app.post('/api/folder/:id/verify', requireLogin, async (req, res) => {
     }
 });
 
-
+// --- 路径加密修正: 加密所有返回的 ID ---
 app.get('/api/folders', requireLogin, async (req, res) => {
     const folders = await data.getAllFolders(req.session.userId);
-    res.json(folders);
+    const encryptedFolders = folders.map(f => ({
+        ...f,
+        id: encryptPath(f.id),
+        parent_id: f.parent_id ? encryptPath(f.parent_id) : null
+    }));
+    res.json(encryptedFolders);
 });
+
 
 app.post('/api/move', requireLogin, async (req, res) => {
     try {
-        const { itemIds, targetFolderId, resolutions = {} } = req.body;
+        // --- 路径加密修正: 解密所有 ID ---
+        const { itemIds: encryptedItemIds, targetFolderId: encryptedTargetFolderId, resolutions = {} } = req.body;
+        const itemIds = encryptedItemIds.map(decryptPath).filter(id => id !== null);
+        const targetFolderId = decryptPath(encryptedTargetFolderId);
         const userId = req.session.userId;
 
         if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0 || !targetFolderId) {
@@ -631,7 +719,10 @@ app.post('/api/move', requireLogin, async (req, res) => {
 });
 
 app.post('/delete-multiple', requireLogin, async (req, res) => {
-    const { messageIds = [], folderIds = [] } = req.body;
+    // --- 路径加密修正: 解密所有 ID ---
+    const { messageIds: encryptedMessageIds = [], folderIds: encryptedFolderIds = [] } = req.body;
+    const messageIds = encryptedMessageIds.map(decryptPath).filter(id => id !== null);
+    const folderIds = encryptedFolderIds.map(decryptPath).filter(id => id !== null);
     const userId = req.session.userId;
     try {
         for(const id of messageIds) { await data.unifiedDelete(id, 'file', userId); }
@@ -645,7 +736,9 @@ app.post('/delete-multiple', requireLogin, async (req, res) => {
 
 app.post('/rename', requireLogin, async (req, res) => {
     try {
-        const { id, newName, type } = req.body;
+        // --- 路径加密修正: 解密 ID ---
+        const { id: encryptedId, newName, type } = req.body;
+        const id = decryptPath(encryptedId);
         const userId = req.session.userId;
         if (!id || !newName || !type) {
             return res.status(400).json({ success: false, message: '缺少必要参数。'});
@@ -667,7 +760,10 @@ app.post('/rename', requireLogin, async (req, res) => {
 
 app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     try {
-        const messageId = parseInt(req.params.message_id, 10);
+        // --- 路径加密修正: 解密 ID ---
+        const messageId = decryptPath(req.params.message_id);
+        if (messageId === null) return res.status(400).send('无效的ID');
+        
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) {
             return res.status(403).send('权限不足');
@@ -756,9 +852,11 @@ async function handleFileStream(req, res, fileInfo) {
     }
 }
 
-app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
+app.get('/download/proxy/:encryptedId', requireLogin, async (req, res) => {
     try {
-        const messageId = parseInt(req.params.message_id, 10);
+        const messageId = decryptPath(req.params.encryptedId);
+        if (messageId === null) return res.status(400).send('无效的ID');
+
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) return res.status(403).send('权限不足');
         
@@ -771,11 +869,14 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
         if (!res.headersSent) res.status(500).send('下载代理失败: ' + error.message);
     }
 });
+
 // --- *** 关键修正 结束 *** ---
+
 
 app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     try {
-        const messageId = parseInt(req.params.message_id, 10);
+        const messageId = decryptPath(req.params.message_id);
+        if (messageId === null) return res.status(400).send('无效的ID');
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) {
             return res.status(403).send('权限不足');
@@ -808,7 +909,10 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
 
 app.post('/api/download-archive', requireLogin, async (req, res) => {
     try {
-        const { messageIds = [], folderIds = [] } = req.body;
+        // --- 路径加密修正: 解密所有 ID ---
+        const { messageIds: encryptedMessageIds = [], folderIds: encryptedFolderIds = [] } = req.body;
+        const messageIds = encryptedMessageIds.map(decryptPath).filter(id => id !== null);
+        const folderIds = encryptedFolderIds.map(decryptPath).filter(id => id !== null);
         const userId = req.session.userId;
         const storage = storageManager.getStorage();
 
@@ -855,7 +959,10 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
 
 app.post('/share', requireLogin, async (req, res) => {
     try {
-        const { itemId, itemType, expiresIn } = req.body;
+        // --- 路径加密修正: 解密 itemId ---
+        const { itemId: encryptedItemId, itemType, expiresIn } = req.body;
+        const itemId = decryptPath(encryptedItemId);
+
         if (!itemId || !itemType || !expiresIn) {
             return res.status(400).json({ success: false, message: '缺少必要参数。' });
         }
@@ -1115,9 +1222,12 @@ app.get('/share/thumbnail/:folderToken/:fileId', async (req, res) => {
     }
 });
 
-app.get('/share/download/:folderToken/:fileId', async (req, res) => {
+app.get('/share/download/:folderToken/:encryptedFileId', async (req, res) => {
     try {
-        const { folderToken, fileId } = req.params;
+        const { folderToken, encryptedFileId } = req.params;
+        const fileId = decryptPath(encryptedFileId);
+        if(fileId === null) return res.status(400).send('无效的文件ID');
+
         const fileInfo = await data.findFileInSharedFolder(parseInt(fileId, 10), folderToken);
         
         if (!fileInfo) {
@@ -1274,6 +1384,3 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
         res.status(500).json({ success: false, message: '删除设定失败' });
     }
 });
-
-
-
