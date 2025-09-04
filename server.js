@@ -15,6 +15,23 @@ const storageManager = require('./storage');
 
 const app = express();
 
+// --- 关键修正 开始 ---
+// 1. 定义通用的 JSON replacer 函数
+const jsonReplacer = (key, value) => {
+    // 如果值的类型是 BigInt，则将其转换为字符串
+    if (typeof value === 'bigint') {
+        return value.toString();
+    }
+    // 其他类型保持原样
+    return value;
+};
+
+// 2. 将 replacer 函数设定为 Express 应用的全局设定
+//    这一步必须在 const app = express() 之后执行
+app.set('json replacer', jsonReplacer);
+// --- 关键修正 结束 ---
+
+
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
 // --- 日志辅助函数 ---
@@ -1257,3 +1274,6 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
         res.status(500).json({ success: false, message: '删除设定失败' });
     }
 });
+
+
+
