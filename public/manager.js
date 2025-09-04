@@ -1186,6 +1186,97 @@ document.addEventListener('DOMContentLoaded', () => {
             uploadModal.style.display = 'none';
         });
     }
+    if (uploadForm) {
+        uploadForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const filesToProcess = folderInput.files.length > 0 ? folderInput.files : fileInput.files;
+            const targetFolderId = folderSelect.value;
+            uploadFiles(Array.from(filesToProcess), targetFolderId, false);
+        });
+    }
+    
+    if (shareBtn && shareModal) {
+        const shareOptions = document.getElementById('shareOptions');
+        const shareResult = document.getElementById('shareResult');
+        const expiresInSelect = document.getElementById('expiresInSelect');
+        const customExpiresInput = document.getElementById('customExpiresInput');
+        const confirmShareBtn = document.getElementById('confirmShareBtn');
+        const cancelShareBtn = document.getElementById('cancelShareBtn');
+        const shareLinkContainer = document.getElementById('shareLinkContainer');
+        const copyLinkBtn = document.getElementById('copyLinkBtn');
+        const closeShareModalBtn = document.getElementById('closeShareModalBtn');
+        const sharePasswordInput = document.getElementById('sharePasswordInput');
+    
+        expiresInSelect.addEventListener('change', () => {
+            if (expiresInSelect.value === 'custom') {
+                customExpiresInput.style.display = 'block';
+                const now = new Date();
+                now.setHours(now.getHours() + 1);
+                const year = now.getFullYear();
+                const month = (now.getMonth() + 1).toString().padStart(2, '0');
+                const day = now.getDate().toString().padStart(2, '0');
+                const hours = now.getHours().toString().padStart(2, '0');
+                const minutes = now.getMinutes().toString().padStart(2, '0');
+                customExpiresInput.value = `${year}-${month}-${day}T${hours}:${minutes}`;
+            } else {
+                customExpiresInput.style.display = 'none';
+            }
+        });
+    
+        shareBtn.addEventListener('click', () => {
+            if (shareBtn.disabled) return;
+            contextMenu.style.display = 'none';
+            shareOptions.style.display = 'block';
+            shareResult.style.display = 'none';
+            sharePasswordInput.value = '';
+            expiresInSelect.value = '24h';
+            customExpiresInput.style.display = 'none';
+            shareModal.style.display = 'flex';
+        });
+        cancelShareBtn.addEventListener('click', () => shareModal.style.display = 'none');
+        closeShareModalBtn.addEventListener('click', () => shareModal.style.display = 'none');
+    
+        confirmShareBtn.addEventListener('click', async () => {
+            const [itemId, item] = selectedItems.entries().next().value;
+            const itemType = item.type;
+            const expiresIn = expiresInSelect.value;
+            const password = sharePasswordInput.value;
+            
+            const payload = { itemId, itemType, expiresIn, password };
+    
+            if (expiresIn === 'custom') {
+                if (!customExpiresInput.value) {
+                    alert('请选择一个有效的到期时间！');
+                    return;
+                }
+                payload.customExpiresAt = new Date(customExpiresInput.value).getTime();
+                if (isNaN(payload.customExpiresAt) || payload.customExpiresAt <= Date.now()) {
+                    alert('自订的到期时间必须晚于现在！');
+                    return;
+                }
+            }
+            
+            try {
+                const res = await axios.post('/share', payload);
+                if (res.data.success) {
+                    shareLinkContainer.textContent = res.data.url;
+                    shareOptions.style.display = 'none';
+                    shareResult.style.display = 'block';
+                } else {
+                    alert('创建分享链接失败: ' + res.data.message);
+                }
+            } catch {
+                alert('创建分享链接请求失败');
+            }
+        });
+        copyLinkBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(shareLinkContainer.textContent).then(() => {
+                copyLinkBtn.textContent = '已复制!';
+                setTimeout(() => { copyLinkBtn.textContent = '复制链接'; }, 2000);
+            });
+        });
+    }
+    
     if (previewBtn) {
         previewBtn.addEventListener('click', async () => {
             if (previewBtn.disabled) return;
@@ -1462,50 +1553,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    if (shareBtn && shareModal) {
-        const shareOptions = document.getElementById('shareOptions');
-        const shareResult = document.getElementById('shareResult');
-        const expiresInSelect = document.getElementById('expiresInSelect');
-        const confirmShareBtn = document.getElementById('confirmShareBtn');
-        const cancelShareBtn = document.getElementById('cancelShareBtn');
-        const shareLinkContainer = document.getElementById('shareLinkContainer');
-        const copyLinkBtn = document.getElementById('copyLinkBtn');
-        const closeShareModalBtn = document.getElementById('closeShareModalBtn');
-
-        shareBtn.addEventListener('click', () => {
-            if (shareBtn.disabled) return;
-            contextMenu.style.display = 'none';
-            shareOptions.style.display = 'block';
-            shareResult.style.display = 'none';
-            shareModal.style.display = 'flex';
-        });
-        cancelShareBtn.addEventListener('click', () => shareModal.style.display = 'none');
-        closeShareModalBtn.addEventListener('click', () => shareModal.style.display = 'none');
-
-        confirmShareBtn.addEventListener('click', async () => {
-            const [itemId, item] = selectedItems.entries().next().value;
-            const itemType = item.type;
-            const expiresIn = expiresInSelect.value;
-            try {
-                const res = await axios.post('/share', { itemId, itemType, expiresIn });
-                if (res.data.success) {
-                    shareLinkContainer.textContent = res.data.url;
-                    shareOptions.style.display = 'none';
-                    shareResult.style.display = 'block';
-                } else {
-                    alert('创建分享链接失败: ' + res.data.message);
-                }
-            } catch {
-                alert('创建分享链接请求失败');
-            }
-        });
-        copyLinkBtn.addEventListener('click', () => {
-            navigator.clipboard.writeText(shareLinkContainer.textContent).then(() => {
-                copyLinkBtn.textContent = '已复制!';
-                setTimeout(() => { copyLinkBtn.textContent = '复制链接'; }, 2000);
-            });
-        });
-    }
     if (closeModal) closeModal.onclick = () => {
         previewModal.style.display = 'none';
         modalContent.innerHTML = '';
