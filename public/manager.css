@@ -302,15 +302,13 @@ body.selection-mode-active #dropZone {
 .progress-bar { width: 0%; height: 100%; background-color: var(--primary-color); text-align: center; line-height: 20px; color: white; font-size: 12px; transition: width 0.4s ease; }
 #dragUploadProgressArea {
     position: sticky;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    width: auto;
-    margin: 20px -20px -20px -20px;
+    bottom: -20px;
+    left: -20px;
+    width: calc(100% + 40px);
     padding: 10px 20px;
     box-sizing: border-box;
     z-index: 20;
-    background-color: rgba(248, 249, 250, 0.95);
+    background-color: rgba(255, 255, 255, 0.95);
     border-top: 1px solid var(--border-color);
     border-radius: 0 0 6px 6px;
 }
@@ -411,7 +409,7 @@ body.selection-mode-active #dropZone {
     }
     
     .setting-card { padding: 15px; }
-    .setting-card button, .setting-card input, .setting-card select { width: 100%; box-sizing: border-box; }
+    .setting-card button, .setting-card input, .setting-card select { width: 100%; box-sizing: border-box; margin-top: 10px; }
     .user-table .actions button { padding: 4px 8px; font-size: 11px; }
     .shares-table .share-link { flex-direction: column; align-items: stretch; }
     .shares-table .share-link input { width: 100%; box-sizing: border-box; }
