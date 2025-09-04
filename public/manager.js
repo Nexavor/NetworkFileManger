@@ -97,6 +97,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 状态
     let isMultiSelectMode = false;
     let currentFolderId = 1;
+    let currentEncryptedFolderId = null;
     let currentFolderContents = { folders: [], files: [] };
     let selectedItems = new Map();
     let moveTargetFolderId = null;
@@ -194,7 +195,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 fileInput.value = '';
                 folderInput.value = '';
-                loadFolderContents(currentFolderId);
+                loadFolderContents(currentEncryptedFolderId);
             } else {
                 showNotification(`上传失败: ${res.data.message}`, 'error', notificationContainer);
             }
@@ -274,36 +275,41 @@ document.addEventListener('DOMContentLoaded', () => {
         await performUpload(uploadUrl, formData, isDrag);
     };
 
-    const loadFolderContents = async (folderId) => {
+    const loadFolderContents = async (encryptedFolderId) => {
         try {
             isSearchMode = false;
             if (searchInput) searchInput.value = '';
-            currentFolderId = folderId;
-            const res = await axios.get(`/api/folder/${folderId}`);
+            
+            currentEncryptedFolderId = encryptedFolderId; 
+
+            const res = await axios.get(`/api/folder/${encryptedFolderId}`);
             
             if (res.data.locked) {
                 const { password } = await promptForPassword(`资料夹 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
                 if (password === null) { 
-                    const parentId = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2].id : null;
-                    if (parentId) {
-                        history.back(); 
+                    const parent = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2] : null;
+                    if (parent && parent.encrypted_id) {
+                       history.back();
                     }
                     return;
                 }
                 try {
-                    await axios.post(`/api/folder/${folderId}/verify`, { password });
-                    loadFolderContents(folderId);
+                    const currentFolderOriginalId = res.data.path[res.data.path.length - 1].id;
+                    await axios.post(`/api/folder/${currentFolderOriginalId}/verify`, { password });
+                    loadFolderContents(encryptedFolderId);
                 } catch (error) {
                     alert('密码错误！');
-                    const parentId = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2].id : null;
-                    if (parentId) {
-                        loadFolderContents(parentId);
+                    const parent = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2] : null;
+                    if (parent && parent.encrypted_id) {
+                       loadFolderContents(parent.encrypted_id);
                     }
                 }
                 return;
             }
 
             currentFolderContents = res.data.contents;
+            currentFolderId = res.data.path[res.data.path.length - 1].id;
+
             const currentIds = new Set([...res.data.contents.folders.map(f => String(f.id)), ...res.data.contents.files.map(f => String(f.id))]);
             selectedItems.forEach((_, key) => {
                 if (!currentIds.has(key)) {
@@ -348,7 +354,7 @@ document.addEventListener('DOMContentLoaded', () => {
             link.textContent = p.name === '/' ? '根目录' : p.name;
             if (link.tagName === 'A') {
                 link.href = '#';
-                link.dataset.folderId = p.id;
+                link.dataset.encryptedFolderId = p.encrypted_id;
             }
             breadcrumb.appendChild(link);
         });
@@ -1039,20 +1045,24 @@ document.addEventListener('DOMContentLoaded', () => {
         if (target && target.dataset.type === 'folder') {
             const folderId = parseInt(target.dataset.id, 10);
             const isLocked = target.dataset.isLocked === 'true' || target.dataset.isLocked === '1';
+            const folderData = currentFolderContents.folders.find(f => f.id === folderId);
+            const encryptedId = folderData ? folderData.encrypted_id : null;
+
+            if (!encryptedId) return; // 如果找不到加密 ID 则不执行任何操作
 
             if (isLocked) {
                 try {
                     const { password } = await promptForPassword(`资料夾 "${target.dataset.name}" 已加密`, '请输入密码以存取:');
                     if (password === null) return;
                     await axios.post(`/api/folder/${folderId}/verify`, { password });
-                    window.history.pushState(null, '', `/folder/${folderId}`);
-                    loadFolderContents(folderId);
+                    window.history.pushState(null, '', `/view/${encryptedId}`);
+                    loadFolderContents(encryptedId);
                 } catch (error) {
                     alert(error.response?.data?.message || '验证失败');
                 }
             } else {
-                window.history.pushState(null, '', `/folder/${folderId}`);
-                loadFolderContents(folderId);
+                window.history.pushState(null, '', `/view/${encryptedId}`);
+                loadFolderContents(encryptedId);
             }
         } else if (target && target.dataset.type === 'file') {
             if (selectedItems.size !== 1) {
@@ -1097,23 +1107,23 @@ document.addEventListener('DOMContentLoaded', () => {
         breadcrumb.addEventListener('click', e => {
             e.preventDefault();
             const link = e.target.closest('a');
-            if (link && link.dataset.folderId) {
-                const folderId = parseInt(link.dataset.folderId, 10);
-                window.history.pushState(null, '', `/folder/${folderId}`);
-                loadFolderContents(folderId);
+            if (link && link.dataset.encryptedFolderId) {
+                const encryptedId = link.dataset.encryptedFolderId;
+                window.history.pushState(null, '', `/view/${encryptedId}`);
+                loadFolderContents(encryptedId);
             }
         });
     }
     window.addEventListener('popstate', () => {
         if (document.getElementById('itemGrid')) {
             const pathParts = window.location.pathname.split('/');
-            const lastPart = pathParts.filter(p => p).pop();
-            let folderId = parseInt(lastPart, 10);
-            if (isNaN(folderId)) {
-                const rootFolderLink = document.querySelector('.breadcrumb a');
-                folderId = rootFolderLink ? parseInt(rootFolderLink.dataset.folderId) : 1;
+            const viewIndex = pathParts.indexOf('view');
+            if (viewIndex !== -1 && pathParts.length > viewIndex + 1) {
+                const encryptedId = pathParts[viewIndex + 1];
+                loadFolderContents(encryptedId);
+            } else {
+                window.location.href = '/';
             }
-            loadFolderContents(folderId);
         }
     });
     if (createFolderBtn) {
@@ -1124,7 +1134,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 try {
                     await axios.post('/api/folder', { name: name.trim(), parentId: currentFolderId });
                     foldersLoaded = false; 
-                    loadFolderContents(currentFolderId);
+                    loadFolderContents(currentEncryptedFolderId);
                 } catch (error) { alert(error.response?.data?.message || '建立失败'); }
             }
         });
@@ -1134,7 +1144,7 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             const query = searchInput.value.trim();
             if (query) executeSearch(query);
-            else if(isSearchMode) loadFolderContents(currentFolderId);
+            else if(isSearchMode) loadFolderContents(currentEncryptedFolderId);
         });
     }
     if (selectAllBtn) {
@@ -1216,7 +1226,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         newName: newName.trim(),
                         type: item.type
                     });
-                    loadFolderContents(currentFolderId);
+                    loadFolderContents(currentEncryptedFolderId);
                  } catch (error) {
                      alert('重命名失败: ' + (error.response?.data?.message || '服务器错误'));
                  }
@@ -1266,7 +1276,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             try {
                 await axios.post('/delete-multiple', { messageIds: filesToDelete, folderIds: foldersToDelete });
-                loadFolderContents(currentFolderId);
+                loadFolderContents(currentEncryptedFolderId);
             } catch (error) { alert('删除失败: ' + (error.response?.data?.message || '请重试。')); }
         });
     }
@@ -1362,7 +1372,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 const { fileConflicts, folderConflicts } = conflictCheckRes.data;
     
-                const destFolderContentsRes = await axios.get(`/api/folder/${currentTargetFolderId}`);
+                const destFolderContentsRes = await axios.get(`/api/folder/${encrypt(currentTargetFolderId)}`);
                 const destFolderMap = new Map(destFolderContentsRes.data.contents.folders.map(f => [f.name, f.id]));
     
                 for (const folderName of folderConflicts) {
@@ -1389,7 +1399,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const sourceFolder = itemsToMove.find(item => item.name === folderName && item.type === 'folder');
                         const destSubFolderId = destFolderMap.get(folderName);
                         if (sourceFolder && destSubFolderId) {
-                            const sourceSubFolderContentsRes = await axios.get(`/api/folder/${sourceFolder.id}`);
+                            const sourceSubFolderContentsRes = await axios.get(`/api/folder/${encrypt(sourceFolder.id)}`);
                             const subItemsToMove = [...sourceSubFolderContentsRes.data.contents.folders, ...sourceSubFolderContentsRes.data.contents.files].map(item => ({
                                 id: item.id,
                                 name: item.name,
@@ -1434,7 +1444,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
     
                 moveModal.style.display = 'none';
-                loadFolderContents(currentFolderId);
+                loadFolderContents(currentEncryptedFolderId);
                 showNotification(response.data.message, 'success');
     
             } catch (error) {
@@ -1517,14 +1527,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const isLocked = folderElement.dataset.isLocked === 'true' || folderElement.dataset.isLocked === '1';
 
         if (isLocked) {
-            const action = prompt(`资料夹 "${folderName}" 已加密。\n请输入 "change" 来修改密码，或输入 "unlock" 来移除密码。`);
+            const action = prompt(`资料夾 "${folderName}" 已加密。\n请输入 "change" 来修改密码，或输入 "unlock" 来移除密码。`);
             if (action === 'unlock') {
                 const { password } = await promptForPassword(`移除密码`, `请输入 "${folderName}" 的密码以移除加密:`);
                 if (password === null) return;
                 try {
                     await axios.post(`/api/folder/${folderId}/unlock`, { password });
                     showNotification('资料夾密码已移除。', 'success');
-                    loadFolderContents(currentFolderId);
+                    loadFolderContents(currentEncryptedFolderId);
                 } catch (error) {
                     alert('密码错误或操作失败。');
                 }
@@ -1552,7 +1562,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 await axios.post(`/api/folder/${folderId}/lock`, { password });
                 showNotification('资料夾已成功加密。', 'success');
-                loadFolderContents(currentFolderId);
+                loadFolderContents(currentEncryptedFolderId);
             } catch (error) {
                 alert('加密失败: ' + (error.response?.data?.message || '未知错误'));
             }
@@ -1561,19 +1571,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.addEventListener('message', (event) => {
         if (event.data === 'refresh-files') {
-            loadFolderContents(currentFolderId);
+            loadFolderContents(currentEncryptedFolderId);
         }
     });
     
     // 初始化
     if (document.getElementById('itemGrid')) {
         const pathParts = window.location.pathname.split('/');
-        const lastPart = pathParts.filter(p => p).pop();
-        let folderId = parseInt(lastPart, 10);
-        if (isNaN(folderId)) {
-            const rootFolderLink = document.querySelector('.breadcrumb a');
-            folderId = rootFolderLink ? parseInt(rootFolderLink.dataset.folderId) : 1;
+        const viewIndex = pathParts.indexOf('view');
+        let encryptedId;
+        if (viewIndex !== -1 && pathParts.length > viewIndex + 1) {
+            encryptedId = pathParts[viewIndex + 1];
         }
-        loadFolderContents(folderId);
+
+        if (encryptedId) {
+            loadFolderContents(encryptedId);
+        } else {
+           // 如果 URL 无效，导航到根目录
+           window.location.href = '/';
+        }
     }
 });
