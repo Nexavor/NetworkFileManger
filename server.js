@@ -1,4 +1,4 @@
-// server.js (最终正式版)
+// server.js (最终正式版 - 修正语法错误并保留日志)
 
 require('dotenv').config();
 const express = require('express');
@@ -63,7 +63,7 @@ const shareSession = session({
   resave: false,
   saveUninitialized: true,
   cookie: { maxAge: 1000 * 60 * 60 * 24 }
-}));
+});
 
 app.set('trust proxy', 1);
 
