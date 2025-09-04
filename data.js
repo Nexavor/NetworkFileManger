@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const fsSync = require('fs');
 const bcrypt = require('bcrypt');
-const { encrypt } = require('./crypto.js');
+const { encrypt, decrypt } = require('./crypto.js');
 
 const UPLOAD_DIR = path.resolve(__dirname, 'data', 'uploads');
 const creatingFolders = new Set();
@@ -98,7 +98,7 @@ function searchItems(query, userId) {
         // 并确定路径中是否有任何一个资料夹被加密。
         const baseQuery = `
             WITH RECURSIVE folder_ancestry(id, parent_id, is_locked) AS (
-                -- 基底查询: 选出该使用者的所有资料夹，并标记其自身的加密状态
+                -- 基底查询: 选出该使用者的所有资料夾，并标记其自身的加密状态
                 SELECT id, parent_id, (password IS NOT NULL) as is_locked
                 FROM folders
                 WHERE user_id = ?
@@ -130,7 +130,7 @@ function searchItems(query, userId) {
             ORDER BY f.date DESC;
         `;
         
-        // 查询未被加密路径下的资料夹
+        // 查询未被加密路径下的资料夾
         const sqlFolders = baseQuery + `
             SELECT 
                 f.id, 
@@ -419,11 +419,19 @@ function getAllFolders(userId) {
     return new Promise((resolve, reject) => {
         const sql = "SELECT id, name, parent_id FROM folders WHERE user_id = ? ORDER BY parent_id, name ASC";
         db.all(sql, [userId], (err, rows) => {
-            if (err) reject(err);
-            else resolve(rows);
+            if (err) {
+                reject(err);
+            } else {
+                const foldersWithEncryptedId = rows.map(folder => ({
+                    ...folder,
+                    encrypted_id: encrypt(folder.id)
+                }));
+                resolve(foldersWithEncryptedId);
+            }
         });
     });
 }
+
 
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, depth = 0) {
     // console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}, 深度: ${depth}`);
@@ -522,7 +530,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
             }
             
             if (allChildrenProcessedSuccessfully) {
-                // console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夹 ID ${itemId}`);
+                // console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夾 ID ${itemId}`);
                 await unifiedDelete(itemId, 'folder', userId);
             } else {
                  // console.warn(`[Data] moveItem: 部分子项目未能成功合并，保留原始资料夾 ID ${itemId}`);
@@ -569,7 +577,7 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         const client = storage.type === 'webdav' ? storage.getClient() : null;
         
         const targetPathParts = await getFolderPath(targetFolderId, userId);
-        const targetFullPath = path.posix.join(...targetPathParts.map(p => p.name));
+        const targetFullPath = path.posix.join(...targetPathParts.slice(1).map(p => p.name));
 
         const filesToMove = await getFilesByIds(fileIds, userId);
         for (const file of filesToMove) {
@@ -596,7 +604,7 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         const foldersToMove = (await getItemsByIds(folderIds, userId)).filter(i => i.type === 'folder');
         for (const folder of foldersToMove) {
             const oldPathParts = await getFolderPath(folder.id, userId);
-            const oldFullPath = path.posix.join(...oldPathParts.map(p => p.name));
+            const oldFullPath = path.posix.join(...oldPathParts.slice(1).map(p => p.name));
             const newFullPath = path.posix.join(targetFullPath, folder.name);
 
             try {
@@ -886,7 +894,7 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
     const storage = require('./storage').getStorage();
     if (storage.type === 'local' || storage.type === 'webdav') {
         const targetPathParts = await getFolderPath(targetFolderId, userId);
-        const targetRelativePath = path.posix.join(...targetPathParts.map(p => p.name));
+        const targetRelativePath = path.posix.join(...targetPathParts.slice(1).map(p => p.name));
         const newRelativePath = path.posix.join(targetRelativePath, newFileName);
         const oldRelativePath = file.file_id;
         
@@ -925,7 +933,7 @@ async function renameFolder(folderId, newFolderName, userId) {
 
     if (storage.type === 'local' || storage.type === 'webdav') {
         const oldPathParts = await getFolderPath(folderId, userId);
-        const oldFullPath = path.posix.join(...oldPathParts.map(p => p.name));
+        const oldFullPath = path.posix.join(...oldPathParts.slice(1).map(p => p.name));
         const newFullPath = path.posix.join(path.posix.dirname(oldFullPath), newFolderName);
 
         try {
