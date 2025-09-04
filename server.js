@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const db = require('./database.js');
 const data = require('./data.js');
 const storageManager = require('./storage');
+const { encrypt, decrypt } = require('./crypto.js');
 
 const app = express();
 
@@ -139,14 +140,16 @@ app.get('/', requireLogin, (req, res) => {
     db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [req.session.userId], (err, rootFolder) => {
         if (err || !rootFolder) {
             data.createFolder('/', null, req.session.userId)
-                .then(newRoot => res.redirect(`/folder/${newRoot.id}`))
+                .then(newRoot => res.redirect(`/view/${encrypt(newRoot.id)}`))
                 .catch(() => res.status(500).send("找不到您的根目录，也无法建立。"));
             return;
         }
-        res.redirect(`/folder/${rootFolder.id}`);
+        res.redirect(`/view/${encrypt(rootFolder.id)}`);
     });
 });
-app.get('/folder/:id', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/manager.html')));
+
+app.get('/view/:encryptedId', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/manager.html')));
+
 app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/shares.html')));
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
@@ -431,9 +434,13 @@ app.get('/api/search', requireLogin, async (req, res) => {
     }
 });
 
-app.get('/api/folder/:id', requireLogin, async (req, res) => {
+app.get('/api/folder/:encryptedId', requireLogin, async (req, res) => {
     try {
-        const folderId = parseInt(req.params.id, 10);
+        const folderIdStr = decrypt(req.params.encryptedId);
+        if (!folderIdStr) {
+            return res.status(400).json({ success: false, message: '无效的资料夹 ID' });
+        }
+        const folderId = parseInt(folderIdStr, 10);
         const userId = req.session.userId;
 
         const folderDetails = await data.getFolderDetails(folderId, userId);
@@ -443,15 +450,19 @@ app.get('/api/folder/:id', requireLogin, async (req, res) => {
         }
 
         if (folderDetails.is_locked && !req.session.unlockedFolders.includes(folderId)) {
+            const folderPath = await data.getFolderPath(folderId, userId);
             return res.json({
                 locked: true,
-                path: await data.getFolderPath(folderId, userId)
+                path: folderPath.map(p => ({ ...p, encrypted_id: encrypt(p.id) }))
             });
         }
 
         const contents = await data.getFolderContents(folderId, userId);
         const path = await data.getFolderPath(folderId, userId);
-        res.json({ contents, path });
+        res.json({ 
+            contents, 
+            path: path.map(p => ({ ...p, encrypted_id: encrypt(p.id) })) 
+        });
     } catch (error) {
         res.status(500).json({ success: false, message: '读取资料夾内容失败。' });
     }
@@ -1274,6 +1285,3 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
         res.status(500).json({ success: false, message: '删除设定失败' });
     }
 });
-
-
-
