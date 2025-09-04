@@ -192,47 +192,48 @@ app.post('/upload', requireLogin, (req, res) => {
 
                 const pathParts = relativePath.split('/').filter(p => p);
                 const originalFileName = pathParts.pop() || relativePath;
-                let finalFilename = originalFileName;
+                let finalFileName = originalFileName;
                 const folderPathParts = pathParts;
 
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                 
                 if (action === 'overwrite') {
-                    const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
+                    const existingItem = await data.findItemInFolder(finalFileName, targetFolderId, userId);
                     if (existingItem) {
-                        log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 正在覆盖文件: "${finalFilename}"`);
+                        log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 正在覆盖文件: "${finalFileName}"`);
                         await data.unifiedDelete(existingItem.id, existingItem.type, userId);
                     }
                 } else if (action === 'rename') {
-                    const oldName = finalFilename;
-                    finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
-                    log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 重命名文件: "${oldName}" -> "${finalFilename}"`);
+                    const oldName = finalFileName;
+                    finalFileName = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
+                    log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 重命名文件: "${oldName}" -> "${finalFileName}"`);
                 } else {
-                    const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
+                    const conflict = await data.findItemInFolder(finalFileName, targetFolderId, userId);
                     if (conflict) {
                         log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 发现冲突且无解决方案，跳过文件: "${finalFilename}"`);
                         fileStream.resume();
                         return { skipped: true };
                     }
                 }
+                
+                let safeStorageFileName = finalFileName;
 
                 // --- 关键修正：针对 local 和 webdav，检查完整路径长度并使用哈希 ---
                 if (storage.type === 'local' || storage.type === 'webdav') {
-                    const targetFolderPath = (await data.getFolderPath(targetFolderId, userId)).slice(1).map(p => p.name).join('/');
-                    const fullPathForCheck = path.posix.join(targetFolderPath, finalFilename);
+                    const targetFolderPathParts = await data.getFolderPath(targetFolderId, userId);
+                    const targetFolderRelativePath = path.posix.join(...targetFolderPathParts.slice(1).map(p => p.name));
+                    const fullPathForCheck = path.posix.join(targetFolderRelativePath, finalFileName);
 
                     if (fullPathForCheck.length > MAX_PATH_LENGTH) {
-                        const ext = path.extname(finalFilename);
-                        // 使用 SHA1 哈希并取前16个字符作为安全的文件名
-                        const hash = crypto.createHash('sha1').update(finalFilename).digest('hex').substring(0, 16);
-                        finalFilename = `${hash}${ext}`;
-                        log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 路径过长，文件名 "${originalFileName}" 被哈希为 "${finalFilename}"`);
+                        const ext = path.extname(finalFileName);
+                        const hash = crypto.createHash('sha1').update(finalFileName).digest('hex').substring(0, 16);
+                        safeStorageFileName = `${hash}${ext}`;
+                        log('WARN', FILE_NAME, FUNC_NAME, `[${reqId}] 路径过长，文件名 "${finalFileName}" 将以哈希 "${safeStorageFileName}" 储存`);
                     }
                 }
                 
-                // 注意：无论文件名是否被哈希，传递给 storage.upload 的都是最终要使用的文件名
-                await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '');
-                log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 储存引擎成功处理了文件: "${finalFilename}"`);
+                await storage.upload(fileStream, { originalFileName: finalFileName, safeFileName: safeStorageFileName }, mimeType, userId, targetFolderId, caption || '');
+                log('INFO', FILE_NAME, FUNC_NAME, `[${reqId}] 储存引擎成功处理了文件: "${finalFileName}"`);
                 return { skipped: false };
             })().catch(err => {
                 log('ERROR', FILE_NAME, FUNC_NAME, `[${reqId}] 处理文件 "${relativePath}" 时发生严重错误:`, err);
@@ -311,11 +312,9 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
             if (originalFile.storage_type === 'telegram') {
                 const fileStream = fs.createReadStream(tempFilePath);
                 await data.unifiedDelete(originalFile.message_id, 'file', userId);
-                const result = await storage.upload(fileStream, fileName, 'text/plain', userId, originalFile.folder_id);
-                // 对于 Telegram，我们返回新的 fileId，前端介面已处理这种情况
+                const result = await storage.upload(fileStream, { originalFileName: fileName, safeFileName: fileName }, 'text/plain', userId, originalFile.folder_id);
                 return res.json({ success: true, fileId: result.fileId });
             } else {
-                // 对于 local 和 webdav，我们执行更新
                 const newRelativePath = path.posix.join(path.posix.dirname(originalFile.file_id), fileName);
 
                 if (originalFile.storage_type === 'local') {
@@ -342,7 +341,6 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                     file_id: newRelativePath
                 }, userId);
                 
-                // 关键：返回原始 fileId，因为我们是更新，不是建立
                 return res.json({ success: true, fileId: fileId });
             }
         } else if (mode === 'create' && folderId) {
@@ -351,7 +349,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                 return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
             }
             const fileStream = fs.createReadStream(tempFilePath);
-            const result = await storage.upload(fileStream, fileName, 'text/plain', userId, folderId);
+            const result = await storage.upload(fileStream, { originalFileName: fileName, safeFileName: fileName }, 'text/plain', userId, folderId);
             res.json({ success: true, fileId: result.fileId });
         } else {
             return res.status(400).json({ success: false, message: '请求参数无效' });
