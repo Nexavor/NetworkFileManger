@@ -63,7 +63,7 @@ const shareSession = session({
   resave: false,
   saveUninitialized: true,
   cookie: { maxAge: 1000 * 60 * 60 * 24 }
-});
+}));
 
 app.set('trust proxy', 1);
 
@@ -514,6 +514,7 @@ app.get('/api/folders', requireLogin, async (req, res) => {
 });
 
 app.post('/api/move', requireLogin, async (req, res) => {
+    console.log('[server.js] Received /api/move request with body:', JSON.stringify(req.body, null, 2));
     try {
         const { itemIds, targetFolderId, resolutions = {} } = req.body;
         const userId = req.session.userId;
@@ -548,8 +549,10 @@ app.post('/api/move', requireLogin, async (req, res) => {
         } else if (totalMoved > 0) {
             message = `${totalMoved} 个项目移动成功。`;
         }
+        console.log('[server.js] Sending /api/move response:', { success: errors.length === 0, message: message });
         res.json({ success: errors.length === 0, message: message });
     } catch (error) {
+        console.error('[server.js] Critical error in /api/move:', error);
         res.status(500).json({ success: false, message: '移动失败：' + error.message });
     }
 });
