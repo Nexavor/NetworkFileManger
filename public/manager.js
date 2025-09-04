@@ -196,14 +196,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!isDrag) {
                     uploadModal.style.display = 'none';
                 }
-                // --- *** 关键修正 开始 *** ---
-                // 使用后端返回的 skippedAll 标志来决定显示哪条讯息
                 if (res.data.skippedAll) {
                     showNotification('没有文件被上传，所有冲突的项目都已被跳过。', 'info');
                 } else {
                     showNotification('上传成功！', 'success');
                 }
-                // --- *** 关键修正 结束 *** ---
                 fileInput.value = '';
                 folderInput.value = '';
                 loadFolderContents(currentEncryptedFolderId);
@@ -218,20 +215,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
     
-    const uploadFiles = async (filesOrData, targetFolderId, isDrag = false) => {
-        const isDataArray = filesOrData.length > 0 && filesOrData[0].file;
-
-        if (filesOrData.length === 0) {
+    // --- *** 关键修正 开始 *** ---
+    // 函数签名改变：现在总是接收一个标准化的 allFilesData 数组
+    const uploadFiles = async (allFilesData, targetFolderId, isDrag = false) => {
+        if (!allFilesData || allFilesData.length === 0) {
             showNotification('请选择文件或文件夹。', 'error', !isDrag ? uploadNotificationArea : null);
             return;
         }
 
         const notificationContainer = isDrag ? null : uploadNotificationArea;
-
-        const allFilesData = isDataArray ? filesOrData : Array.from(filesOrData).map(f => ({
-            relativePath: f.webkitRelativePath || f.name,
-            file: f
-        }));
 
         const oversizedFiles = allFilesData.filter(data => data.file.size > MAX_TELEGRAM_SIZE);
         if (oversizedFiles.length > 0) {
@@ -285,6 +277,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         await performUpload(uploadUrl, formData, isDrag);
     };
+    // --- *** 关键修正 结束 *** ---
 
     const loadFolderContents = async (encryptedFolderId) => {
         try {
@@ -791,7 +784,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (dropZone) {
         dropZone.addEventListener('keydown', handleKeyDown);
         
-        // --- *** 关键修正 开始 *** ---
         dropZone.addEventListener('focusin', (e) => {
             const target = e.target.closest('.item-card, .list-item');
             if (target && body.classList.contains('using-keyboard') && !isMultiSelectMode) {
@@ -801,7 +793,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateContextMenu();
             }
         });
-        // --- *** 关键修正 结束 *** ---
     }
 
     if (listHeader) {
@@ -883,14 +874,23 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     
+    // --- *** 关键修正 开始 *** ---
+    // 重构 uploadForm 的 submit 事件，使其预先构建标准化的数据结构
     if (uploadForm) {
         uploadForm.addEventListener('submit', (e) => {
             e.preventDefault();
             const filesToProcess = folderInput.files.length > 0 ? folderInput.files : fileInput.files;
             const targetFolderId = folderSelect.value;
-            uploadFiles(Array.from(filesToProcess), targetFolderId, false);
+            
+            const filesData = Array.from(filesToProcess).map(file => ({
+                relativePath: file.webkitRelativePath || file.name,
+                file: file
+            }));
+
+            uploadFiles(filesData, targetFolderId, false);
         });
     }
+    // --- *** 关键修正 结束 *** ---
 
     if (dropZone) {
         dropZone.addEventListener('contextmenu', e => {
@@ -1187,14 +1187,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (closeUploadModalBtn) {
         closeUploadModalBtn.addEventListener('click', () => {
             uploadModal.style.display = 'none';
-        });
-    }
-    if (uploadForm) {
-        uploadForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const filesToProcess = folderInput.files.length > 0 ? folderInput.files : fileInput.files;
-            const targetFolderId = folderSelect.value;
-            uploadFiles(Array.from(filesToProcess), targetFolderId, false);
         });
     }
     
