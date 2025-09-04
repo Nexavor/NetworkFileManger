@@ -206,31 +206,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
     
-    // --- *** 关键修正 开始 *** ---
     const uploadFiles = async (filesOrData, targetFolderId, isDrag = false) => {
-        if (!filesOrData || filesOrData.length === 0) {
+        const isDataArray = filesOrData.length > 0 && filesOrData[0].file;
+
+        if (filesOrData.length === 0) {
             showNotification('请选择文件或文件夹。', 'error', !isDrag ? uploadNotificationArea : null);
             return;
         }
 
         const notificationContainer = isDrag ? null : uploadNotificationArea;
 
-        // 统一处理，确保 allFilesData 格式一致
-        const allFilesData = Array.from(filesOrData).map(item => {
-            // 如果是拖拽进来的数据 (已经处理好)
-            if (item.file && typeof item.relativePath === 'string') {
-                return item;
-            }
-            // 如果是来自 <input> 的 File 对象
-            if (item instanceof File) {
-                return {
-                    relativePath: item.webkitRelativePath || item.name,
-                    file: item
-                };
-            }
-            return null;
-        }).filter(Boolean);
-
+        const allFilesData = isDataArray ? filesOrData : Array.from(filesOrData).map(f => ({
+            relativePath: f.webkitRelativePath || f.name,
+            file: f
+        }));
 
         const oversizedFiles = allFilesData.filter(data => data.file.size > MAX_TELEGRAM_SIZE);
         if (oversizedFiles.length > 0) {
@@ -242,7 +231,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const filesToCheck = allFilesData.map(data => ({
             relativePath: data.relativePath
         }));
-    // --- *** 关键修正 结束 *** ---
 
         let existenceData = [];
         try {
@@ -1455,6 +1443,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
     if (shareBtn && shareModal) {
         const shareOptions = document.getElementById('shareOptions');
         const shareResult = document.getElementById('shareResult');
@@ -1528,7 +1517,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const isLocked = folderElement.dataset.isLocked === 'true' || folderElement.dataset.isLocked === '1';
 
         if (isLocked) {
-            const action = prompt(`资料夾 "${folderName}" 已加密。\n请输入 "change" 来修改密码，或输入 "unlock" 来移除密码。`);
+            const action = prompt(`资料夹 "${folderName}" 已加密。\n请输入 "change" 来修改密码，或输入 "unlock" 来移除密码。`);
             if (action === 'unlock') {
                 const { password } = await promptForPassword(`移除密码`, `请输入 "${folderName}" 的密码以移除加密:`);
                 if (password === null) return;
