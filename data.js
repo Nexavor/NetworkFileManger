@@ -169,7 +169,7 @@ async function isFileAccessible(fileId, userId, unlockedFolders = []) {
         return false; // 资料库不一致，这不应该发生
     }
 
-    // 一次性查询路径上所有资料夹的加密状态
+    // 一次性查询路径上所有资料夾的加密状态
     const folderIds = path.map(p => p.id);
     const placeholders = folderIds.map(() => '?').join(',');
     const sql = `SELECT id, password IS NOT NULL as is_locked FROM folders WHERE id IN (${placeholders}) AND user_id = ?`;
@@ -721,10 +721,14 @@ function executeDeletion(fileIds, folderIds, userId) {
 
 function addFile(fileData, folderId = 1, userId, storageType) {
     const { message_id, fileName, mimetype, file_id, thumb_file_id, date, size } = fileData;
+    // --- 关键修正：将原始文件名储存在 fileName，将安全路径储存在 file_id ---
+    const finalFileId = storageType === 'telegram' ? file_id : (fileData.file_id || fileName);
+    const finalFileName = fileData.originalFileName || fileName; // 优先使用传入的原始文件名
+    
     const sql = `INSERT INTO files (message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folder_id, user_id, storage_type)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     return new Promise((resolve, reject) => {
-        db.run(sql, [message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
+        db.run(sql, [message_id, finalFileName, mimetype, finalFileId, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
             if (err) reject(err);
             else resolve({ success: true, id: this.lastID, fileId: message_id });
         });
