@@ -1,5 +1,3 @@
-// nexavor/networkfilemanger/NetworkFileManger-6e0f0f89f45cd0968c837f415cbff537c432395c/data.js
-
 const db = require('./database.js');
 const crypto = require('crypto');
 const path = require('path');
@@ -558,13 +556,14 @@ async function unifiedDelete(itemId, itemType, userId) {
 async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
     const storage = require('./storage').getStorage();
 
+    // 只有在 local 或 webdav 模式下才需要处理实体档案
     if (storage.type === 'local' || storage.type === 'webdav') {
         const client = storage.type === 'webdav' ? storage.getClient() : null;
-
+        
         const targetPathParts = await getFolderPath(targetFolderId, userId);
         
-        // 为不同存储后端生成正确的路径
-        const targetBasePath = storage.type === 'local' 
+        // 修正：为 local storage 生成正确的相对路径 (移除根目录的 '/')
+        const targetBasePath = storage.type === 'local'
             ? path.posix.join(...targetPathParts.slice(1).map(p => p.name))
             : path.posix.join(...targetPathParts.map(p => p.name));
 
@@ -577,8 +576,11 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
                 if (storage.type === 'local') {
                     const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldPath);
                     const newAbsPath = path.join(UPLOAD_DIR, String(userId), newPath);
+                    
+                    // 确保目标资料夹存在
+                    await fs.mkdir(path.dirname(newAbsPath), { recursive: true });
+                    
                     if (fsSync.existsSync(oldAbsPath)) {
-                        await fs.mkdir(path.dirname(newAbsPath), { recursive: true });
                         await fs.rename(oldAbsPath, newAbsPath);
                     }
                 } else if (client) {
@@ -597,16 +599,21 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         for (const folder of foldersToMove) {
             const oldPathParts = await getFolderPath(folder.id, userId);
 
+            // 修正：为 local storage 生成正确的相对路径
             const oldBasePath = storage.type === 'local'
                 ? path.posix.join(...oldPathParts.slice(1).map(p => p.name))
                 : path.posix.join(...oldPathParts.map(p => p.name));
-                
+            
             const newBasePath = path.posix.join(targetBasePath, folder.name);
 
             try {
                  if (storage.type === 'local') {
                     const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldBasePath);
                     const newAbsPath = path.join(UPLOAD_DIR, String(userId), newBasePath);
+                    
+                    // 确保目标资料夹存在
+                    await fs.mkdir(path.dirname(newAbsPath), { recursive: true });
+
                     if (fsSync.existsSync(oldAbsPath)) {
                        await fs.rename(oldAbsPath, newAbsPath);
                     }
@@ -616,7 +623,10 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
 
                 const descendantFiles = await getFilesRecursive(folder.id, userId);
                 for (const file of descendantFiles) {
-                    const updatedFileId = file.file_id.replace(oldBasePath, newBasePath);
+                    // 修正：使用 posix.join 来正确处理路径替换
+                    const relativePathWithinMovedFolder = path.posix.relative(oldBasePath, file.file_id);
+                    const updatedFileId = path.posix.join(newBasePath, relativePathWithinMovedFolder);
+
                     await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id], (e) => e ? rej(e) : res()));
                 }
             } catch (err) {
@@ -626,7 +636,7 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         }
     }
 
-    // 更新数据库中的父子关系
+    // 更新数据库中的父子关系 (此部分逻辑保持不变)
     return new Promise((resolve, reject) => {
         db.serialize(() => {
             db.run("BEGIN TRANSACTION;");
@@ -925,13 +935,13 @@ async function renameFolder(folderId, newFolderName, userId) {
 
     if (storage.type === 'local' || storage.type === 'webdav') {
         const oldPathParts = await getFolderPath(folderId, userId);
-        const oldFullPath = path.posix.join(...oldPathParts.map(p => p.name));
+        const oldFullPath = path.posix.join(...oldPathParts.slice(1).map(p => p.name));
         const newFullPath = path.posix.join(path.posix.dirname(oldFullPath), newFolderName);
 
         try {
             if (storage.type === 'local') {
-                const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldFullPath.startsWith('/') ? oldFullPath.substring(1) : oldFullPath);
-                const newAbsPath = path.join(UPLOAD_DIR, String(userId), newFullPath.startsWith('/') ? newFullPath.substring(1) : newFullPath);
+                const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldFullPath);
+                const newAbsPath = path.join(UPLOAD_DIR, String(userId), newFullPath);
                 if (fsSync.existsSync(oldAbsPath)) {
                     await fs.rename(oldAbsPath, newAbsPath);
                 }
