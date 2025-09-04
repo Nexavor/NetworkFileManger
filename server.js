@@ -894,6 +894,10 @@ app.post('/share', requireLogin, async (req, res) => {
             res.status(404).json(result);
         }
     } catch (error) {
+        // --- 新增下面这两行 ---
+        console.error("!!!!!!!!!! /share API 发生严重错误 !!!!!!!!!!");
+        console.error(error); 
+        // --------------------
         res.status(500).json({ success: false, message: '在伺服器上建立分享连结时发生错误。' });
     }
 });
@@ -1376,3 +1380,4 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
         res.status(500).json({ success: false, message: '删除设定失败' });
     }
 });
+
