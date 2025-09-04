@@ -102,13 +102,13 @@ function searchItems(query, userId) {
                 FROM folders
                 WHERE user_id = ?
                 UNION ALL
-                -- 递归步骤: 向上查找父资料夹，并继承其加密状态
+                -- 递归步骤: 向上查找父资料夾，并继承其加密状态
                 SELECT fa.id, f.parent_id, (fa.is_locked OR (f.password IS NOT NULL))
                 FROM folders f
                 JOIN folder_ancestry fa ON f.id = fa.parent_id
                 WHERE f.user_id = ?
             ),
-            -- 聚合结果: 对每个资料夹ID，只要其路径上有任一加密，最终状态就是加密
+            -- 聚合结果: 对每个资料夾ID，只要其路径上有任一加密，最终状态就是加密
             folder_lock_status AS (
                 SELECT id, MAX(is_locked) as is_path_locked
                 FROM folder_ancestry
@@ -129,7 +129,7 @@ function searchItems(query, userId) {
             ORDER BY f.date DESC;
         `;
         
-        // 查询未被加密路径下的资料夹
+        // 查询未被加密路径下的资料夾
         const sqlFolders = baseQuery + `
             SELECT 
                 f.id, 
@@ -353,16 +353,16 @@ async function findFolderBySharePath(shareToken, pathSegments = []) {
                     return resolve(null); // 路径无效
                 }
                 
-                // 检查子资料夹是否已加密
+                // 检查子资料夾是否已加密
                 if(row.password) {
-                    return resolve(null); // 不允许存取加密的子资料夹
+                    return resolve(null); // 不允许存取加密的子资料夾
                 }
 
                 currentFolder = row;
                 currentParentId = row.id;
             }
             
-            // 返回最终找到的子资料夹资讯
+            // 返回最终找到的子资料夾资讯
             resolve(currentFolder);
 
         } catch (error) {
@@ -425,7 +425,7 @@ function getAllFolders(userId) {
 }
 
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, depth = 0) {
-    // console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}, 深度: ${depth}`);
+    // console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夾 ID ${targetFolderId}, 深度: ${depth}`);
     const { resolutions = {}, pathPrefix = '' } = options;
     const report = { moved: 0, skipped: 0, errors: 0 };
 
@@ -521,7 +521,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
             }
             
             if (allChildrenProcessedSuccessfully) {
-                // console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夹 ID ${itemId}`);
+                // console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夾 ID ${itemId}`);
                 await unifiedDelete(itemId, 'folder', userId);
             } else {
                  // console.warn(`[Data] moveItem: 部分子项目未能成功合并，保留原始资料夾 ID ${itemId}`);
@@ -718,22 +718,24 @@ function executeDeletion(fileIds, folderIds, userId) {
     });
 }
 
-
+// --- *** 关键修正 开始 *** ---
 function addFile(fileData, folderId = 1, userId, storageType) {
-    const { message_id, fileName, mimetype, file_id, thumb_file_id, date, size } = fileData;
-    // --- 关键修正：将原始文件名储存在 fileName，将安全路径储存在 file_id ---
-    const finalFileId = storageType === 'telegram' ? file_id : (fileData.file_id || fileName);
-    const finalFileName = fileData.originalFileName || fileName; // 优先使用传入的原始文件名
-    
+    const { message_id, mimetype, file_id, thumb_file_id, date, size } = fileData;
+    // 原始文件名用于显示，安全的储存路径用于 file_id
+    const originalFileName = fileData.originalFileName; 
+    const safeStoragePath = fileData.safeStoragePath;
+
     const sql = `INSERT INTO files (message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folder_id, user_id, storage_type)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
     return new Promise((resolve, reject) => {
-        db.run(sql, [message_id, finalFileName, mimetype, finalFileId, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
+        db.run(sql, [message_id, originalFileName, mimetype, safeStoragePath, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
             if (err) reject(err);
             else resolve({ success: true, id: this.lastID, fileId: message_id });
         });
     });
 }
+// --- *** 关键修正 结束 *** ---
 
 function updateFile(fileId, updates, userId) {
     return new Promise((resolve, reject) => {
