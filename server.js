@@ -66,6 +66,13 @@ app.use(session({
   cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }
 }));
 
+const shareSession = session({
+  secret: process.env.SESSION_SECRET + '-share', // 使用不同的 secret
+  resave: false,
+  saveUninitialized: true,
+  cookie: { maxAge: 1000 * 60 * 60 * 24 } // 分享密码 session 有效期 24 小时
+});
+
 app.set('trust proxy', 1);
 
 app.set('view engine', 'ejs');
@@ -531,7 +538,7 @@ app.post('/api/folder/:id/lock', requireLogin, async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, salt);
         await data.setFolderPassword(id, hashedPassword, userId);
 
-        res.json({ success: true, message: '资料夹密码已设定/更新。' });
+        res.json({ success: true, message: '资料夾密码已设定/更新。' });
     } catch (error) {
         res.status(500).json({ success: false, message: '操作失败：' + error.message });
     }
@@ -556,7 +563,7 @@ app.post('/api/folder/:id/unlock', requireLogin, async (req, res) => {
         if (req.session.unlockedFolders) {
             req.session.unlockedFolders = req.session.unlockedFolders.filter(folderId => folderId !== parseInt(id));
         }
-        res.json({ success: true, message: '资料夹已成功解锁（移除密码）。' });
+        res.json({ success: true, message: '资料夾已成功解锁（移除密码）。' });
     } catch (error) {
         res.status(500).json({ success: false, message: '操作失败：' + error.message });
     }
@@ -866,12 +873,19 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
 
 app.post('/share', requireLogin, async (req, res) => {
     try {
-        const { itemId, itemType, expiresIn } = req.body;
+        const { itemId, itemType, expiresIn, password, customExpiresAt } = req.body;
         if (!itemId || !itemType || !expiresIn) {
             return res.status(400).json({ success: false, message: '缺少必要参数。' });
         }
+
+        if (expiresIn === 'custom') {
+            const customTimestamp = parseInt(customExpiresAt, 10);
+            if (isNaN(customTimestamp) || customTimestamp <= Date.now()) {
+                return res.status(400).json({ success: false, message: '无效的自订到期时间。' });
+            }
+        }
         
-        const result = await data.createShareLink(parseInt(itemId, 10), itemType, expiresIn, req.session.userId);
+        const result = await data.createShareLink(parseInt(itemId, 10), itemType, expiresIn, req.session.userId, password, customExpiresAt);
         
         if (result.success) {
             const shareUrl = `${req.protocol}://${req.get('host')}/share/view/${itemType}/${result.token}`;
@@ -1018,11 +1032,58 @@ app.post('/api/scan/webdav', requireAdmin, async (req, res) => {
 });
 
 // --- 分享路由 ---
-app.get('/share/view/file/:token', async (req, res) => {
+
+app.get('/share/auth/:itemType/:token', shareSession, (req, res) => {
+    const { itemType, token } = req.params;
+    res.render('share-password', {
+        itemType,
+        token,
+        error: req.query.error || null
+    });
+});
+
+app.post('/share/auth/:itemType/:token', shareSession, async (req, res) => {
+    const { itemType, token } = req.params;
+    const { password } = req.body;
+
+    try {
+        let item;
+        if (itemType === 'file') {
+            item = await data.getFileByShareToken(token);
+        } else {
+            item = await data.getFolderByShareToken(token);
+        }
+
+        if (!item) {
+            return res.redirect(`/share/auth/${itemType}/${token}?error=链接无效`);
+        }
+
+        const isMatch = await bcrypt.compare(password, item.share_password);
+
+        if (isMatch) {
+            if (!req.session.unlockedShares) {
+                req.session.unlockedShares = {};
+            }
+            req.session.unlockedShares[token] = true;
+            res.redirect(`/share/view/${itemType}/${token}`);
+        } else {
+            res.redirect(`/share/auth/${itemType}/${token}?error=密码错误`);
+        }
+    } catch (error) {
+        res.redirect(`/share/auth/${itemType}/${token}?error=验证时发生错误`);
+    }
+});
+
+
+app.get('/share/view/file/:token', shareSession, async (req, res) => {
     try {
         const token = req.params.token;
         const fileInfo = await data.getFileByShareToken(token);
         if (fileInfo) {
+            if (fileInfo.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[token])) {
+                return res.redirect(`/share/auth/file/${token}`);
+            }
+
             const downloadUrl = `/share/download/file/${token}`;
             let textContent = null;
             if (fileInfo.mimetype && fileInfo.mimetype.startsWith('text/')) {
@@ -1056,35 +1117,44 @@ app.get('/share/view/file/:token', async (req, res) => {
     } catch (error) { res.status(500).render('share-error', { message: '处理分享请求时发生错误。' }); }
 });
 
-app.get('/share/view/folder/:token/:path(*)?', async (req, res) => {
+app.get('/share/view/folder/:token/:path(*)?', shareSession, async (req, res) => {
     try {
         const { token, path: requestedPath } = req.params;
         const pathSegments = requestedPath ? requestedPath.split('/').filter(p => p) : [];
         
-        const folderInfo = await data.findFolderBySharePath(token, pathSegments);
+        const rootFolder = await data.getFolderByShareToken(token);
 
-        if (folderInfo) {
-            const contents = await data.getFolderContents(folderInfo.id, folderInfo.user_id);
-            const breadcrumbPath = await data.getFolderPath(folderInfo.id, folderInfo.user_id);
-            
-            const rootShareFolder = await data.getFolderByShareToken(token);
-            const rootPathIndex = breadcrumbPath.findIndex(p => p.id === rootShareFolder.id);
-            const shareBreadcrumb = breadcrumbPath.slice(rootPathIndex).map((p, index, arr) => {
-                const relativePath = arr.slice(1, index + 1).map(s => s.name).join('/');
-                return {
-                    name: p.name,
-                    link: index < arr.length - 1 ? `/share/view/folder/${token}/${relativePath}` : null
-                };
-            });
-            
-            res.render('share-folder-view', {
-                folder: folderInfo,
-                contents,
-                breadcrumb: shareBreadcrumb,
-                token: token
-            });
+        if (rootFolder) {
+            if (rootFolder.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[token])) {
+                 return res.redirect(`/share/auth/folder/${token}`);
+            }
+
+            const folderInfo = await data.findFolderBySharePath(token, pathSegments);
+
+            if (folderInfo) {
+                const contents = await data.getFolderContents(folderInfo.id, folderInfo.user_id);
+                const breadcrumbPath = await data.getFolderPath(folderInfo.id, folderInfo.user_id);
+                
+                const rootPathIndex = breadcrumbPath.findIndex(p => p.id === rootFolder.id);
+                const shareBreadcrumb = breadcrumbPath.slice(rootPathIndex).map((p, index, arr) => {
+                    const relativePath = arr.slice(1, index + 1).map(s => s.name).join('/');
+                    return {
+                        name: p.name,
+                        link: index < arr.length - 1 ? `/share/view/folder/${token}/${relativePath}` : null
+                    };
+                });
+                
+                res.render('share-folder-view', {
+                    folder: folderInfo,
+                    contents,
+                    breadcrumb: shareBreadcrumb,
+                    token: token
+                });
+            } else {
+                 res.status(404).render('share-error', { message: '路径不正确。' });
+            }
         } else {
-            res.status(404).render('share-error', { message: '此分享连结无效、已过期或路径不正确。' });
+            res.status(404).render('share-error', { message: '此分享连结无效或已过期。' });
         }
     } catch (error) {
         res.status(500).render('share-error', { message: '处理分享请求时发生错误。' });
@@ -1093,22 +1163,33 @@ app.get('/share/view/folder/:token/:path(*)?', async (req, res) => {
 
 
 // --- *** 关键修正 开始 *** ---
-app.get('/share/download/file/:token', async (req, res) => {
+app.get('/share/download/file/:token', shareSession, async (req, res) => {
     try {
         const token = req.params.token;
         const fileInfo = await data.getFileByShareToken(token);
         if (!fileInfo) {
              return res.status(404).send('文件信息未找到或分享链接已过期');
         }
+        
+        if (fileInfo.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[token])) {
+            return res.status(403).send('需要密码才能下载');
+        }
+
         await handleFileStream(req, res, fileInfo);
     } catch (error) { 
         if (!res.headersSent) res.status(500).send('下载失败: ' + error.message);
     }
 });
 
-app.get('/share/thumbnail/:folderToken/:fileId', async (req, res) => {
+app.get('/share/thumbnail/:folderToken/:fileId', shareSession, async (req, res) => {
     try {
         const { folderToken, fileId } = req.params;
+        const rootFolder = await data.getFolderByShareToken(folderToken);
+
+        if (!rootFolder || (rootFolder.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[folderToken]))) {
+            return res.status(403).send('权限不足');
+        }
+
         const fileInfo = await data.findFileInSharedFolder(parseInt(fileId, 10), folderToken);
 
         if (fileInfo && fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
@@ -1126,9 +1207,19 @@ app.get('/share/thumbnail/:folderToken/:fileId', async (req, res) => {
     }
 });
 
-app.get('/share/download/:folderToken/:fileId', async (req, res) => {
+app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) => {
     try {
         const { folderToken, fileId } = req.params;
+        const rootFolder = await data.getFolderByShareToken(folderToken);
+        
+        if (!rootFolder) {
+            return res.status(404).send('分享链接无效或已过期');
+        }
+        
+        if (rootFolder.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[folderToken])) {
+            return res.status(403).send('需要密码才能下载');
+        }
+        
         const fileInfo = await data.findFileInSharedFolder(parseInt(fileId, 10), folderToken);
         
         if (!fileInfo) {
