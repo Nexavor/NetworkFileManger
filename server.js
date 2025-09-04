@@ -166,7 +166,11 @@ app.post('/upload', requireLogin, (req, res) => {
         const uploadPromises = [];
 
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
-            const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
+            // --- *** 关键修正 开始 *** ---
+            // 弃用 fieldname，改用 fileInfo.filename 作为相对路径的唯一来源，因为它更可靠
+            const { filename } = fileInfo;
+            const relativePath = Buffer.from(filename, 'latin1').toString('utf8');
+            // --- *** 关键修正 结束 *** ---
             
             const fileUploadPromise = (async () => {
                 const { mimeType } = fileInfo;
@@ -690,7 +694,7 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
             const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
-            stream.pipe(res);
+             stream.pipe(res);
         } else if (fileInfo.storage_type === 'telegram') {
             const link = await storage.getUrl(fileInfo.file_id);
             if (link) {
