@@ -354,7 +354,7 @@ async function findFolderBySharePath(shareToken, pathSegments = []) {
                     return resolve(null); // 路径无效
                 }
                 
-                // 检查子资料夹是否已加密
+                // 检查子资料夾是否已加密
                 if(row.password) {
                     return resolve(null); // 不允许存取加密的子资料夹
                 }
@@ -783,7 +783,7 @@ function getFileByShareToken(token) {
             if (err) return reject(err);
             if (!row) return resolve(null);
             if (row.share_expires_at && Date.now() > row.share_expires_at) {
-                const updateSql = "UPDATE files SET share_token = NULL, share_expires_at = NULL WHERE message_id = ?";
+                const updateSql = "UPDATE files SET share_token = NULL, share_expires_at = NULL, share_password = NULL WHERE message_id = ?";
                 db.run(updateSql, [row.message_id]);
                 resolve(null);
             } else {
@@ -800,7 +800,7 @@ function getFolderByShareToken(token) {
             if (err) return reject(err);
             if (!row) return resolve(null);
             if (row.share_expires_at && Date.now() > row.share_expires_at) {
-                const updateSql = "UPDATE folders SET share_token = NULL, share_expires_at = NULL WHERE id = ?";
+                const updateSql = "UPDATE folders SET share_token = NULL, share_expires_at = NULL, share_password = NULL WHERE id = ?";
                 db.run(updateSql, [row.id]);
                 resolve(null);
             } else {
@@ -985,30 +985,40 @@ async function verifyFolderPassword(folderId, password, userId) {
 
 
 
-function createShareLink(itemId, itemType, expiresIn, userId) {
+function createShareLink(itemId, itemType, expiresIn, userId, password = null, customExpiresAt = null) {
     const token = crypto.randomBytes(16).toString('hex');
     let expiresAt = null;
-    const now = Date.now();
-    const hours = (h) => h * 60 * 60 * 1000;
-    const days = (d) => d * 24 * hours(1);
-    switch (expiresIn) {
-        case '1h': expiresAt = now + hours(1); break;
-        case '3h': expiresAt = now + hours(3); break;
-        case '5h': expiresAt = now + hours(5); break;
-        case '7h': expiresAt = now + hours(7); break;
-        case '24h': expiresAt = now + hours(24); break;
-        case '7d': expiresAt = now + days(7); break;
-        case '0': expiresAt = null; break;
-        default: expiresAt = now + hours(24);
+
+    if (expiresIn === 'custom' && customExpiresAt) {
+        expiresAt = parseInt(customExpiresAt, 10);
+    } else {
+        const now = Date.now();
+        const hours = (h) => h * 60 * 60 * 1000;
+        const days = (d) => d * 24 * hours(1);
+        switch (expiresIn) {
+            case '1h': expiresAt = now + hours(1); break;
+            case '3h': expiresAt = now + hours(3); break;
+            case '5h': expiresAt = now + hours(5); break;
+            case '7h': expiresAt = now + hours(7); break;
+            case '24h': expiresAt = now + hours(24); break;
+            case '7d': expiresAt = now + days(7); break;
+            case '0': expiresAt = null; break;
+            default: expiresAt = now + hours(24);
+        }
     }
 
     const table = itemType === 'folder' ? 'folders' : 'files';
     const idColumn = itemType === 'folder' ? 'id' : 'message_id';
 
-    const sql = `UPDATE ${table} SET share_token = ?, share_expires_at = ? WHERE ${idColumn} = ? AND user_id = ?`;
+    return new Promise(async (resolve, reject) => {
+        let hashedPassword = null;
+        if (password && password.length > 0) {
+            const salt = await bcrypt.genSalt(10);
+            hashedPassword = await bcrypt.hash(password, salt);
+        }
 
-    return new Promise((resolve, reject) => {
-        db.run(sql, [token, expiresAt, itemId, userId], function(err) {
+        const sql = `UPDATE ${table} SET share_token = ?, share_expires_at = ?, share_password = ? WHERE ${idColumn} = ? AND user_id = ?`;
+        db.run(sql, [token, expiresAt, hashedPassword, itemId, userId], function(err) {
             if (err) reject(err);
             else if (this.changes === 0) resolve({ success: false, message: '项目未找到。' });
             else resolve({ success: true, token });
@@ -1052,7 +1062,7 @@ function getActiveShares(userId) {
 function cancelShare(itemId, itemType, userId) {
     const table = itemType === 'folder' ? 'folders' : 'files';
     const idColumn = itemType === 'folder' ? 'id' : 'message_id';
-    const sql = `UPDATE ${table} SET share_token = NULL, share_expires_at = NULL WHERE ${idColumn} = ? AND user_id = ?`;
+    const sql = `UPDATE ${table} SET share_token = NULL, share_expires_at = NULL, share_password = NULL WHERE ${idColumn} = ? AND user_id = ?`;
 
     return new Promise((resolve, reject) => {
         db.run(sql, [itemId, userId], function(err) {
