@@ -1,3 +1,5 @@
+// nexavor/networkfilemanger/NetworkFileManger-6e0f0f89f45cd0968c837f415cbff537c432395c/data.js
+
 const db = require('./database.js');
 const crypto = require('crypto');
 const path = require('path');
@@ -418,7 +420,6 @@ function getAllFolders(userId) {
 }
 
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, depth = 0) {
-    console.log(`[data.js] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}, 深度: ${depth}`);
     const { resolutions = {}, pathPrefix = '' } = options;
     const report = { moved: 0, skipped: 0, errors: 0 };
 
@@ -432,7 +433,6 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
 
     if (!sourceItem) {
         report.errors++;
-        console.error(`[data.js] moveItem: 找不到来源项目 ID ${itemId} (类型: ${itemType})`);
         return report;
     }
 
@@ -441,23 +441,17 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
     let resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
 
     if (depth > 0 && itemType === 'folder' && existingItemInTarget && existingItemInTarget.type === 'folder' && resolutionAction === 'merge') {
-        console.log(`[data.js] moveItem: 深度合并 (${depth}) 不被支持，将 "${currentPath}" 的合并操作视为覆盖处理。`);
         resolutionAction = 'overwrite';
     }
-
-    console.log(`[data.js] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
 
     switch (resolutionAction) {
         case 'skip':
         case 'skip_default':
             report.skipped++;
-            console.log(`[data.js] moveItem: 跳过项目 "${currentPath}"`);
             return report;
 
         case 'rename':
-            console.log(`[data.js] moveItem: 重新命名项目 "${currentPath}"`);
             const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
-            console.log(`[data.js] moveItem: 找到可用新名称 "${newName}"`);
             if (itemType === 'folder') {
                 await renameFolder(itemId, newName, userId);
                 await moveItems([], [itemId], targetFolderId, userId);
@@ -469,11 +463,9 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
 
         case 'overwrite':
             if (!existingItemInTarget) {
-                console.warn(`[data.js] moveItem: 尝试覆盖但目标项目 "${currentPath}" 不存在，跳过。`);
                 report.skipped++;
                 return report;
             }
-            console.log(`[data.js] moveItem: 覆盖目标项目 "${currentPath}" (ID: ${existingItemInTarget.id}, 类型: ${existingItemInTarget.type})`);
             await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
             report.moved++;
@@ -481,48 +473,36 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
 
         case 'merge':
             if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') {
-                console.warn(`[data.js] moveItem: 尝试合并但目标项目 "${currentPath}" 不是资料夾，跳过。`);
                 report.skipped++;
                 return report;
             }
 
-            console.log(`[data.js] moveItem: 合并资料夾 "${currentPath}" 到目标资料夾 ID ${existingItemInTarget.id}`);
             const { folders: childFolders, files: childFiles } = await getFolderContents(itemId, userId);
             let allChildrenProcessedSuccessfully = true;
 
             for (const childFolder of childFolders) {
-                console.log(`[data.js] moveItem: 递回移动子资料夹 "${childFolder.name}" (ID: ${childFolder.id})`);
                 const childReport = await moveItem(childFolder.id, 'folder', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath }, depth + 1);
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
                 report.errors += childReport.errors;
-                if (childReport.skipped > 0 || childReport.errors > 0) {
-                    allChildrenProcessedSuccessfully = false;
-                }
+                if (childReport.skipped > 0 || childReport.errors > 0) allChildrenProcessedSuccessfully = false;
             }
             
             for (const childFile of childFiles) {
-                console.log(`[data.js] moveItem: 递回移动子档案 "${childFile.name}" (ID: ${childFile.id})`);
                 const childReport = await moveItem(childFile.id, 'file', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath }, depth + 1);
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
                 report.errors += childReport.errors;
-                 if (childReport.skipped > 0 || childReport.errors > 0) {
-                    allChildrenProcessedSuccessfully = false;
-                }
+                 if (childReport.skipped > 0 || childReport.errors > 0) allChildrenProcessedSuccessfully = false;
             }
             
             if (allChildrenProcessedSuccessfully) {
-                console.log(`[data.js] moveItem: 所有子项目成功合并，删除原始资料夾 ID ${itemId}`);
                 await unifiedDelete(itemId, 'folder', userId);
-            } else {
-                 console.warn(`[data.js] moveItem: 部分子项目未能成功合并，保留原始资料夾 ID ${itemId}`);
             }
             
             return report;
 
         default: // 'move'
-            console.log(`[data.js] moveItem: 直接移动项目 "${currentPath}"`);
             await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
             report.moved++;
             return report;
@@ -552,18 +532,15 @@ async function unifiedDelete(itemId, itemType, userId) {
     
     await executeDeletion(filesForStorage.map(f => f.message_id), foldersForStorage.map(f => f.id), userId);
 }
-// --- *** 关键修正 开始 *** ---
+
 async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
     const storage = require('./storage').getStorage();
 
-    // 只有在 local 或 webdav 模式下才需要处理实体档案
     if (storage.type === 'local' || storage.type === 'webdav') {
         const client = storage.type === 'webdav' ? storage.getClient() : null;
         
         const targetPathParts = await getFolderPath(targetFolderId, userId);
-        
-        // 修正：为 local storage 生成正确的相对路径 (移除根目录的 '/')
-        const targetBasePath = storage.type === 'local'
+        const targetBasePath = storage.type === 'local' 
             ? path.posix.join(...targetPathParts.slice(1).map(p => p.name))
             : path.posix.join(...targetPathParts.map(p => p.name));
 
@@ -576,11 +553,8 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
                 if (storage.type === 'local') {
                     const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldPath);
                     const newAbsPath = path.join(UPLOAD_DIR, String(userId), newPath);
-                    
-                    // 确保目标资料夹存在
-                    await fs.mkdir(path.dirname(newAbsPath), { recursive: true });
-                    
                     if (fsSync.existsSync(oldAbsPath)) {
+                        await fs.mkdir(path.dirname(newAbsPath), { recursive: true });
                         await fs.rename(oldAbsPath, newAbsPath);
                     }
                 } else if (client) {
@@ -599,7 +573,6 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         for (const folder of foldersToMove) {
             const oldPathParts = await getFolderPath(folder.id, userId);
 
-            // 修正：为 local storage 生成正确的相对路径
             const oldBasePath = storage.type === 'local'
                 ? path.posix.join(...oldPathParts.slice(1).map(p => p.name))
                 : path.posix.join(...oldPathParts.map(p => p.name));
@@ -610,11 +583,8 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
                  if (storage.type === 'local') {
                     const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldBasePath);
                     const newAbsPath = path.join(UPLOAD_DIR, String(userId), newBasePath);
-                    
-                    // 确保目标资料夹存在
-                    await fs.mkdir(path.dirname(newAbsPath), { recursive: true });
-
                     if (fsSync.existsSync(oldAbsPath)) {
+                       await fs.mkdir(path.dirname(newAbsPath), { recursive: true });
                        await fs.rename(oldAbsPath, newAbsPath);
                     }
                  } else if (client) {
@@ -623,10 +593,8 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
 
                 const descendantFiles = await getFilesRecursive(folder.id, userId);
                 for (const file of descendantFiles) {
-                    // 修正：使用 posix.join 来正确处理路径替换
                     const relativePathWithinMovedFolder = path.posix.relative(oldBasePath, file.file_id);
                     const updatedFileId = path.posix.join(newBasePath, relativePathWithinMovedFolder);
-
                     await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id], (e) => e ? rej(e) : res()));
                 }
             } catch (err) {
@@ -636,7 +604,6 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         }
     }
 
-    // 更新数据库中的父子关系 (此部分逻辑保持不变)
     return new Promise((resolve, reject) => {
         db.serialize(() => {
             db.run("BEGIN TRANSACTION;");
@@ -658,7 +625,6 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         });
     });
 }
-// --- *** 关键修正 结束 *** ---
 
 function deleteSingleFolder(folderId, userId) {
     return new Promise((resolve, reject) => {
@@ -926,7 +892,6 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
     });
 }
 
-
 async function renameFolder(folderId, newFolderName, userId) {
     const folder = await new Promise((res, rej) => db.get("SELECT * FROM folders WHERE id=?", [folderId], (e,r)=>e?rej(e):res(r)));
     if (!folder) return { success: false, message: '资料夾未找到。'};
@@ -935,29 +900,35 @@ async function renameFolder(folderId, newFolderName, userId) {
 
     if (storage.type === 'local' || storage.type === 'webdav') {
         const oldPathParts = await getFolderPath(folderId, userId);
-        const oldFullPath = path.posix.join(...oldPathParts.slice(1).map(p => p.name));
-        const newFullPath = path.posix.join(path.posix.dirname(oldFullPath), newFolderName);
+
+        const oldRelativePath = storage.type === 'local'
+            ? path.posix.join(...oldPathParts.slice(1).map(p => p.name))
+            : path.posix.join(...oldPathParts.map(p => p.name));
+        
+        const newRelativePath = path.posix.join(path.posix.dirname(oldRelativePath), newFolderName);
 
         try {
             if (storage.type === 'local') {
-                const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldFullPath);
-                const newAbsPath = path.join(UPLOAD_DIR, String(userId), newFullPath);
+                const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath);
+                const newAbsPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
                 if (fsSync.existsSync(oldAbsPath)) {
                     await fs.rename(oldAbsPath, newAbsPath);
                 }
             } else if (storage.type === 'webdav') {
                 const client = storage.getClient();
-                await client.moveFile(oldFullPath, newFullPath);
+                await client.moveFile(oldRelativePath, newRelativePath);
             }
 
             const descendantFiles = await getFilesRecursive(folderId, userId);
             for (const file of descendantFiles) {
-                const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
+                const relativePathWithinFolder = path.posix.relative(oldRelativePath, file.file_id);
+                const updatedFileId = path.posix.join(newRelativePath, relativePathWithinFolder);
                 await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id], (e) => e ? rej(e) : res()));
             }
 
         } catch(e) {
             if (e.code !== 'ENOENT') {
+                console.error("Error renaming physical folder:", e);
                 throw new Error("物理资料夹重新命名失败");
             }
         }
