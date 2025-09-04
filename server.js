@@ -1,5 +1,20 @@
 // server.js (最终正式版 - 修正语法错误并保留日志)
 
+// --- *** 关键修正 开始 *** ---
+// 添加全局未捕获异常处理器，以记录任何被忽略的严重错误
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    console.error('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+});
+
+process.on('uncaughtException', (err, origin) => {
+    console.error('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+    console.error(`Caught exception: ${err}\n` + `Exception origin: ${origin}`);
+    console.error('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+});
+// --- *** 关键修正 结束 *** ---
+
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
