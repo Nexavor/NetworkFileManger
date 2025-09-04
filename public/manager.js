@@ -1,4 +1,14 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // --- 关键修正：将进度条从DOM中移到文件显示区外部 ---
+    const dropZone = document.getElementById('dropZone');
+    const container = document.querySelector('.container');
+    const dragUploadProgressArea = document.getElementById('dragUploadProgressArea');
+    if (container && dragUploadProgressArea && dropZone) {
+        // 将进度条元素移动到 #dropZone 之后，成为其兄弟元素
+        dropZone.parentNode.insertBefore(dragUploadProgressArea, dropZone.nextSibling);
+    }
+    // --- 修正结束 ---
+
     // 追踪最后互动方式 (滑鼠 vs 键盘)
     const body = document.body;
     body.classList.add('using-mouse'); // 预设是滑鼠
@@ -71,8 +81,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const fileListContainer = document.getElementById('file-selection-list');
     const folderSelect = document.getElementById('folderSelect');
     const uploadNotificationArea = document.getElementById('uploadNotificationArea');
-    const dropZone = document.getElementById('dropZone');
-    const dragUploadProgressArea = document.getElementById('dragUploadProgressArea');
     const dragUploadProgressBar = document.getElementById('dragUploadProgressBar');
     const viewSwitchBtn = document.getElementById('view-switch-btn');
     const itemListView = document.getElementById('itemListView');
@@ -97,9 +105,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // 状态
     let isMultiSelectMode = false;
     let currentFolderId = 1;
+    let currentEncryptedFolderId = null;
     let currentFolderContents = { folders: [], files: [] };
     let selectedItems = new Map();
     let moveTargetFolderId = null;
+    let moveTargetEncryptedFolderId = null; // 修正：新增状态以储存加密ID
     let isSearchMode = false;
     const MAX_TELEGRAM_SIZE = 1000 * 1024 * 1024;
     let foldersLoaded = false;
@@ -194,7 +204,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 fileInput.value = '';
                 folderInput.value = '';
-                loadFolderContents(currentFolderId);
+                loadFolderContents(currentEncryptedFolderId);
             } else {
                 showNotification(`上传失败: ${res.data.message}`, 'error', notificationContainer);
             }
@@ -274,36 +284,41 @@ document.addEventListener('DOMContentLoaded', () => {
         await performUpload(uploadUrl, formData, isDrag);
     };
 
-    const loadFolderContents = async (folderId) => {
+    const loadFolderContents = async (encryptedFolderId) => {
         try {
             isSearchMode = false;
             if (searchInput) searchInput.value = '';
-            currentFolderId = folderId;
-            const res = await axios.get(`/api/folder/${folderId}`);
+            
+            currentEncryptedFolderId = encryptedFolderId; 
+
+            const res = await axios.get(`/api/folder/${encryptedFolderId}`);
             
             if (res.data.locked) {
                 const { password } = await promptForPassword(`资料夹 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
                 if (password === null) { 
-                    const parentId = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2].id : null;
-                    if (parentId) {
-                        history.back(); 
+                    const parent = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2] : null;
+                    if (parent && parent.encrypted_id) {
+                       history.back();
                     }
                     return;
                 }
                 try {
-                    await axios.post(`/api/folder/${folderId}/verify`, { password });
-                    loadFolderContents(folderId);
+                    const currentFolderOriginalId = res.data.path[res.data.path.length - 1].id;
+                    await axios.post(`/api/folder/${currentFolderOriginalId}/verify`, { password });
+                    loadFolderContents(encryptedFolderId);
                 } catch (error) {
                     alert('密码错误！');
-                    const parentId = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2].id : null;
-                    if (parentId) {
-                        loadFolderContents(parentId);
+                    const parent = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2] : null;
+                    if (parent && parent.encrypted_id) {
+                       loadFolderContents(parent.encrypted_id);
                     }
                 }
                 return;
             }
 
             currentFolderContents = res.data.contents;
+            currentFolderId = res.data.path[res.data.path.length - 1].id;
+
             const currentIds = new Set([...res.data.contents.folders.map(f => String(f.id)), ...res.data.contents.files.map(f => String(f.id))]);
             selectedItems.forEach((_, key) => {
                 if (!currentIds.has(key)) {
@@ -348,7 +363,7 @@ document.addEventListener('DOMContentLoaded', () => {
             link.textContent = p.name === '/' ? '根目录' : p.name;
             if (link.tagName === 'A') {
                 link.href = '#';
-                link.dataset.folderId = p.id;
+                link.dataset.encryptedFolderId = p.encrypted_id;
             }
             breadcrumb.appendChild(link);
         });
@@ -416,6 +431,7 @@ document.addEventListener('DOMContentLoaded', () => {
         card.dataset.name = item.name === '/' ? '根目录' : item.name;
         if (item.type === 'folder') {
             card.dataset.isLocked = item.is_locked;
+            card.dataset.encryptedFolderId = item.encrypted_id; // 修正：添加加密ID
         }
         card.setAttribute('tabindex', '0');
 
@@ -448,6 +464,7 @@ document.addEventListener('DOMContentLoaded', () => {
         itemDiv.dataset.name = item.name === '/' ? '根目录' : item.name;
         if (item.type === 'folder') {
             itemDiv.dataset.isLocked = item.is_locked;
+            itemDiv.dataset.encryptedFolderId = item.encrypted_id; // 修正：添加加密ID
         }
         itemDiv.setAttribute('tabindex', '0');
 
@@ -779,7 +796,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const target = e.target.closest('.item-card, .list-item');
             if (target && body.classList.contains('using-keyboard') && !isMultiSelectMode) {
                 selectedItems.clear();
-                selectedItems.set(target.dataset.id, { type: target.dataset.type, name: target.dataset.name });
+                selectedItems.set(target.dataset.id, { type: target.dataset.type, name: target.dataset.name, encrypted_id: target.dataset.encryptedFolderId });
                 rerenderSelection();
                 updateContextMenu();
             }
@@ -885,7 +902,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     selectedItems.clear();
                     selectedItems.set(targetItem.dataset.id, {
                         type: targetItem.dataset.type,
-                        name: targetItem.dataset.name
+                        name: targetItem.dataset.name,
+                        encrypted_id: targetItem.dataset.encryptedFolderId
                     });
                     rerenderSelection();
                 }
@@ -1018,16 +1036,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const id = target.dataset.id;
         const type = target.dataset.type;
         const name = target.dataset.name;
+        const encrypted_id = target.dataset.encryptedFolderId; // 修正：取得加密ID
 
         if (isMultiSelectMode || e.ctrlKey || e.metaKey) {
             if (selectedItems.has(id)) {
                 selectedItems.delete(id);
             } else {
-                selectedItems.set(id, { type, name });
+                selectedItems.set(id, { type, name, encrypted_id }); // 修正：储存加密ID
             }
         } else {
             selectedItems.clear();
-            selectedItems.set(id, { type, name });
+            selectedItems.set(id, { type, name, encrypted_id }); // 修正：储存加密ID
         }
         rerenderSelection();
         updateContextMenu();
@@ -1039,20 +1058,23 @@ document.addEventListener('DOMContentLoaded', () => {
         if (target && target.dataset.type === 'folder') {
             const folderId = parseInt(target.dataset.id, 10);
             const isLocked = target.dataset.isLocked === 'true' || target.dataset.isLocked === '1';
+            const encryptedId = target.dataset.encryptedFolderId;
+
+            if (!encryptedId) return;
 
             if (isLocked) {
                 try {
                     const { password } = await promptForPassword(`资料夾 "${target.dataset.name}" 已加密`, '请输入密码以存取:');
                     if (password === null) return;
                     await axios.post(`/api/folder/${folderId}/verify`, { password });
-                    window.history.pushState(null, '', `/folder/${folderId}`);
-                    loadFolderContents(folderId);
+                    window.history.pushState(null, '', `/view/${encryptedId}`);
+                    loadFolderContents(encryptedId);
                 } catch (error) {
                     alert(error.response?.data?.message || '验证失败');
                 }
             } else {
-                window.history.pushState(null, '', `/folder/${folderId}`);
-                loadFolderContents(folderId);
+                window.history.pushState(null, '', `/view/${encryptedId}`);
+                loadFolderContents(encryptedId);
             }
         } else if (target && target.dataset.type === 'file') {
             if (selectedItems.size !== 1) {
@@ -1097,23 +1119,23 @@ document.addEventListener('DOMContentLoaded', () => {
         breadcrumb.addEventListener('click', e => {
             e.preventDefault();
             const link = e.target.closest('a');
-            if (link && link.dataset.folderId) {
-                const folderId = parseInt(link.dataset.folderId, 10);
-                window.history.pushState(null, '', `/folder/${folderId}`);
-                loadFolderContents(folderId);
+            if (link && link.dataset.encryptedFolderId) {
+                const encryptedId = link.dataset.encryptedFolderId;
+                window.history.pushState(null, '', `/view/${encryptedId}`);
+                loadFolderContents(encryptedId);
             }
         });
     }
     window.addEventListener('popstate', () => {
         if (document.getElementById('itemGrid')) {
             const pathParts = window.location.pathname.split('/');
-            const lastPart = pathParts.filter(p => p).pop();
-            let folderId = parseInt(lastPart, 10);
-            if (isNaN(folderId)) {
-                const rootFolderLink = document.querySelector('.breadcrumb a');
-                folderId = rootFolderLink ? parseInt(rootFolderLink.dataset.folderId) : 1;
+            const viewIndex = pathParts.indexOf('view');
+            if (viewIndex !== -1 && pathParts.length > viewIndex + 1) {
+                const encryptedId = pathParts[viewIndex + 1];
+                loadFolderContents(encryptedId);
+            } else {
+                window.location.href = '/';
             }
-            loadFolderContents(folderId);
         }
     });
     if (createFolderBtn) {
@@ -1124,7 +1146,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 try {
                     await axios.post('/api/folder', { name: name.trim(), parentId: currentFolderId });
                     foldersLoaded = false; 
-                    loadFolderContents(currentFolderId);
+                    loadFolderContents(currentEncryptedFolderId);
                 } catch (error) { alert(error.response?.data?.message || '建立失败'); }
             }
         });
@@ -1134,7 +1156,7 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             const query = searchInput.value.trim();
             if (query) executeSearch(query);
-            else if(isSearchMode) loadFolderContents(currentFolderId);
+            else if(isSearchMode) loadFolderContents(currentEncryptedFolderId);
         });
     }
     if (selectAllBtn) {
@@ -1146,7 +1168,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isAllSelected) {
                 selectedItems.clear();
             } else {
-                allVisibleItems.forEach(item => selectedItems.set(String(item.id), { type: item.type, name: item.name }));
+                allVisibleItems.forEach(item => selectedItems.set(String(item.id), { type: item.type, name: item.name, encrypted_id: item.encrypted_id }));
             }
             rerenderSelection();
             updateContextMenu();
@@ -1168,6 +1190,97 @@ document.addEventListener('DOMContentLoaded', () => {
             uploadModal.style.display = 'none';
         });
     }
+    if (uploadForm) {
+        uploadForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const filesToProcess = folderInput.files.length > 0 ? folderInput.files : fileInput.files;
+            const targetFolderId = folderSelect.value;
+            uploadFiles(Array.from(filesToProcess), targetFolderId, false);
+        });
+    }
+    
+    if (shareBtn && shareModal) {
+        const shareOptions = document.getElementById('shareOptions');
+        const shareResult = document.getElementById('shareResult');
+        const expiresInSelect = document.getElementById('expiresInSelect');
+        const customExpiresInput = document.getElementById('customExpiresInput');
+        const confirmShareBtn = document.getElementById('confirmShareBtn');
+        const cancelShareBtn = document.getElementById('cancelShareBtn');
+        const shareLinkContainer = document.getElementById('shareLinkContainer');
+        const copyLinkBtn = document.getElementById('copyLinkBtn');
+        const closeShareModalBtn = document.getElementById('closeShareModalBtn');
+        const sharePasswordInput = document.getElementById('sharePasswordInput');
+    
+        expiresInSelect.addEventListener('change', () => {
+            if (expiresInSelect.value === 'custom') {
+                customExpiresInput.style.display = 'block';
+                const now = new Date();
+                now.setHours(now.getHours() + 1);
+                const year = now.getFullYear();
+                const month = (now.getMonth() + 1).toString().padStart(2, '0');
+                const day = now.getDate().toString().padStart(2, '0');
+                const hours = now.getHours().toString().padStart(2, '0');
+                const minutes = now.getMinutes().toString().padStart(2, '0');
+                customExpiresInput.value = `${year}-${month}-${day}T${hours}:${minutes}`;
+            } else {
+                customExpiresInput.style.display = 'none';
+            }
+        });
+    
+        shareBtn.addEventListener('click', () => {
+            if (shareBtn.disabled) return;
+            contextMenu.style.display = 'none';
+            shareOptions.style.display = 'block';
+            shareResult.style.display = 'none';
+            sharePasswordInput.value = '';
+            expiresInSelect.value = '24h';
+            customExpiresInput.style.display = 'none';
+            shareModal.style.display = 'flex';
+        });
+        cancelShareBtn.addEventListener('click', () => shareModal.style.display = 'none');
+        closeShareModalBtn.addEventListener('click', () => shareModal.style.display = 'none');
+    
+        confirmShareBtn.addEventListener('click', async () => {
+            const [itemId, item] = selectedItems.entries().next().value;
+            const itemType = item.type;
+            const expiresIn = expiresInSelect.value;
+            const password = sharePasswordInput.value;
+            
+            const payload = { itemId, itemType, expiresIn, password };
+    
+            if (expiresIn === 'custom') {
+                if (!customExpiresInput.value) {
+                    alert('请选择一个有效的到期时间！');
+                    return;
+                }
+                payload.customExpiresAt = new Date(customExpiresInput.value).getTime();
+                if (isNaN(payload.customExpiresAt) || payload.customExpiresAt <= Date.now()) {
+                    alert('自订的到期时间必须晚于现在！');
+                    return;
+                }
+            }
+            
+            try {
+                const res = await axios.post('/share', payload);
+                if (res.data.success) {
+                    shareLinkContainer.textContent = res.data.url;
+                    shareOptions.style.display = 'none';
+                    shareResult.style.display = 'block';
+                } else {
+                    alert('创建分享链接失败: ' + res.data.message);
+                }
+            } catch {
+                alert('创建分享链接请求失败');
+            }
+        });
+        copyLinkBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(shareLinkContainer.textContent).then(() => {
+                copyLinkBtn.textContent = '已复制!';
+                setTimeout(() => { copyLinkBtn.textContent = '复制链接'; }, 2000);
+            });
+        });
+    }
+    
     if (previewBtn) {
         previewBtn.addEventListener('click', async () => {
             if (previewBtn.disabled) return;
@@ -1216,7 +1329,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         newName: newName.trim(),
                         type: item.type
                     });
-                    loadFolderContents(currentFolderId);
+                    loadFolderContents(currentEncryptedFolderId);
                  } catch (error) {
                      alert('重命名失败: ' + (error.response?.data?.message || '服务器错误'));
                  }
@@ -1266,7 +1379,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             try {
                 await axios.post('/delete-multiple', { messageIds: filesToDelete, folderIds: foldersToDelete });
-                loadFolderContents(currentFolderId);
+                loadFolderContents(currentEncryptedFolderId);
             } catch (error) { alert('删除失败: ' + (error.response?.data?.message || '请重试。')); }
         });
     }
@@ -1314,6 +1427,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const item = document.createElement('div');
                     item.className = 'folder-item';
                     item.dataset.folderId = node.id;
+                    item.dataset.encryptedFolderId = node.encrypted_id; // 修正：添加加密ID
                     item.textContent = prefix + (node.name === '/' ? '根目录' : node.name);
 
                     if (isDisabled) {
@@ -1328,6 +1442,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 moveModal.style.display = 'flex';
                 moveTargetFolderId = null;
+                moveTargetEncryptedFolderId = null;
                 confirmMoveBtn.disabled = true;
             } catch { alert('无法获取资料夾列表。'); }
         });
@@ -1341,6 +1456,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (previouslySelected) previouslySelected.classList.remove('selected');
             target.classList.add('selected');
             moveTargetFolderId = parseInt(target.dataset.folderId);
+            moveTargetEncryptedFolderId = target.dataset.encryptedFolderId; // 修正：储存加密ID
             confirmMoveBtn.disabled = false;
         });
     }
@@ -1353,7 +1469,8 @@ document.addEventListener('DOMContentLoaded', () => {
             let isAborted = false;
             let applyToAllFolderAction = null;
 
-            async function resolveConflictsRecursively(itemsToMove, currentTargetFolderId, pathPrefix = '') {
+            // 修正：更新函数签名以接收加密ID
+            async function resolveConflictsRecursively(itemsToMove, currentTargetFolderId, currentTargetEncryptedFolderId, pathPrefix = '') {
                 if (isAborted) return;
     
                 const conflictCheckRes = await axios.post('/api/check-move-conflict', {
@@ -1362,8 +1479,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 const { fileConflicts, folderConflicts } = conflictCheckRes.data;
     
-                const destFolderContentsRes = await axios.get(`/api/folder/${currentTargetFolderId}`);
-                const destFolderMap = new Map(destFolderContentsRes.data.contents.folders.map(f => [f.name, f.id]));
+                // 修正：使用加密ID获取目标资料夹内容
+                const destFolderContentsRes = await axios.get(`/api/folder/${currentTargetEncryptedFolderId}`);
+                // 修正：储存加密ID以供递回呼叫
+                const destFolderMap = new Map(destFolderContentsRes.data.contents.folders.map(f => [f.name, { id: f.id, encrypted_id: f.encrypted_id }]));
     
                 for (const folderName of folderConflicts) {
                     const fullPath = pathPrefix ? `${pathPrefix}/${folderName}` : folderName;
@@ -1387,17 +1506,20 @@ document.addEventListener('DOMContentLoaded', () => {
     
                     if (action === 'merge') {
                         const sourceFolder = itemsToMove.find(item => item.name === folderName && item.type === 'folder');
-                        const destSubFolderId = destFolderMap.get(folderName);
-                        if (sourceFolder && destSubFolderId) {
-                            const sourceSubFolderContentsRes = await axios.get(`/api/folder/${sourceFolder.id}`);
+                        const destSubFolderData = destFolderMap.get(folderName);
+                        if (sourceFolder && destSubFolderData) {
+                            // 修正：使用源子资料夹的加密ID获取其内容
+                            const sourceSubFolderContentsRes = await axios.get(`/api/folder/${sourceFolder.encrypted_id}`);
                             const subItemsToMove = [...sourceSubFolderContentsRes.data.contents.folders, ...sourceSubFolderContentsRes.data.contents.files].map(item => ({
                                 id: item.id,
                                 name: item.name,
-                                type: item.type
+                                type: item.type,
+                                encrypted_id: item.encrypted_id // 修正：传递加密ID
                             }));
                             
                             if(subItemsToMove.length > 0) {
-                               await resolveConflictsRecursively(subItemsToMove, destSubFolderId, fullPath);
+                               // 修正：递回呼叫时传递加密ID
+                               await resolveConflictsRecursively(subItemsToMove, destSubFolderData.id, destSubFolderData.encrypted_id, fullPath);
                             }
                             if (isAborted) return;
                         }
@@ -1417,9 +1539,16 @@ document.addEventListener('DOMContentLoaded', () => {
             }
     
             try {
-                const topLevelItems = Array.from(selectedItems.entries()).map(([id, { type, name }]) => ({ id: parseInt(id), type, name }));
+                // 修正：从 selectedItems 中提取所有必要数据，包括加密ID
+                const topLevelItems = Array.from(selectedItems.entries()).map(([id, item]) => ({
+                    id: parseInt(id),
+                    type: item.type,
+                    name: item.name,
+                    encrypted_id: item.encrypted_id
+                }));
                 
-                await resolveConflictsRecursively(topLevelItems, moveTargetFolderId);
+                // 修正：初始呼叫，传递加密和未加密的ID
+                await resolveConflictsRecursively(topLevelItems, moveTargetFolderId, moveTargetEncryptedFolderId);
     
                 if (isAborted) {
                     moveModal.style.display = 'none';
@@ -1434,7 +1563,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
     
                 moveModal.style.display = 'none';
-                loadFolderContents(currentFolderId);
+                loadFolderContents(currentEncryptedFolderId);
                 showNotification(response.data.message, 'success');
     
             } catch (error) {
@@ -1444,50 +1573,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    if (shareBtn && shareModal) {
-        const shareOptions = document.getElementById('shareOptions');
-        const shareResult = document.getElementById('shareResult');
-        const expiresInSelect = document.getElementById('expiresInSelect');
-        const confirmShareBtn = document.getElementById('confirmShareBtn');
-        const cancelShareBtn = document.getElementById('cancelShareBtn');
-        const shareLinkContainer = document.getElementById('shareLinkContainer');
-        const copyLinkBtn = document.getElementById('copyLinkBtn');
-        const closeShareModalBtn = document.getElementById('closeShareModalBtn');
-
-        shareBtn.addEventListener('click', () => {
-            if (shareBtn.disabled) return;
-            contextMenu.style.display = 'none';
-            shareOptions.style.display = 'block';
-            shareResult.style.display = 'none';
-            shareModal.style.display = 'flex';
-        });
-        cancelShareBtn.addEventListener('click', () => shareModal.style.display = 'none');
-        closeShareModalBtn.addEventListener('click', () => shareModal.style.display = 'none');
-
-        confirmShareBtn.addEventListener('click', async () => {
-            const [itemId, item] = selectedItems.entries().next().value;
-            const itemType = item.type;
-            const expiresIn = expiresInSelect.value;
-            try {
-                const res = await axios.post('/share', { itemId, itemType, expiresIn });
-                if (res.data.success) {
-                    shareLinkContainer.textContent = res.data.url;
-                    shareOptions.style.display = 'none';
-                    shareResult.style.display = 'block';
-                } else {
-                    alert('创建分享链接失败: ' + res.data.message);
-                }
-            } catch {
-                alert('创建分享链接请求失败');
-            }
-        });
-        copyLinkBtn.addEventListener('click', () => {
-            navigator.clipboard.writeText(shareLinkContainer.textContent).then(() => {
-                copyLinkBtn.textContent = '已复制!';
-                setTimeout(() => { copyLinkBtn.textContent = '复制链接'; }, 2000);
-            });
-        });
-    }
     if (closeModal) closeModal.onclick = () => {
         previewModal.style.display = 'none';
         modalContent.innerHTML = '';
@@ -1517,14 +1602,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const isLocked = folderElement.dataset.isLocked === 'true' || folderElement.dataset.isLocked === '1';
 
         if (isLocked) {
-            const action = prompt(`资料夹 "${folderName}" 已加密。\n请输入 "change" 来修改密码，或输入 "unlock" 来移除密码。`);
+            const action = prompt(`资料夾 "${folderName}" 已加密。\n请输入 "change" 来修改密码，或输入 "unlock" 来移除密码。`);
             if (action === 'unlock') {
                 const { password } = await promptForPassword(`移除密码`, `请输入 "${folderName}" 的密码以移除加密:`);
                 if (password === null) return;
                 try {
                     await axios.post(`/api/folder/${folderId}/unlock`, { password });
                     showNotification('资料夾密码已移除。', 'success');
-                    loadFolderContents(currentFolderId);
+                    loadFolderContents(currentEncryptedFolderId);
                 } catch (error) {
                     alert('密码错误或操作失败。');
                 }
@@ -1552,7 +1637,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 await axios.post(`/api/folder/${folderId}/lock`, { password });
                 showNotification('资料夾已成功加密。', 'success');
-                loadFolderContents(currentFolderId);
+                loadFolderContents(currentEncryptedFolderId);
             } catch (error) {
                 alert('加密失败: ' + (error.response?.data?.message || '未知错误'));
             }
@@ -1561,19 +1646,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.addEventListener('message', (event) => {
         if (event.data === 'refresh-files') {
-            loadFolderContents(currentFolderId);
+            loadFolderContents(currentEncryptedFolderId);
         }
     });
     
     // 初始化
     if (document.getElementById('itemGrid')) {
         const pathParts = window.location.pathname.split('/');
-        const lastPart = pathParts.filter(p => p).pop();
-        let folderId = parseInt(lastPart, 10);
-        if (isNaN(folderId)) {
-            const rootFolderLink = document.querySelector('.breadcrumb a');
-            folderId = rootFolderLink ? parseInt(rootFolderLink.dataset.folderId) : 1;
+        const viewIndex = pathParts.indexOf('view');
+        let encryptedId;
+        if (viewIndex !== -1 && pathParts.length > viewIndex + 1) {
+            encryptedId = pathParts[viewIndex + 1];
         }
-        loadFolderContents(folderId);
+
+        if (encryptedId) {
+            loadFolderContents(encryptedId);
+        } else {
+           // 如果 URL 无效，导航到根目录
+           window.location.href = '/';
+        }
     }
 });
