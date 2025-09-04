@@ -7,28 +7,7 @@ const path = require('path');
 
 const FILE_NAME = 'storage/webdav.js';
 let client = null;
-// --- *** 关键修正 开始 *** ---
-// 新增一个 Set 来作为锁，防止并发创建同一个目录
 const creatingDirs = new Set();
-
-// 新增：文件名截断函数
-function truncateFilename(filename, maxLength = 200) {
-    if (filename.length <= maxLength) {
-        return filename;
-    }
-    const ext = path.extname(filename);
-    const baseName = path.basename(filename, ext);
-    // 确保即使扩展名很长，我们也不会得到负数的可用长度
-    const availableLength = maxLength - ext.length - 1; // 减去1以防万一
-    if (availableLength <= 0) {
-        // 如果扩展名本身就超长，则截断整个文件名
-        return filename.substring(filename.length - maxLength);
-    }
-    const truncatedBaseName = baseName.substring(0, availableLength);
-    return truncatedBaseName + ext;
-}
-// --- *** 关键修正 结束 *** ---
-
 
 // --- 日志辅助函数 ---
 const log = (level, func, message, ...args) => {
@@ -61,18 +40,14 @@ function resetClient() {
     client = null;
 }
 
-// --- *** 关键修正 开始 *** ---
-// 新增辅助函数，用于按顺序创建目录
 async function ensureDirectoryExists(fullPath) {
     const FUNC_NAME = 'ensureDirectoryExists';
     if (!fullPath || fullPath === "/") return;
     
-    // 如果路径已在创建中，则等待
     while (creatingDirs.has(fullPath)) {
         await new Promise(resolve => setTimeout(resolve, 50));
     }
     
-    // 锁定当前路径，防止其他并发操作重复创建
     creatingDirs.add(fullPath);
 
     try {
@@ -89,7 +64,6 @@ async function ensureDirectoryExists(fullPath) {
                 try {
                     await client.createDirectory(currentPath);
                 } catch (e) {
-                    // 忽略“方法不允许”或“已存在”的错误，因为另一个进程可能刚刚创建了它
                     if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
                          throw new Error(`建立 WebDAV 目录失败 (${e.response.status}): ${e.message}`);
                     }
@@ -97,11 +71,9 @@ async function ensureDirectoryExists(fullPath) {
             }
         }
     } finally {
-        // 解锁
         creatingDirs.delete(fullPath);
     }
 }
-// --- *** 关键修正 结束 *** ---
 
 async function getFolderPath(folderId, userId) {
     const userRoot = await new Promise((resolve, reject) => {
@@ -118,60 +90,55 @@ async function getFolderPath(folderId, userId) {
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
-async function upload(fileStream, fileName, mimetype, userId, folderId) {
+async function upload(fileStream, fileNameObject, mimetype, userId, folderId) {
     const FUNC_NAME = 'upload';
-    // --- 关键修正：使用截断后的安全文件名 ---
-    const safeFileName = truncateFilename(fileName);
-    log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" (储存为 "${safeFileName}") 到 WebDAV...`);
+    // --- 关键修正：从物件中解构出原始档名和安全档名 ---
+    const { originalFileName, safeFileName } = fileNameObject;
+    log('INFO', FUNC_NAME, `开始上传文件: "${originalFileName}" (储存为 "${safeFileName}") 到 WebDAV...`);
     
     return new Promise(async (resolve, reject) => {
         try {
             const client = getClient();
             const folderPath = await getFolderPath(folderId, userId);
-            // --- 关键修正：使用安全的文件名构建路径 ---
-            const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + safeFileName;
+            // --- 关键修正：使用安全档名建立储存路径 ---
+            const safeStoragePath = (folderPath === '/' ? '' : folderPath) + '/' + safeFileName;
             
-            // --- *** 关键修正 开始 *** ---
-            // 使用新的健壮的目录创建函数
             if (folderPath && folderPath !== "/") {
                 await ensureDirectoryExists(folderPath);
             }
-            // --- *** 关键修正 结束 *** ---
-
-
-            // 关键：监听输入流的错误
+            
             fileStream.on('error', err => {
-                log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for "${fileName}":`, err);
+                log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for "${originalFileName}":`, err);
                 reject(new Error(`输入文件流中断: ${err.message}`));
             });
 
-            log('DEBUG', FUNC_NAME, `正在调用 putFileContents 上传到: "${remotePath}"`);
-            const success = await client.putFileContents(remotePath, fileStream, { overwrite: true });
+            log('DEBUG', FUNC_NAME, `正在调用 putFileContents 上传到: "${safeStoragePath}"`);
+            const success = await client.putFileContents(safeStoragePath, fileStream, { overwrite: true });
 
             if (!success) {
                 return reject(new Error('WebDAV putFileContents 操作失败'));
             }
             log('INFO', FUNC_NAME, `文件成功上传到 WebDAV: "${safeFileName}"`);
 
-            const stats = await client.stat(remotePath);
+            const stats = await client.stat(safeStoragePath);
             log('DEBUG', FUNC_NAME, `获取 WebDAV 文件状态成功，大小: ${stats.size}`);
             const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
 
-            // --- 关键修正：向数据库写入安全的文件名和路径 ---
+            // --- 关键修正：向 data.js 传入原始档名和安全路径 ---
             const dbResult = await data.addFile({
                 message_id: messageId,
-                fileName: safeFileName,
+                originalFileName: originalFileName,
                 mimetype,
                 size: stats.size,
-                file_id: remotePath,
+                safeStoragePath: safeStoragePath,
                 date: Date.now(),
             }, folderId, userId, 'webdav');
             
-            log('INFO', FUNC_NAME, `文件 "${safeFileName}" 已成功存入资料库。`);
+            log('INFO', FUNC_NAME, `文件 "${originalFileName}" 已成功存入资料库。`);
             resolve({ success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId });
 
         } catch (error) {
-            log('ERROR', FUNC_NAME, `上传到 WebDAV 失败 for "${fileName}":`, error);
+            log('ERROR', FUNC_NAME, `上传到 WebDAV 失败 for "${originalFileName}":`, error);
             if (fileStream && typeof fileStream.resume === 'function') {
                 fileStream.resume();
             }
