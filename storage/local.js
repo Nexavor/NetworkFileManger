@@ -12,6 +12,22 @@ const log = (level, func, message, ...args) => {
     // console.log(`[${timestamp}] [${level}] [${FILE_NAME}:${func}] - ${message}`, ...args);
 };
 
+// 新增：文件名截断函数，确保符合大多数文件系统的限制
+function truncateFilename(filename, maxLength = 200) {
+    if (filename.length <= maxLength) {
+        return filename;
+    }
+    const ext = path.extname(filename);
+    const baseName = path.basename(filename, ext);
+    const availableLength = maxLength - ext.length - 1; 
+    if (availableLength <= 0) {
+        return filename.substring(filename.length - maxLength);
+    }
+    const truncatedBaseName = baseName.substring(0, availableLength);
+    return truncatedBaseName + ext;
+}
+
+
 async function setup() {
     try {
         await fsp.mkdir(UPLOAD_DIR, { recursive: true });
@@ -21,7 +37,9 @@ setup();
 
 async function upload(fileStream, fileName, mimetype, userId, folderId) {
     const FUNC_NAME = 'upload';
-    log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到本地储存...`);
+    // --- 关键修正：使用截断后的安全文件名 ---
+    const safeFileName = truncateFilename(fileName);
+    log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" (储存为 "${safeFileName}") 到本地储存...`);
     
     const userDir = path.join(UPLOAD_DIR, String(userId));
     
@@ -31,8 +49,10 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
 
     await fsp.mkdir(finalFolderPath, { recursive: true });
 
-    const finalFilePath = path.join(finalFolderPath, fileName);
-    const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/');
+    // --- 关键修正：使用安全的文件名构建路径 ---
+    const finalFilePath = path.join(finalFolderPath, safeFileName);
+    const relativeFilePath = path.join(relativeFolderPath, safeFileName).replace(/\\/g, '/');
+
 
     return new Promise((resolve, reject) => {
         log('DEBUG', FUNC_NAME, `创建写入流到: "${finalFilePath}"`);
@@ -51,16 +71,17 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
             log('DEBUG', FUNC_NAME, `写入流 'drain' 事件触发 for "${fileName}"。可以继续写入。`);
         });
         writeStream.on('finish', async () => {
-            log('INFO', FUNC_NAME, `文件写入磁盘完成 (finish): "${fileName}"`);
+            log('INFO', FUNC_NAME, `文件写入磁盘完成 (finish): "${safeFileName}"`);
             try {
                 const stats = await fsp.stat(finalFilePath);
                 log('DEBUG', FUNC_NAME, `获取文件状态成功，大小: ${stats.size}`);
                 const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
                 
-                log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: "${fileName}"`);
+                log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: "${safeFileName}"`);
+                // --- 关键修正：向数据库写入安全的文件名和路径 ---
                 const dbResult = await data.addFile({
                     message_id: messageId,
-                    fileName,
+                    fileName: safeFileName,
                     mimetype,
                     size: stats.size,
                     file_id: relativeFilePath,
@@ -68,10 +89,10 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
                     date: Date.now(),
                 }, folderId, userId, 'local');
                 
-                log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
+                log('INFO', FUNC_NAME, `文件 "${safeFileName}" 已成功存入资料库。`);
                 resolve({ success: true, message: '文件已储存至本地。', fileId: dbResult.fileId });
             } catch (err) {
-                 log('ERROR', FUNC_NAME, `写入资料库时发生错误 for "${fileName}":`, err);
+                 log('ERROR', FUNC_NAME, `写入资料库时发生错误 for "${safeFileName}":`, err);
                  reject(err);
             }
         });
