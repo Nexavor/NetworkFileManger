@@ -154,6 +154,7 @@ app.post('/upload', requireLogin, (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
+    const MAX_FILENAME_LENGTH = 255; // 新增档名最大长度限制
 
     try {
         if (!folderId) throw new Error('folderId is missing from query parameters');
@@ -170,6 +171,16 @@ app.post('/upload', requireLogin, (req, res) => {
             
             const fileUploadPromise = (async () => {
                 const { mimeType } = fileInfo;
+                const pathParts = relativePath.split('/').filter(p => p);
+                let finalFilename = pathParts.pop() || relativePath;
+
+                // --- *** 关键修正：在后端添加档名长度验证 *** ---
+                if (finalFilename.length > MAX_FILENAME_LENGTH) {
+                    fileStream.resume(); // 消耗掉流
+                    throw new Error(`档名 "${finalFilename.substring(0, 30)}..." 过长，超过 ${MAX_FILENAME_LENGTH} 个字元。`);
+                }
+                // --- 修正结束 ---
+
                 const action = resolutions[relativePath] || 'upload';
 
                 if (action === 'skip') {
@@ -177,8 +188,6 @@ app.post('/upload', requireLogin, (req, res) => {
                     return { skipped: true };
                 }
 
-                const pathParts = relativePath.split('/').filter(p => p);
-                let finalFilename = pathParts.pop() || relativePath;
                 const folderPathParts = pathParts;
 
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
