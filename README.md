@@ -66,8 +66,11 @@ ADMIN_PASS=your_admin_password
 **必填：用于加密 Session 的随机密钥，请换成一个复杂的随机字串
 SESSION_SECRET=a8e2a32e9b1c7d5f6a7b3c4d5e8f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f
 
-#### 3.重置管理员帐号密码
+#### 3.重置管理员帐号密码和文件夹密码
 
 ```bash
 node reset_admin_password.js
+ ```
+```bash
+node unlock_folder.js
  ```
