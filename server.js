@@ -154,7 +154,7 @@ app.post('/upload', requireLogin, (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
-    const MAX_FILENAME_LENGTH = 255; // 新增档名最大长度限制
+    const MAX_FILENAME_BYTES = 255; 
 
     try {
         if (!folderId) throw new Error('folderId is missing from query parameters');
@@ -174,10 +174,10 @@ app.post('/upload', requireLogin, (req, res) => {
                 const pathParts = relativePath.split('/').filter(p => p);
                 let finalFilename = pathParts.pop() || relativePath;
 
-                // --- *** 关键修正：在后端添加档名长度验证 *** ---
-                if (finalFilename.length > MAX_FILENAME_LENGTH) {
-                    fileStream.resume(); // 消耗掉流
-                    throw new Error(`档名 "${finalFilename.substring(0, 30)}..." 过长，超过 ${MAX_FILENAME_LENGTH} 个字元。`);
+                // --- *** 关键修正：改用字节长度进行验证 *** ---
+                if (Buffer.byteLength(finalFilename, 'utf8') > MAX_FILENAME_BYTES) {
+                    fileStream.resume(); 
+                    throw new Error(`档名 "${finalFilename.substring(0, 30)}..." 过长 (超过 ${MAX_FILENAME_BYTES} 字节)。`);
                 }
                 // --- 修正结束 ---
 
@@ -271,7 +271,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
             if (fileName !== originalFile.fileName) {
                 const conflict = await data.checkFullConflict(fileName, originalFile.folder_id, userId);
                 if (conflict) {
-                    return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
+                    return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
                 }
             }
 
@@ -304,7 +304,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         } else if (mode === 'create' && folderId) {
             const conflict = await data.checkFullConflict(fileName, folderId, userId);
             if (conflict) {
-                return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
+                return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
             }
             const fileStream = fs.createReadStream(tempFilePath);
             const result = await storage.upload(fileStream, fileName, 'text/plain', userId, folderId);
@@ -423,7 +423,7 @@ app.post('/api/folder', requireLogin, async (req, res) => {
     try {
         const conflict = await data.checkFullConflict(name, parentId, userId);
         if (conflict) {
-            return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
+            return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
         }
         const result = await data.createFolder(name, parentId, userId);
         const storage = storageManager.getStorage();
