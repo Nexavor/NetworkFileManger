@@ -217,22 +217,22 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     
     const uploadFiles = async (allFilesData, targetFolderId, isDrag = false) => {
-
         if (allFilesData.length === 0) {
             showNotification('请选择文件或文件夹。', 'error', !isDrag ? uploadNotificationArea : null);
             return;
         }
-        
-        // --- *** 关键修正：优化前端档名长度验证 *** ---
-        const MAX_FILENAME_LENGTH = 255;
+
+        // --- *** 关键修正：改用字节长度进行验证 *** ---
+        const MAX_FILENAME_BYTES = 255; 
+        const encoder = new TextEncoder();
         const longFileNames = allFilesData.filter(data => {
-            const fileName = data.relativePath.split('/').pop(); // 只取档名部分
-            return fileName.length > MAX_FILENAME_LENGTH;
+            const fileName = data.relativePath.split('/').pop();
+            return encoder.encode(fileName).length > MAX_FILENAME_BYTES;
         });
 
         if (longFileNames.length > 0) {
             const fileNames = longFileNames.map(data => `"${data.relativePath.split('/').pop()}"`).join(', ');
-            showNotification(`部分档名过长 (超过 ${MAX_FILENAME_LENGTH} 个字元)，无法上传: ${fileNames}`, 'error', !isDrag ? uploadNotificationArea : null);
+            showNotification(`部分档名过长 (超过 ${MAX_FILENAME_BYTES} 字节)，无法上传: ${fileNames}`, 'error', !isDrag ? uploadNotificationArea : null);
             return;
         }
         // --- 修正结束 ---
