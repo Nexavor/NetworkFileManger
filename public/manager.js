@@ -222,6 +222,18 @@ document.addEventListener('DOMContentLoaded', () => {
             showNotification('请选择文件或文件夹。', 'error', !isDrag ? uploadNotificationArea : null);
             return;
         }
+        
+        const MAX_FILENAME_LENGTH = 255;
+        const longFileNames = allFilesData.filter(data => {
+            const fileName = data.relativePath.split('/').pop();
+            return fileName.length > MAX_FILENAME_LENGTH;
+        });
+
+        if (longFileNames.length > 0) {
+            const fileNames = longFileNames.map(data => `"${data.relativePath.split('/').pop()}"`).join(', ');
+            showNotification(`部分文件名过长 (超过 ${MAX_FILENAME_LENGTH} 个字元)，无法上传: ${fileNames}`, 'error', !isDrag ? uploadNotificationArea : null);
+            return;
+        }
 
         const notificationContainer = isDrag ? null : uploadNotificationArea;
 
