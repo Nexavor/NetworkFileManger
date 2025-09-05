@@ -4,6 +4,7 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcrypt');
+require('dotenv').config(); // 关键修正：确保能读取 .env 档案
 
 const dbPath = path.join(__dirname, 'data', 'database.db');
 
@@ -105,9 +106,11 @@ function checkAndCreateAdmin() {
         if (err) { /* console.error("查询管理员时出错:", err.message); */ return; }
         
         if (!admin) {
-            // 如果找不到管理员，则建立一个预设的
-            const adminUser = 'admin';
-            const adminPass = 'admin';
+            // --- *** 关键修正 开始 *** ---
+            // 如果找不到管理员，则从 .env 档案读取并建立一个
+            const adminUser = process.env.ADMIN_USER || 'admin';
+            const adminPass = process.env.ADMIN_PASS || 'admin';
+            // --- *** 关键修正 结束 *** ---
             
             bcrypt.genSalt(10, (saltErr, salt) => {
                 if (saltErr) { /* console.error("生成 salt 失败:", saltErr); */ return; }
