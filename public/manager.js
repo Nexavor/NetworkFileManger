@@ -223,17 +223,19 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         
+        // --- *** 关键修正：优化前端档名长度验证 *** ---
         const MAX_FILENAME_LENGTH = 255;
         const longFileNames = allFilesData.filter(data => {
-            const fileName = data.relativePath.split('/').pop();
+            const fileName = data.relativePath.split('/').pop(); // 只取档名部分
             return fileName.length > MAX_FILENAME_LENGTH;
         });
 
         if (longFileNames.length > 0) {
             const fileNames = longFileNames.map(data => `"${data.relativePath.split('/').pop()}"`).join(', ');
-            showNotification(`部分文件名过长 (超过 ${MAX_FILENAME_LENGTH} 个字元)，无法上传: ${fileNames}`, 'error', !isDrag ? uploadNotificationArea : null);
+            showNotification(`部分档名过长 (超过 ${MAX_FILENAME_LENGTH} 个字元)，无法上传: ${fileNames}`, 'error', !isDrag ? uploadNotificationArea : null);
             return;
         }
+        // --- 修正结束 ---
 
         const notificationContainer = isDrag ? null : uploadNotificationArea;
 
@@ -300,7 +302,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await axios.get(`/api/folder/${encryptedFolderId}`);
             
             if (res.data.locked) {
-                const { password } = await promptForPassword(`资料夹 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
+                const { password } = await promptForPassword(`资料夾 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
                 if (password === null) { 
                     const parent = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2] : null;
                     if (parent && parent.encrypted_id) {
