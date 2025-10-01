@@ -58,12 +58,16 @@ app.use(session({
   cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }
 }));
 
+// --- *** 关键修正 开始 *** ---
+// 将分享链接的 session cookie 改为会话级 cookie
+// 移除了 cookie.maxAge 属性，这样浏览器会在无痕窗口完全关闭后可靠地删除它
 const shareSession = session({
   secret: process.env.SESSION_SECRET + '-share',
   resave: false,
   saveUninitialized: true,
-  cookie: { maxAge: 1000 * 60 * 60 * 24 }
+  cookie: { /* maxAge 已被移除 */ }
 });
+// --- *** 关键修正 结束 *** ---
 
 app.set('trust proxy', 1);
 
