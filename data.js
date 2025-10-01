@@ -784,43 +784,67 @@ function getFilesByIds(messageIds, userId) {
     });
 }
 
-function getFileByShareToken(token) {
-     return new Promise((resolve, reject) => {
-        const sql = "SELECT * FROM files WHERE share_token = ?";
-        db.get(sql, [token], (err, row) => {
+// --- *** 关键修正 开始 *** ---
+// 修复了访问过期分享链接可能导致密码失效的BUG。
+// 重构函数以确保在检查链接状态时，严格执行“只读”操作，绝不修改数据库。
+// 这样可以防止因意外的“清理”逻辑而错误地清除了分享密码。
+async function getFileByShareToken(token) {
+    const getShareSql = "SELECT * FROM files WHERE share_token = ?";
+    
+    const row = await new Promise((resolve, reject) => {
+        db.get(getShareSql, [token], (err, row) => {
             if (err) return reject(err);
-            if (!row) return resolve(null);
-            
-            // 只进行判断，不修改数据库
-            if (row.share_expires_at && Date.now() > row.share_expires_at) {
-                // 如果已过期，则视为找不到该分享
-                resolve(null); 
-            } else {
-                // 未过期，正常返回数据
-                resolve(row);
-            }
+            resolve(row);
         });
     });
+
+    // 如果根据token找不到任何分享，直接返回null
+    if (!row) {
+        return null;
+    }
+
+    // 检查分享是否已过期 (row.share_expires_at 为 null 表示永不过期)
+    const isExpired = row.share_expires_at && Date.now() > row.share_expires_at;
+
+    // 如果链接已过期，我们将其视为无效链接，返回 null。
+    // 重要的是，我们不执行任何数据库写操作，从而避免了因过期检查而清除密码的风险。
+    if (isExpired) {
+        return null; 
+    }
+    
+    // 如果分享有效且未过期，返回完整的分享信息。
+    return row;
 }
 
-function getFolderByShareToken(token) {
-     return new Promise((resolve, reject) => {
-        const sql = "SELECT * FROM folders WHERE share_token = ?";
-        db.get(sql, [token], (err, row) => {
-            if (err) return reject(err);
-            if (!row) return resolve(null);
+async function getFolderByShareToken(token) {
+    const getShareSql = "SELECT * FROM folders WHERE share_token = ?";
 
-            // 只进行判断，不修改数据库
-            if (row.share_expires_at && Date.now() > row.share_expires_at) {
-                // 如果已过期，则视为找不到该分享
-                resolve(null);
-            } else {
-                // 未过期，正常返回数据
-                resolve(row);
-            }
+    const row = await new Promise((resolve, reject) => {
+        db.get(getShareSql, [token], (err, row) => {
+            if (err) return reject(err);
+            resolve(row);
         });
     });
+
+    // 如果根据token找不到任何分享，直接返回null
+    if (!row) {
+        return null;
+    }
+
+    // 检查分享是否已过期 (row.share_expires_at 为 null 表示永不过期)
+    const isExpired = row.share_expires_at && Date.now() > row.share_expires_at;
+
+    // 如果链接已过期，我们将其视为无效链接，返回 null。
+    // 重要的是，我们在这里不执行任何数据库写操作（如 UPDATE 或 DELETE）。
+    // 这可以防止仅仅因为一次过期的访问就清除了分享密码等重要信息。
+    if (isExpired) {
+        return null; 
+    }
+
+    // 如果分享有效且未过期，返回完整的分享信息。
+    return row;
 }
+// --- *** 关键修正 结束 *** ---
 
 // --- *** 关键修正 开始 *** ---
 async function findFileInSharedFolder(fileId, folderToken) {
