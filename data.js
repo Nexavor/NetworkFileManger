@@ -94,8 +94,8 @@ function searchItems(query, userId) {
     return new Promise((resolve, reject) => {
         const searchQuery = `%${query}%`;
 
-        // 此 CTE (Common Table Expression) 递归地建立每个资料夹的祖先路径，
-        // 并确定路径中是否有任何一个资料夹被加密。
+        // 此 CTE (Common Table Expression) 递归地建立每个资料夾的祖先路径，
+        // 并确定路径中是否有任何一个资料夾被加密。
         const baseQuery = `
             WITH RECURSIVE folder_ancestry(id, parent_id, is_locked) AS (
                 -- 基底查询: 选出该使用者的所有资料夾，并标记其自身的加密状态
@@ -109,7 +109,7 @@ function searchItems(query, userId) {
                 JOIN folder_ancestry fa ON f.id = fa.parent_id
                 WHERE f.user_id = ?
             ),
-            -- 聚合结果: 对每个资料夹ID，只要其路径上有任一加密，最终状态就是加密
+            -- 聚合结果: 对每个资料夾ID，只要其路径上有任一加密，最终状态就是加密
             folder_lock_status AS (
                 SELECT id, MAX(is_locked) as is_path_locked
                 FROM folder_ancestry
@@ -170,7 +170,7 @@ async function isFileAccessible(fileId, userId, unlockedFolders = []) {
         return false; // 资料库不一致，这不应该发生
     }
 
-    // 一次性查询路径上所有资料夹的加密状态
+    // 一次性查询路径上所有资料夾的加密状态
     const folderIds = path.map(p => p.id);
     const placeholders = folderIds.map(() => '?').join(',');
     const sql = `SELECT id, password IS NOT NULL as is_locked FROM folders WHERE id IN (${placeholders}) AND user_id = ?`;
@@ -356,7 +356,7 @@ async function findFolderBySharePath(shareToken, pathSegments = []) {
                 
                 // 检查子资料夾是否已加密
                 if(row.password) {
-                    return resolve(null); // 不允许存取加密的子资料夹
+                    return resolve(null); // 不允许存取加密的子资料夾
                 }
 
                 currentFolder = row;
@@ -790,11 +790,13 @@ function getFileByShareToken(token) {
         db.get(sql, [token], (err, row) => {
             if (err) return reject(err);
             if (!row) return resolve(null);
+            
+            // 只进行判断，不修改数据库
             if (row.share_expires_at && Date.now() > row.share_expires_at) {
-                const updateSql = "UPDATE files SET share_token = NULL, share_expires_at = NULL, share_password = NULL WHERE message_id = ?";
-                db.run(updateSql, [row.message_id]);
-                resolve(null);
+                // 如果已过期，则视为找不到该分享
+                resolve(null); 
             } else {
+                // 未过期，正常返回数据
                 resolve(row);
             }
         });
@@ -807,11 +809,13 @@ function getFolderByShareToken(token) {
         db.get(sql, [token], (err, row) => {
             if (err) return reject(err);
             if (!row) return resolve(null);
+
+            // 只进行判断，不修改数据库
             if (row.share_expires_at && Date.now() > row.share_expires_at) {
-                const updateSql = "UPDATE folders SET share_token = NULL, share_expires_at = NULL, share_password = NULL WHERE id = ?";
-                db.run(updateSql, [row.id]);
+                // 如果已过期，则视为找不到该分享
                 resolve(null);
             } else {
+                // 未过期，正常返回数据
                 resolve(row);
             }
         });
