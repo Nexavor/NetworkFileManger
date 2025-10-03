@@ -471,18 +471,20 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
             // console.log(`[Data] moveItem: 跳过项目 "${currentPath}"`);
             return report;
 
+        // --- *** 关键修正 开始：修复文件夹移动时“重命名”执行“覆盖”的BUG *** ---
         case 'rename':
             // console.log(`[Data] moveItem: 重新命名项目 "${currentPath}"`);
             const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
             // console.log(`[Data] moveItem: 找到可用新名称 "${newName}"`);
             if (itemType === 'folder') {
-                await renameFolder(itemId, newName, userId);
-                await moveItems([], [itemId], targetFolderId, userId);
+                // 使用专用的 renameAndMoveFolder 函数，确保操作的原子性和正确性
+                await renameAndMoveFolder(itemId, newName, targetFolderId, userId);
             } else {
                 await renameAndMoveFile(itemId, newName, targetFolderId, userId);
             }
             report.moved++;
             return report;
+        // --- *** 关键修正 结束 *** ---
 
         case 'overwrite':
             if (!existingItemInTarget) {
@@ -999,6 +1001,52 @@ async function renameFolder(folderId, newFolderName, userId) {
     });
 }
 
+// --- *** 关键修正 开始：新增 renameAndMoveFolder 函数 *** ---
+async function renameAndMoveFolder(folderId, newName, targetFolderId, userId) {
+    const folder = await new Promise((res, rej) => db.get("SELECT * FROM folders WHERE id=? AND user_id=?", [folderId, userId], (e,r)=>e?rej(e):res(r)));
+    if (!folder) throw new Error('Folder not found for rename and move');
+
+    const storage = require('./storage').getStorage();
+    if (storage.type === 'local' || storage.type === 'webdav') {
+        const oldPathParts = await getFolderPath(folderId, userId);
+        const oldFullPath = path.posix.join(...oldPathParts.slice(1).map(p => p.name));
+
+        const targetPathParts = await getFolderPath(targetFolderId, userId);
+        const targetBasePath = path.posix.join(...targetPathParts.slice(1).map(p => p.name));
+        const newFullPath = path.posix.join(targetBasePath, newName);
+
+        try {
+            if (storage.type === 'local') {
+                 const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldFullPath);
+                 const newAbsPath = path.join(UPLOAD_DIR, String(userId), newFullPath);
+                 if (fsSync.existsSync(oldAbsPath)) {
+                    await fs.mkdir(path.dirname(newAbsPath), { recursive: true });
+                    await fs.rename(oldAbsPath, newAbsPath);
+                 }
+            } else if (storage.type === 'webdav') {
+                const client = storage.getClient();
+                await client.moveFile(oldFullPath, newFullPath);
+            }
+
+            // 更新所有子文件的路径
+            const descendantFiles = await getFilesRecursive(folderId, userId);
+            for (const file of descendantFiles) {
+                const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
+                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id], (e) => e ? rej(e) : res()));
+            }
+        } catch(err) {
+            throw new Error(`实体资料夹移动并重命名失败: ${err.message}`);
+        }
+    }
+
+    // 更新数据库中的名称和父ID
+    const sql = `UPDATE folders SET name = ?, parent_id = ? WHERE id = ? AND user_id = ?`;
+    return new Promise((resolve, reject) => {
+        db.run(sql, [newName, targetFolderId, folderId, userId], (err) => err ? reject(err) : resolve({ success: true }));
+    });
+}
+// --- *** 关键修正 结束 *** ---
+
 function setFolderPassword(folderId, password, userId) {
     return new Promise((resolve, reject) => {
         const sql = `UPDATE folders SET password = ? WHERE id = ? AND user_id = ?`;
@@ -1323,6 +1371,8 @@ module.exports = {
     findItemInFolder,
     findAvailableName,
     renameAndMoveFile,
+    // --- *** 关键修正：导出新函数 *** ---
+    renameAndMoveFolder,
     getFolderDetails,
     setFolderPassword,
     verifyFolderPassword,
