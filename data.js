@@ -456,11 +456,14 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
     let resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
 
-    // --- *** 关键修正：深度大于0时，将 'merge' 视为 'overwrite' *** ---
+    // --- *** 关键修正 开始：修复深度合并BUG *** ---
+    // 删除这个错误地将深度合并强制转换为覆盖的代码块，以允许用户选择的解决方案在所有层级生效
+    /*
     if (depth > 0 && itemType === 'folder' && existingItemInTarget && existingItemInTarget.type === 'folder' && resolutionAction === 'merge') {
-        // console.log(`[Data] moveItem: 深度合并 (${depth}) 不被支持，将 "${currentPath}" 的合并操作视为覆盖处理。`);
         resolutionAction = 'overwrite';
     }
+    */
+    // --- *** 关键修正 结束 *** ---
 
     // console.log(`[Data] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
 
