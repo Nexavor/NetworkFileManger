@@ -58,7 +58,7 @@ app.use(session({
   cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }
 }));
 
-// --- *** 关键修正 开始 *** ---
+// --- *** 关键修正 1: 修复会话持久化问题 *** ---
 // 将分享链接的 session cookie 改为会话级 cookie
 // 移除了 cookie.maxAge 属性，这样浏览器会在无痕窗口完全关闭后可靠地删除它
 const shareSession = session({
@@ -67,7 +67,6 @@ const shareSession = session({
   saveUninitialized: true,
   cookie: { /* maxAge 已被移除 */ }
 });
-// --- *** 关键修正 结束 *** ---
 
 app.set('trust proxy', 1);
 
@@ -917,6 +916,13 @@ app.post('/share/auth/:itemType/:token', shareSession, async (req, res) => {
 
 app.get('/share/view/file/:token', shareSession, async (req, res) => {
     try {
+        // --- *** 关键修正 2: 修复代理缓存问题 *** ---
+        // 强制设置 HTTP 响应头，禁止任何代理或浏览器缓存此页面
+        // 这是为了防止已解锁的分享页面被缓存，导致其他用户无需密码即可访问
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        
         const token = req.params.token;
         const fileInfo = await data.getFileByShareToken(token);
         if (fileInfo) {
@@ -957,6 +963,12 @@ app.get('/share/view/file/:token', shareSession, async (req, res) => {
 
 app.get('/share/view/folder/:token/:path(*)?', shareSession, async (req, res) => {
     try {
+        // --- *** 关键修正 2: 修复代理缓存问题 *** ---
+        // 强制设置 HTTP 响应头，禁止任何代理或浏览器缓存此页面
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+
         const { token, path: requestedPath } = req.params;
         const pathSegments = requestedPath ? requestedPath.split('/').filter(p => p) : [];
         const rootFolder = await data.getFolderByShareToken(token);
