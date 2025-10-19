@@ -76,16 +76,31 @@ app.use(express.static('public'));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
+// --- *** 关键修正：处理 API 请求的会话过期 *** ---
 function requireLogin(req, res, next) {
   if (req.session.loggedIn) return next();
-  res.redirect('/login');
+  
+  // 检查是否为 XHR (API) 请求
+  if (req.xhr || (req.headers.accept && req.headers.accept.includes('json'))) {
+    // 对 API 请求发送 401 状态码
+    return res.status(401).json({ success: false, message: '会话已过期，请重新登入。' });
+  } else {
+    // 对非 API 的页面请求重定向到登入页
+    res.redirect('/login');
+  }
 }
+// --- *** 修正结束 *** ---
 
 function requireAdmin(req, res, next) {
     if (req.session.loggedIn && req.session.isAdmin) {
         return next();
     }
-    res.status(403).send('权限不足');
+    // --- *** 关键修正：处理 API 请求的会话过期 (管理员) *** ---
+    if (req.xhr || (req.headers.accept && req.headers.accept.includes('json'))) {
+        return res.status(403).json({ success: false, message: '权限不足。' });
+    } else {
+        res.status(403).send('权限不足');
+    }
 }
 
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views/login.html')));
