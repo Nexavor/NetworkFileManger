@@ -1,4 +1,38 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // --- *** 关键修正：新增 Axios 全局拦截器 *** ---
+    // 此拦截器会捕获所有 axios 请求的错误
+    axios.interceptors.response.use(
+        (response) => {
+            // 对成功的响应不执行任何操作，直接返回
+            return response;
+        },
+        (error) => {
+            // 检查是否是 401 未授权错误
+            if (error.response && error.response.status === 401) {
+                // 侦测到 401 错误（会话过期）
+                alert('您的登入会话已过期，将自动跳转到登入页面。');
+                window.location.href = '/login';
+                // 返回一个永远不会 resolved 的 Promise，以中断当前的 .then() 链
+                return new Promise(() => {});
+            }
+            
+            // 检查是否是网路错误（伺服器断线）
+            // error.response 不存在，但 error.request 存在，是标准网路错误的特征
+            if (!error.response && error.request) {
+                // 侦测到网路错误（伺服器无回应）
+                alert('无法连接到伺服器，可能已经断线。将自动跳转到登入页面。');
+                window.location.href = '/login';
+                // 返回一个永远不会 resolved 的 Promise
+                return new Promise(() => {});
+            }
+
+            // 对于所有其他错误（如 404, 500 等），正常抛出，
+            // 让局部的 .catch() 区块去处理
+            return Promise.reject(error);
+        }
+    );
+    // --- *** 修正结束 *** ---
+
     // --- 关键修正：将进度条从DOM中移到文件显示区外部 ---
     const dropZone = document.getElementById('dropZone');
     const container = document.querySelector('.container');
@@ -209,7 +243,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 showNotification(`上传失败: ${res.data.message}`, 'error', notificationContainer);
             }
         } catch (error) {
-            showNotification('上传失败: ' + (error.response?.data?.message || '服务器错误'), 'error', notificationContainer);
+            // 401 和网路错误已由全局拦截器处理，这里只处理其他如 500 错误
+            if (error.response) {
+                 showNotification('上传失败: ' + (error.response?.data?.message || '服务器错误'), 'error', notificationContainer);
+            }
         } finally {
             if (submitBtn) submitBtn.disabled = false;
             setTimeout(() => { progressArea.style.display = 'none'; }, 2000);
@@ -255,7 +292,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await axios.post('/api/check-existence', { files: filesToCheck, folderId: targetFolderId });
             existenceData = res.data.files;
         } catch (error) {
-            showNotification(error.response?.data?.message || '检查文件是否存在时出错。', 'error', notificationContainer);
+            // 401 和网路错误已由全局拦截器处理
+            if (error.response) {
+                showNotification(error.response?.data?.message || '检查文件是否存在时出错。', 'error', notificationContainer);
+            }
             return;
         }
 
@@ -337,9 +377,14 @@ document.addEventListener('DOMContentLoaded', () => {
             renderItems(currentFolderContents.folders, currentFolderContents.files);
             updateContextMenu();
         } catch (error) {
-            if (error.response && error.response.status === 401) {
-                window.location.href = '/login';
-            }
+            // --- *** 关键修正：移除局部的 401 检查 *** ---
+            // 全局拦截器现在会处理 401 错误和网路断线
+            // if (error.response && error.response.status === 401) {
+            //     window.location.href = '/login';
+            // }
+            // --- *** 修正结束 *** ---
+            
+            // 只处理非 401 和非网路错误（例如 404 找不到资料夹）
             itemGrid.innerHTML = '<p>加载内容失败。</p>';
             itemListBody.innerHTML = '<p>加载内容失败。</p>';
         }
