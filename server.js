@@ -651,11 +651,15 @@ async function handleFileStream(req, res, fileInfo) {
         }
     } else {
         res.setHeader('Content-Length', totalSize || -1);
-        res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
         
-        if (req.query.download) {
-            res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
-        }
+        // --- *** 关键修正：将预设改为 'attachment' 以强制下载 *** ---
+        // 原始设定为 'inline'，导致浏览器尝试开启文字档案而非下载。
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
+        
+        // 原始的 ?download=true 检查逻辑已不再必要
+        // if (req.query.download) {
+        //     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
+        // }
 
         if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
             const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
