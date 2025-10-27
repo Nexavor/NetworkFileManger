@@ -1111,7 +1111,7 @@ app.post('/api/user/change-password', requireLogin, async (req, res) => {
         await data.changeUserPassword(req.session.userId, hashedPassword);
         res.json({ success: true, message: '密码修改成功。' });
     } catch (error) {
-        res.status(5M00).json({ success: false, message: '修改密码失败。' });
+        res.status(500).json({ success: false, message: '修改密码失败。' });
     }
 });
 
@@ -1535,3 +1535,4 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
         res.status(500).json({ success: false, message: '删除设定失败' });
     }
 });
+
