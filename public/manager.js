@@ -10,7 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // 检查是否是 401 未授权错误
             if (error.response && error.response.status === 401) {
                 // 侦测到 401 错误（会话过期）
-                alert('您的登入会话已过期，将自动跳转到登入页面。');
+                // alert('您的登入会话已过期，将自动跳转到登入页面。'); // <-- 移除此提示框
                 window.location.href = '/login';
                 // 返回一个永远不会 resolved 的 Promise，以中断当前的 .then() 链
                 return new Promise(() => {});
@@ -20,7 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // error.response 不存在，但 error.request 存在，是标准网路错误的特征
             if (!error.response && error.request) {
                 // 侦测到网路错误（伺服器无回应）
-                alert('无法连接到伺服器，可能已经断线。将自动跳转到登入页面。');
+                // alert('无法连接到伺服器，可能已经断线。将自动跳转到登入页面。'); // <-- 移除此提示框
                 window.location.href = '/login';
                 // 返回一个永远不会 resolved 的 Promise
                 return new Promise(() => {});
@@ -1557,7 +1557,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const sourceFolder = itemsToMove.find(item => item.name === folderName && item.type === 'folder');
                         const destSubFolderData = destFolderMap.get(folderName);
                         if (sourceFolder && destSubFolderData) {
-                            // 修正：使用源子资料夹的加密ID获取其内容
+                            // 修正：使用源子资料夾的加密ID获取其内容
                             const sourceSubFolderContentsRes = await axios.get(`/api/folder/${sourceFolder.encrypted_id}`);
                             const subItemsToMove = [...sourceSubFolderContentsRes.data.contents.folders, ...sourceSubFolderContentsRes.data.contents.files].map(item => ({
                                 id: item.id,
