@@ -3,6 +3,7 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
+const cookieParser = require('cookie-parser'); // <--- 引入 cookie-parser
 const Busboy = require('busboy');
 const path = require('path');
 const axios = require('axios');
@@ -76,6 +77,84 @@ app.use(express.static('public'));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
+app.use(cookieParser()); // <--- 使用 cookie-parser
+
+// --- 新增：自动登入中间件 ---
+async function checkRememberMeCookie(req, res, next) {
+    // 1. 如果使用者已经透过 session 登入了，则无需执行任何操作
+    if (req.session.loggedIn) {
+        return next();
+    }
+    
+    // 2. 取得 "remember_me" cookie
+    const rememberToken = req.cookies.remember_me;
+    
+    if (rememberToken) {
+        try {
+            // 3. 尝试从数据库中寻找这个 token
+            const tokenData = await data.findAuthToken(rememberToken);
+            
+            // 4. 验证 Token 是否存在且未过期
+            if (tokenData && tokenData.expires_at > Date.now()) {
+                const user = { id: tokenData.user_id, username: tokenData.username, is_admin: tokenData.is_admin };
+                
+                // 5. 验证通过，为使用者建立新会话
+                req.session.loggedIn = true;
+                req.session.userId = user.id;
+                req.session.isAdmin = !!user.is_admin;
+                req.session.unlockedFolders = [];
+                
+                // 6. (安全强化) 移除旧 Token
+                await data.deleteAuthToken(rememberToken);
+                
+                // 7. (安全强化) 产生一个新 Token (滚动令牌机制)
+                const newRememberToken = crypto.randomBytes(64).toString('hex');
+                const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000; // 30 天
+                await data.createAuthToken(user.id, newRememberToken, expiresAt);
+                
+                // 8. 设定新的 "remember_me" cookie
+                res.cookie('remember_me', newRememberToken, {
+                    path: '/',
+                    httpOnly: true, // 仅伺服器可存取
+                    secure: req.protocol === 'https', // 仅在 HTTPS 下传输
+                    maxAge: 30 * 24 * 60 * 60 * 1000 // Cookie 效期 30 天
+                });
+                
+            } else if (tokenData) {
+                // 9. Token 存在但已过期，将其从数据库删除
+                await data.deleteAuthToken(rememberToken);
+                res.clearCookie('remember_me', { path: '/' });
+            } else {
+                // 10. Token 无效 (在数据库中找不到)，清除 cookie
+                res.clearCookie('remember_me', { path: '/' });
+            }
+        } catch (err) {
+            // 11. 处理查询数据库等错误
+            console.error('检查 "remember_me" cookie 时出错:', err);
+            res.clearCookie('remember_me', { path: '/' });
+        }
+    }
+    
+    // 12. 无论如何都继续下一个中间件
+    return next();
+}
+
+app.use(checkRememberMeCookie); // <--- 在所有路由之前应用此中间件
+
+// (推荐) 定时清理过期的 Token, 每天一次
+setInterval(async () => {
+    try {
+        const result = await data.deleteExpiredAuthTokens();
+        if (result && result.changes > 0) {
+             // console.log(`[Scheduler] 清理了 ${result.changes} 个过期的登入令牌。`);
+        }
+    } catch (e) {
+        console.error("定时清除过期 token 失败:", e);
+    }
+}, 1000 * 60 * 60 * 24); // 每天执行一次
+// --- 中间件结束 ---
+
+
 // --- *** 关键修正：处理 API 请求的会话过期 *** ---
 function requireLogin(req, res, next) {
   if (req.session.loggedIn) return next();
@@ -119,9 +198,32 @@ app.post('/login', async (req, res) => {
 
             // --- 新增：保持登陆逻辑 ---
             if (req.body.remember) {
-                // 勾选了 "保持登陆"，将会话 cookie 效期设为 30 天
-                const thirtyDays = 30 * 24 * 60 * 60 * 1000;
-                req.session.cookie.maxAge = thirtyDays;
+                // --- 关键修改：设定持久化 Token ---
+                const rememberToken = crypto.randomBytes(64).toString('hex');
+                const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000; // 30 天
+                
+                try {
+                    // 1. 将 Token 存入数据库
+                    await data.createAuthToken(user.id, rememberToken, expiresAt);
+                    
+                    // 2. 设定 "remember_me" cookie
+                    res.cookie('remember_me', rememberToken, {
+                        path: '/',
+                        httpOnly: true,
+                        secure: req.protocol === 'https', // 在生产环境中应为 true
+                        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 天
+                    });
+                    
+                    // 3. 设定会话 cookie 的 maxAge (与原逻辑保持一致)
+                    req.session.cookie.maxAge = 30 * 24 * 60 * 60 * 1000;
+                    
+                } catch (tokenError) {
+                    console.error("建立 auth token 失败:", tokenError);
+                    // 即使 token 失败，也继续登入（但不保持）
+                    req.session.cookie.expires = false;
+                    req.session.cookie.maxAge = null;
+                }
+                // --- 修改结束 ---
             } else {
                 // 未勾选，使用预设的会话 cookie (浏览器关闭时失效)
                 req.session.cookie.expires = false;
@@ -157,6 +259,17 @@ app.post('/register', async (req, res) => {
 });
 
 app.get('/logout', (req, res) => {
+    // --- 新增：登出时清除 remember_me token ---
+    const rememberToken = req.cookies.remember_me;
+    if (rememberToken) {
+        // 异步删除，无需等待
+        data.deleteAuthToken(rememberToken).catch(err => {
+            console.error("删除 auth token 失败:", err);
+        });
+    }
+    res.clearCookie('remember_me', { path: '/' });
+    // --- 新增结束 ---
+
     req.session.destroy(err => {
         if (err) {
             return res.redirect('/');
