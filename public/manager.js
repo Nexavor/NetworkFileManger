@@ -10,7 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // 检查是否是 401 未授权错误
             if (error.response && error.response.status === 401) {
                 // 侦测到 401 错误（会话过期）
-                // alert('您的登入会话已过期，将自动跳转到登入页面。'); // <-- 移除此提示框
+                // alert('您的登入会话已过期，将自动跳转到登入页面。'); // <-- 已移除提示框
                 window.location.href = '/login';
                 // 返回一个永远不会 resolved 的 Promise，以中断当前的 .then() 链
                 return new Promise(() => {});
@@ -20,7 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // error.response 不存在，但 error.request 存在，是标准网路错误的特征
             if (!error.response && error.request) {
                 // 侦测到网路错误（伺服器无回应）
-                // alert('无法连接到伺服器，可能已经断线。将自动跳转到登入页面。'); // <-- 移除此提示框
+                // alert('无法连接到伺服器，可能已经断线。将自动跳转到登入页面。'); // <-- 已移除提示框
                 window.location.href = '/login';
                 // 返回一个永远不会 resolved 的 Promise
                 return new Promise(() => {});
@@ -154,6 +154,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     
     let passwordPromise = {};
+    let heartbeatInterval = null; // 用于心跳的 interval ID
 
     const EDITABLE_EXTENSIONS = [
         '.txt', '.md', '.json', '.js', '.css', '.html', '.xml', '.yaml', '.yml', 
@@ -875,6 +876,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (logoutBtn) {
         logoutBtn.addEventListener('click', () => {
+            if (heartbeatInterval) clearInterval(heartbeatInterval); // 登出时停止心跳
             window.location.href = '/logout';
         });
     }
@@ -1715,4 +1717,30 @@ document.addEventListener('DOMContentLoaded', () => {
            window.location.href = '/';
         }
     }
+
+    // --- *** 新增：心跳侦测 *** ---
+    // 此功能用于主动检测伺服器是否断线或会话是否过期
+    // 它会触发上面定义的 axios 拦截器 (interceptor)
+    function startHeartbeat() {
+        if (heartbeatInterval) {
+            clearInterval(heartbeatInterval);
+        }
+        
+        // 每 10 秒钟检查一次连线
+        heartbeatInterval = setInterval(() => {
+            // 使用 { timeout: 5000 } 确保请求在 5 秒内未回应即被视为网路错误
+            axios.get('/api/heartbeat', { timeout: 5000 })
+                .catch(error => {
+                    // 错误（401 或网路断线）已由全局拦截器处理，
+                    // 这里我们只需要停止心跳以避免在登入页面上继续请求
+                    if (heartbeatInterval) {
+                        clearInterval(heartbeatInterval);
+                    }
+                });
+        }, 10000); // 10000 毫秒 = 10 秒
+    }
+
+    // 页面加载时启动心跳
+    startHeartbeat();
+    // --- *** 新增结束 *** ---
 });
