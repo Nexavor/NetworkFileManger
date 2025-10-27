@@ -1326,6 +1326,60 @@ async function resolvePathToFolderId(startFolderId, pathParts, userId) {
 }
 // --- *** 关键修正 结束 *** ---
 
+
+// --- 新增：管理 Auth Tokens 的函数 ---
+
+function createAuthToken(userId, token, expiresAt) {
+    return new Promise((resolve, reject) => {
+        const sql = `INSERT INTO auth_tokens (user_id, token, expires_at) VALUES (?, ?, ?)`;
+        db.run(sql, [userId, token, expiresAt], function(err) {
+            if (err) return reject(err);
+            resolve({ id: this.lastID });
+        });
+    });
+}
+
+function findAuthToken(token) {
+    return new Promise((resolve, reject) => {
+        // 直接关联 users 表以获取使用者信息
+        const sql = `SELECT t.id, t.user_id, t.expires_at, u.username, u.is_admin 
+                     FROM auth_tokens t
+                     JOIN users u ON t.user_id = u.id
+                     WHERE t.token = ?`;
+        db.get(sql, [token], (err, row) => {
+            if (err) return reject(err);
+            resolve(row);
+        });
+    });
+}
+
+function deleteAuthToken(token) {
+    return new Promise((resolve, reject) => {
+        const sql = `DELETE FROM auth_tokens WHERE token = ?`;
+        db.run(sql, [token], function(err) {
+            if (err) return reject(err);
+            resolve({ changes: this.changes });
+        });
+    });
+}
+
+// (可选，但推荐) 新增一个函数来清除所有过期的令牌
+function deleteExpiredAuthTokens() {
+    return new Promise((resolve, reject) => {
+        const now = Date.now();
+        const sql = `DELETE FROM auth_tokens WHERE expires_at <= ?`;
+        db.run(sql, [now], function(err) {
+            if (err) {
+                // console.error("清除过期 token 时出错:", err);
+                return reject(err);
+            }
+            resolve({ changes: this.changes });
+        });
+    });
+}
+// --- 新增结束 ---
+
+
 module.exports = {
     createUser,
     findUserByName,
@@ -1381,4 +1435,9 @@ module.exports = {
     verifyFolderPassword,
     isFileAccessible,
     findFolderBySharePath,
+    // --- 新增 exports ---
+    createAuthToken,
+    findAuthToken,
+    deleteAuthToken,
+    deleteExpiredAuthTokens,
 };
