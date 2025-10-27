@@ -49,7 +49,7 @@ async function cleanupTempDir() {
 }
 cleanupTempDir();
 
-const PORT = process.env.PORT || 8101;
+const PORT = process.env.PORT || 8100;
 
 app.use(session({
   secret: process.env.SESSION_SECRET || 'your-strong-random-secret-here-please-change',
@@ -1547,4 +1547,5 @@ app.get('/api/heartbeat', requireLogin, (req, res) => {
     res.json({ success: true, timestamp: Date.now() });
 });
 // --- *** 新增结束 *** ---
+
 
