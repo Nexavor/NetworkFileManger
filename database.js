@@ -52,7 +52,7 @@ function createDependentTables() {
                 const hasSharePassword = columns.some(col => col.name === 'share_password');
                 if (!hasSharePassword) {
                     db.run("ALTER TABLE folders ADD COLUMN share_password TEXT", (alterErr) => {
-                        if (alterErr) { /* console.error("為 'folders' 表新增 'share_password' 失敗:", alterErr.message); */ return; }
+                        if (alterErr) { /* console.error("為 'folders' 表新增 'share_password' 失败:", alterErr.message); */ return; }
                         createFilesTable();
                     });
                 } else {
@@ -91,15 +91,33 @@ function createFilesTable() {
                 if (!hasSharePassword) {
                     db.run("ALTER TABLE files ADD COLUMN share_password TEXT", (alterErr) => {
                         if (alterErr) { /* console.error("為 'files' 表新增 'share_password' 失敗:", alterErr.message); */ return; }
-                        checkAndCreateAdmin();
+                        // 修改：指向新的函数
+                        createAuthTokenTable();
                     });
                 } else {
-                    checkAndCreateAdmin();
+                    // 修改：指向新的函数
+                    createAuthTokenTable();
                 }
             });
         });
     });
 }
+
+// --- 新增：建立 auth_tokens 表 ---
+function createAuthTokenTable() {
+    db.run(`CREATE TABLE IF NOT EXISTS auth_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        token TEXT NOT NULL UNIQUE,
+        expires_at INTEGER NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    )`, (err) => {
+        if (err) { /* console.error("建立 'auth_tokens' 表失败:", err.message); */ return; }
+        // 将 checkAndCreateAdmin 移到这里，确保它是最后执行的
+        checkAndCreateAdmin();
+    });
+}
+// --- 新增结束 ---
 
 function checkAndCreateAdmin() {
     db.get("SELECT * FROM users WHERE is_admin = 1", (err, admin) => {
