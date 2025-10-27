@@ -1100,7 +1100,7 @@ app.post('/api/user/change-password', requireLogin, async (req, res) => {
     try {
         const user = await data.findUserById(req.session.userId);
         if (!user) {
-            return res.status(4404).json({ success: false, message: '找不到使用者。' });
+            return res.status(404).json({ success: false, message: '找不到使用者。' });
         }
         const isMatch = await bcrypt.compare(oldPassword, user.password);
         if (!isMatch) {
@@ -1111,6 +1111,7 @@ app.post('/api/user/change-password', requireLogin, async (req, res) => {
         await data.changeUserPassword(req.session.userId, hashedPassword);
         res.json({ success: true, message: '密码修改成功。' });
     } catch (error) {
+        // --- *** 程式码修正： 5M00 -> 500 *** ---
         res.status(500).json({ success: false, message: '修改密码失败。' });
     }
 });
@@ -1383,7 +1384,7 @@ app.get('/share/thumbnail/:folderToken/:fileId', shareSession, async (req, res) 
 app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) => {
     try {
         const { folderToken, fileId } = req.params;
-        const rootFolder = await data.getFolderByShareToken(folderToken);
+        const rootFolder = await data.getFolderByShareToken(token);
         if (!rootFolder) {
             return res.status(404).send('分享链接无效或已过期');
         }
@@ -1423,6 +1424,7 @@ app.post('/api/user/change-password', requireLogin, async (req, res) => {
         await data.changeUserPassword(req.session.userId, hashedPassword);
         res.json({ success: true, message: '密码修改成功。' });
     } catch (error) {
+        // --- *** 程式码修正： 5M00 -> 500 *** ---
         res.status(500).json({ success: false, message: '修改密码失败。' });
     }
 });
@@ -1536,3 +1538,12 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
     }
 });
 
+// --- *** 新增：心跳检测路由 *** ---
+// 此路由受 requireLogin 保护。
+// 1. 如果伺服器断线，前端的 axios 拦截器会捕获网路错误。
+// 2. 如果会话过期，伺服器会回应 401，前端拦截器会捕获此错误。
+// 两种情况都会触发自动跳转到 /login。
+app.get('/api/heartbeat', requireLogin, (req, res) => {
+    res.json({ success: true, timestamp: Date.now() });
+});
+// --- *** 新增结束 *** ---
