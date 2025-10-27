@@ -55,7 +55,7 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'your-strong-random-secret-here-please-change',
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }
+  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 } // 注意：此处的 maxAge 将被 /login 路由中的逻辑覆盖
 }));
 
 // --- *** 关键修正 1: 修复会话持久化问题 *** ---
@@ -107,6 +107,7 @@ app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views/login.h
 app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views/register.html')));
 app.get('/editor', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/editor.html')));
 
+// --- *** 伺服器端修改：/login 路由 *** ---
 app.post('/login', async (req, res) => {
     try {
         const user = await data.findUserByName(req.body.username);
@@ -115,6 +116,19 @@ app.post('/login', async (req, res) => {
             req.session.userId = user.id;
             req.session.isAdmin = !!user.is_admin;
             req.session.unlockedFolders = [];
+
+            // --- 新增：保持登陆逻辑 ---
+            if (req.body.remember) {
+                // 勾选了 "保持登陆"，将会话 cookie 效期设为 30 天
+                const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+                req.session.cookie.maxAge = thirtyDays;
+            } else {
+                // 未勾选，使用预设的会话 cookie (浏览器关闭时失效)
+                req.session.cookie.expires = false;
+                req.session.cookie.maxAge = null;
+            }
+            // --- 逻辑结束 ---
+
             res.redirect('/');
         } else {
             res.status(401).send('帐号或密码错误');
@@ -123,6 +137,7 @@ app.post('/login', async (req, res) => {
         res.status(500).send('登入时发生错误');
     }
 });
+// --- *** 修改结束 *** ---
 
 app.post('/register', async (req, res) => {
     const { username, password } = req.body;
