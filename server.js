@@ -107,7 +107,7 @@ app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views/login.h
 app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views/register.html')));
 app.get('/editor', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/editor.html')));
 
-// --- *** 伺服器端修改：/login 路由 *** ---
+// --- *** 伺服器端修改：/login 路由 (包含“保持登陆”功能) *** ---
 app.post('/login', async (req, res) => {
     try {
         const user = await data.findUserByName(req.body.username);
@@ -433,7 +433,7 @@ app.get('/api/folder/:encryptedId', requireLogin, async (req, res) => {
         const userId = req.session.userId;
         const folderDetails = await data.getFolderDetails(folderId, userId);
         if (!folderDetails) {
-            return res.status(404).json({ success: false, message: '找不到资料夹' });
+            return res.status(404).json({ success: false, message: '找不到资料夾' });
         }
         if (folderDetails.is_locked && !req.session.unlockedFolders.includes(folderId)) {
             const folderPath = await data.getFolderPath(folderId, userId);
@@ -921,6 +921,318 @@ app.post('/api/scan/webdav', requireAdmin, async (req, res) => {
         res.status(500).json({ success: false, message: errorMessage, log });
     }
 });
+
+app.get('/share/auth/:itemType/:token', shareSession, (req, res) => {
+    const { itemType, token } = req.params;
+    res.render('share-password', { itemType, token, error: req.query.error || null });
+});
+
+app.post('/share/auth/:itemType/:token', shareSession, async (req, res) => {
+    const { itemType, token } = req.params;
+    const { password } = req.body;
+    try {
+        let item;
+        if (itemType === 'file') item = await data.getFileByShareToken(token);
+        else item = await data.getFolderByShareToken(token);
+        if (!item) return res.redirect(`/share/auth/${itemType}/${token}?error=链接无效`);
+        const isMatch = await bcrypt.compare(password, item.share_password);
+        if (isMatch) {
+            if (!req.session.unlockedShares) req.session.unlockedShares = {};
+            req.session.unlockedShares[token] = true;
+            res.redirect(`/share/view/${itemType}/${token}`);
+        } else {
+            res.redirect(`/share/auth/${itemType}/${token}?error=密码错误`);
+        }
+    } catch (error) {
+        res.redirect(`/share/auth/${itemType}/${token}?error=验证时发生错误`);
+    }
+});
+
+app.get('/share/view/file/:token', shareSession, async (req, res) => {
+    try {
+        // --- *** 关键修正 2: 修复代理缓存问题 *** ---
+        // 强制设置 HTTP 响应头，禁止任何代理或浏览器缓存此页面
+        // 这是为了防止已解锁的分享页面被缓存，导致其他用户无需密码即可访问
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        
+        const token = req.params.token;
+        const fileInfo = await data.getFileByShareToken(token);
+        if (fileInfo) {
+            if (fileInfo.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[token])) {
+                return res.redirect(`/share/auth/file/${token}`);
+            }
+            const downloadUrl = `/share/download/file/${token}`;
+            let textContent = null;
+            if (fileInfo.mimetype && fileInfo.mimetype.startsWith('text/')) {
+                const storage = storageManager.getStorage();
+                if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
+                    const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
+                     textContent = await new Promise((resolve, reject) => {
+                        let data = '';
+                        stream.on('data', chunk => data += chunk);
+                        stream.on('end', () => resolve(data));
+                        stream.on('error', err => reject(err));
+                    });
+                } else if (fileInfo.storage_type === 'telegram') {
+                    const link = await storage.getUrl(fileInfo.file_id);
+                    if (link) {
+                        const response = await axios.get(link, { responseType: 'text' });
+                        textContent = response.data;
+                    }
+                }
+            }
+            if (textContent !== null) {
+                res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                res.send(textContent);
+            } else {
+                res.render('share-view', { file: fileInfo, downloadUrl, textContent: null });
+            }
+        } else {
+            res.status(404).render('share-error', { message: '此分享连结无效或已过期。' });
+        }
+    } catch (error) { res.status(500).render('share-error', { message: '处理分享请求时发生错误。' }); }
+});
+
+app.get('/share/view/folder/:token/:path(*)?', shareSession, async (req, res) => {
+    try {
+        // --- *** 关键修正 2: 修复代理缓存问题 *** ---
+        // 强制设置 HTTP 响应头，禁止任何代理或浏览器缓存此页面
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+
+        const { token, path: requestedPath } = req.params;
+        const pathSegments = requestedPath ? requestedPath.split('/').filter(p => p) : [];
+        const rootFolder = await data.getFolderByShareToken(token);
+        if (rootFolder) {
+            if (rootFolder.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[token])) {
+                 return res.redirect(`/share/auth/folder/${token}`);
+            }
+            const folderInfo = await data.findFolderBySharePath(token, pathSegments);
+            if (folderInfo) {
+                const contents = await data.getFolderContents(folderInfo.id, folderInfo.user_id);
+                const breadcrumbPath = await data.getFolderPath(folderInfo.id, folderInfo.user_id);
+                const rootPathIndex = breadcrumbPath.findIndex(p => p.id === rootFolder.id);
+                const shareBreadcrumb = breadcrumbPath.slice(rootPathIndex).map((p, index, arr) => {
+                    const relativePath = arr.slice(1, index + 1).map(s => s.name).join('/');
+                    return { name: p.name, link: index < arr.length - 1 ? `/share/view/folder/${token}/${relativePath}` : null };
+                });
+                res.render('share-folder-view', { folder: folderInfo, contents, breadcrumb: shareBreadcrumb, token: token });
+            } else {
+                 res.status(404).render('share-error', { message: '路径不正确。' });
+            }
+        } else {
+            res.status(404).render('share-error', { message: '此分享连结无效或已过期。' });
+        }
+    } catch (error) {
+        res.status(500).render('share-error', { message: '处理分享请求时发生错误。' });
+    }
+});
+
+app.get('/share/download/file/:token', shareSession, async (req, res) => {
+    try {
+        const token = req.params.token;
+        const fileInfo = await data.getFileByShareToken(token);
+        if (!fileInfo) {
+             return res.status(404).send('文件信息未找到或分享链接已过期');
+        }
+        if (fileInfo.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[token])) {
+            return res.status(403).send('需要密码才能下载');
+        }
+        await handleFileStream(req, res, fileInfo);
+    } catch (error) { 
+        if (!res.headersSent) res.status(500).send('下载失败: ' + error.message);
+    }
+});
+
+app.get('/share/thumbnail/:folderToken/:fileId', shareSession, async (req, res) => {
+    try {
+        const { folderToken, fileId } = req.params;
+        const rootFolder = await data.getFolderByShareToken(folderToken);
+        if (!rootFolder || (rootFolder.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[folderToken]))) {
+            return res.status(403).send('权限不足');
+        }
+        const fileInfo = await data.findFileInSharedFolder(parseInt(fileId, 10), folderToken);
+        if (fileInfo && fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
+            const storage = storageManager.getStorage();
+            const link = await storage.getUrl(fileInfo.thumb_file_id);
+            if (link) return res.redirect(link);
+        }
+        const placeholder = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+        res.writeHead(200, { 'Content-Type': 'image/gif', 'Content-Length': placeholder.length });
+        res.end(placeholder);
+    } catch (error) {
+        res.status(500).send('获取缩图失败');
+    }
+});
+
+app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) => {
+    try {
+        const { folderToken, fileId } = req.params;
+        const rootFolder = await data.getFolderByShareToken(folderToken);
+        if (!rootFolder) {
+            return res.status(404).send('分享链接无效或已过期');
+        }
+        if (rootFolder.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[folderToken])) {
+            return res.status(403).send('需要密码才能下载');
+        }
+        const fileInfo = await data.findFileInSharedFolder(parseInt(fileId, 10), folderToken);
+        if (!fileInfo) {
+             return res.status(404).send('文件信息未找到或权限不足');
+        }
+        await handleFileStream(req, res, fileInfo);
+    } catch (error) {
+        if (!res.headersSent) res.status(500).send('下载失败: ' + error.message);
+    }
+});
+
+app.listen(PORT, () => {
+    console.log(`✅ 伺服器已在 http://localhost:${PORT} 上运行`);
+});
+
+app.post('/api/user/change-password', requireLogin, async (req, res) => {
+    const { oldPassword, newPassword } = req.body;
+    if (!oldPassword || !newPassword || newPassword.length < 4) {
+        return res.status(400).json({ success: false, message: '请提供旧密码和新密码，且新密码长度至少 4 个字符。' });
+    }
+    try {
+        const user = await data.findUserById(req.session.userId);
+        if (!user) {
+            return res.status(4404).json({ success: false, message: '找不到使用者。' });
+        }
+        const isMatch = await bcrypt.compare(oldPassword, user.password);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: '旧密码不正确。' });
+        }
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+        await data.changeUserPassword(req.session.userId, hashedPassword);
+        res.json({ success: true, message: '密码修改成功。' });
+    } catch (error) {
+        res.status(5M00).json({ success: false, message: '修改密码失败。' });
+    }
+});
+
+app.get('/api/admin/storage-mode', requireAdmin, (req, res) => {
+    res.json({ mode: storageManager.readConfig().storageMode });
+});
+
+app.post('/api/admin/storage-mode', requireAdmin, (req, res) => {
+    const { mode } = req.body;
+    if (storageManager.setStorageMode(mode)) {
+        res.json({ success: true, message: '设定已储存。' });
+    } else {
+        res.status(400).json({ success: false, message: '无效的模式' });
+    }
+});
+
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
+    try {
+        const users = await data.listNormalUsers();
+        res.json(users);
+    } catch (error) {
+        res.status(500).json({ success: false, message: '获取使用者列表失败。' });
+    }
+});
+
+app.get('/api/admin/all-users', requireAdmin, async (req, res) => {
+    try {
+        const users = await data.listAllUsers();
+        res.json(users);
+    } catch (error) {
+        res.status(500).json({ success: false, message: '获取所有使用者列表失败。' });
+    }
+});
+
+app.post('/api/admin/add-user', requireAdmin, async (req, res) => {
+    const { username, password } = req.body;
+    if (!username || !password || password.length < 4) {
+        return res.status(400).json({ success: false, message: '使用者名称和密码为必填项，且密码长度至少 4 个字符。' });
+    }
+    try {
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+        const newUser = await data.createUser(username, hashedPassword);
+        await data.createFolder('/', null, newUser.id);
+        await fsp.mkdir(path.join(__dirname, 'data', 'uploads', String(newUser.id)), { recursive: true });
+        res.json({ success: true, user: newUser });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '建立使用者失败，可能使用者名称已被使用。' });
+    }
+});
+
+app.post('/api/admin/change-password', requireAdmin, async (req, res) => {
+    const { userId, newPassword } = req.body;
+    if (!userId || !newPassword || newPassword.length < 4) {
+        return res.status(400).json({ success: false, message: '使用者 ID 和新密码为必填项，且密码长度至少 4 个字符。' });
+    }
+    try {
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+        await data.changeUserPassword(userId, hashedPassword);
+        res.json({ success: true, message: '密码修改成功。' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '修改密码失败。' });
+    }
+});
+
+app.post('/api/admin/delete-user', requireAdmin, async (req, res) => {
+    const { userId } = req.body;
+    if (!userId) {
+        return res.status(400).json({ success: false, message: '缺少使用者 ID。' });
+    }
+    try {
+        await data.deleteUser(userId);
+        res.json({ success: true, message: '使用者已删除。' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '删除使用者失败。' });
+    }
+});
+
+app.get('/api/admin/webdav', requireAdmin, (req, res) => {
+    const config = storageManager.readConfig();
+    const webdavConfig = config.webdav || {};
+    res.json(webdavConfig.url ? [{ id: 1, ...webdavConfig }] : []);
+});
+
+app.post('/api/admin/webdav', requireAdmin, (req, res) => {
+    const { url, username, password } = req.body;
+    if (!url || !username) {
+        return res.status(400).json({ success: false, message: '缺少必要参数' });
+    }
+    const config = storageManager.readConfig();
+    config.webdav = { url, username };
+    if (password) {
+        config.webdav.password = password;
+    }
+    if (storageManager.writeConfig(config)) {
+        res.json({ success: true, message: 'WebDAV 设定已储存' });
+    } else {
+        res.status(500).json({ success: false, message: '写入设定失败' });
+    }
+});
+
+app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
+    const config = storageManager.readConfig();
+    config.webdav = {};
+    if (storageManager.writeConfig(config)) {
+        res.json({ success: true, message: 'WebDAV 设定已删除' });
+    } else {
+        res.status(500).json({ success: false, message: '删除设定失败' });
+    }
+});
+
+// --- *** 新增：心跳检测路由 *** ---
+// 此路由受 requireLogin 保护。
+// 1. 如果伺服器断线，前端的 axios 拦截器会捕获网路错误。
+// 2. 如果会话过期，伺服器会回应 401，前端拦截器会捕获此错误。
+// 两种情况都会触发自动跳转到 /login。
+app.get('/api/heartbeat', requireLogin, (req, res) => {
+    res.json({ success: true, timestamp: Date.now() });
+});
+// --- *** 新增结束 *** ---
 
 app.get('/share/auth/:itemType/:token', shareSession, (req, res) => {
     const { itemType, token } = req.params;
