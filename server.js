@@ -74,8 +74,8 @@ app.set('trust proxy', 1);
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
+app.use(express.urlencoded({ extended: true, limit: '50mb' })); // <--- 修改：增加请求体大小限制
+app.use(express.json({ limit: '50mb' })); // <--- 修改：增加请求体大小限制
 
 app.use(cookieParser()); // <--- 使用 cookie-parser
 
@@ -546,7 +546,7 @@ app.get('/api/folder/:encryptedId', requireLogin, async (req, res) => {
         const userId = req.session.userId;
         const folderDetails = await data.getFolderDetails(folderId, userId);
         if (!folderDetails) {
-            return res.status(404).json({ success: false, message: '找不到资料夹' });
+            return res.status(404).json({ success: false, message: '找不到资料夾' });
         }
         if (folderDetails.is_locked && !req.session.unlockedFolders.includes(folderId)) {
             const folderPath = await data.getFolderPath(folderId, userId);
