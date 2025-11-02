@@ -28,6 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 const icon = item.type === 'folder' ? 'fa-folder' : 'fa-file';
                 
+                // --- 修改开始: 在 "操作" 栏中添加 "定位" 按钮 ---
                 row.innerHTML = `
                     <td class="file-name" title="${item.name}"><i class="fas ${icon}" style="margin-right: 8px;"></i>${item.name}</td>
                     <td>
@@ -37,13 +38,20 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>
                     </td>
                     <td>${expires}</td>
-                    <td>
-                        <button class="cancel-btn" title="取消分享"><i class="fas fa-times"></i> 取消</button>
+                    <td class="actions">
+                        <button class="locate-btn" title="定位文件"><i class="fas fa-search-location"></i></button>
+                        <button class="cancel-btn" title="取消分享"><i class="fas fa-times"></i></button>
                     </td>
                 `;
+                // --- 修改结束 ---
                 tableBody.appendChild(row);
             });
         } catch (error) {
+            // --- 增加会话超时处理 ---
+            if (error.response && error.response.status === 401) {
+                window.location.href = '/login';
+                return;
+            }
             loadingMessage.textContent = '加载失败，请稍后重试。';
         }
     };
@@ -51,6 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
     tableBody.addEventListener('click', async (e) => {
         const copyBtn = e.target.closest('.copy-btn');
         const cancelBtn = e.target.closest('.cancel-btn');
+        const locateBtn = e.target.closest('.locate-btn'); // --- 新增 ---
 
         if (copyBtn) {
             const input = copyBtn.previousElementSibling;
@@ -75,6 +84,29 @@ document.addEventListener('DOMContentLoaded', () => {
                 alert('取消分享失败，请重试。');
             }
         }
+        
+        // --- 新增： “定位”按钮的事件处理 ---
+        if (locateBtn) {
+            const row = locateBtn.closest('tr');
+            const itemId = row.dataset.itemId;
+            const itemType = row.dataset.itemType;
+
+            try {
+                const res = await axios.get(`/api/locate-item?id=${itemId}&type=${itemType}`);
+                if (res.data.success && res.data.encryptedFolderId) {
+                    window.location.href = `/view/${res.data.encryptedFolderId}`;
+                } else {
+                    alert('找不到文件位置：' + (res.data.message || '无法定位此文件。'));
+                }
+            } catch (error) {
+                if (error.response && error.response.status === 404) {
+                    alert('找不到文件位置：该文件或其所在的文件夹可能已被移动或删除。');
+                } else {
+                    alert('定位时发生错误，请重试。');
+                }
+            }
+        }
+        // --- 事件处理结束 ---
     });
 
     loadSharedFiles();
