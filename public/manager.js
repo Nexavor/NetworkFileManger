@@ -76,6 +76,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const createFolderBtn = document.getElementById('createFolderBtn');
     const searchForm = document.getElementById('searchForm');
     const searchInput = document.getElementById('searchInput');
+    const openBtn = document.getElementById('openBtn'); // <-- 新增
     const previewBtn = document.getElementById('previewBtn');
     const shareBtn = document.getElementById('shareBtn');
     const renameBtn = document.getElementById('renameBtn');
@@ -575,7 +576,7 @@ document.addEventListener('DOMContentLoaded', () => {
         contextMenuSeparatorTop.style.display = hasSelection ? 'block' : 'none';
     
         const generalButtons = [createFolderBtn, textEditBtn];
-        const itemSpecificButtons = [previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1, lockBtn];
+        const itemSpecificButtons = [openBtn, previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1, lockBtn]; // <-- openBtn 已添加
     
         if (isMultiSelectMode) {
             multiSelectToggleBtn.innerHTML = '<i class="fas fa-times"></i> <span class="button-text">退出多选模式</span>';
@@ -604,6 +605,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 return itemEl && itemEl.dataset.type === 'folder' && (itemEl.dataset.isLocked === 'true' || itemEl.dataset.isLocked === '1');
             });
             const isSingleLockedFolder = singleSelection && firstSelectedItem.type === 'folder' && containsLockedFolder;
+            
+            // --- 新增： “打开”按钮的逻辑 ---
+            if(singleSelection){
+                if(firstSelectedItem.type === 'folder'){
+                    openBtn.innerHTML = '<i class="fas fa-folder-open"></i> <span class="button-text">打开</span>';
+                } else {
+                    openBtn.innerHTML = '<i class="fas fa-external-link-alt"></i> <span class="button-text">打开</span>';
+                }
+            }
+            openBtn.disabled = !singleSelection;
+            // --- 逻辑结束 ---
 
             previewBtn.disabled = !singleSelection || firstSelectedItem.type === 'folder';
             renameBtn.disabled = !singleSelection;
@@ -1365,6 +1377,26 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+    // --- 新增： “打开”按钮的点击事件处理 ---
+    if (openBtn) {
+        openBtn.addEventListener('click', () => {
+            if (openBtn.disabled) return;
+            contextMenu.style.display = 'none';
+            const [id, item] = selectedItems.entries().next().value;
+            
+            if (item.type === 'folder') {
+                const targetElement = document.querySelector(`.item-card[data-id="${id}"], .list-item[data-id="${id}"]`);
+                if (targetElement) {
+                    handleItemDblClick({ target: targetElement });
+                }
+            } else { // 'file'
+                previewBtn.click();
+            }
+        });
+    }
+    // --- 事件处理结束 ---
+
     if (renameBtn) {
         renameBtn.addEventListener('click', async () => {
              if (renameBtn.disabled) return;
