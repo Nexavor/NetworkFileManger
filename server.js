@@ -949,91 +949,182 @@ app.post('/api/cancel-share', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: '取消分享失败' }); }
 });
 
-app.post('/api/scan/local', requireAdmin, async (req, res) => {
-    const { userId } = req.body;
-    const log = [];
+// --- 新增： “定位文件” 的 API 路由 ---
+app.get('/api/locate-item', requireLogin, async (req, res) => {
     try {
-        if (!userId) throw new Error('未提供使用者 ID');
-        const userUploadDir = path.join(__dirname, 'data', 'uploads', String(userId));
-        if (!fs.existsSync(userUploadDir)) {
-            log.push({ message: `使用者 ${userId} 的本地储存目录不存在，跳过。`, type: 'warn' });
-            return res.json({ success: true, log });
+        const { id, type } = req.query;
+        const userId = req.session.userId;
+
+        if (!id || !type) {
+            return res.status(400).json({ success: false, message: '缺少项目 ID 或类型' });
         }
-        const rootFolder = await data.getRootFolder(userId);
-        if (!rootFolder) {
-            throw new Error(`找不到使用者 ${userId} 的根目录`);
-        }
-        async function scanDirectory(dir) {
-            const entries = await fsp.readdir(dir, { withFileTypes: true });
-            for (const entry of entries) {
-                const fullPath = path.join(dir, entry.name);
-                const relativePath = path.relative(userUploadDir, fullPath).replace(/\\/g, '/');
-                const fileId = relativePath;
-                if (entry.isDirectory()) {
-                    await scanDirectory(fullPath);
-                } else {
-                    const existing = await data.findFileByFileId(fileId, userId);
-                    if (existing) {
-                        log.push({ message: `已存在: ${relativePath}，跳过。`, type: 'info' });
-                    } else {
-                        const stats = await fsp.stat(fullPath);
-                        const folderPath = path.dirname(relativePath).replace(/\\/g, '/');
-                        const folderId = await data.findOrCreateFolderByPath(folderPath, userId);
-                        const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
-                        await data.addFile({ message_id: messageId, fileName: entry.name, mimetype: 'application/octet-stream', size: stats.size, file_id: fileId, date: stats.mtime.getTime() }, folderId, userId, 'local');
-                        log.push({ message: `已汇入: ${relativePath}`, type: 'success' });
-                    }
-                }
+
+        let folderId;
+        if (type === 'folder') {
+            // 对于资料夹，我们想定位到它的 *父* 资料夹
+            const folder = await data.getFolderDetails(id, userId);
+            if (!folder) {
+                 return res.status(404).json({ success: false, message: '找不到资料夹' });
             }
+            if (folder.parent_id === null) {
+                // 已经是根目录，就定位到它自己
+                folderId = folder.id;
+            } else {
+                folderId = folder.parent_id;
+            }
+        } else if (type === 'file') {
+            // 对于档案，我们定位到它所在的资料夾
+            const [file] = await data.getFilesByIds([id], userId);
+            if (!file) {
+                return res.status(404).json({ success: false, message: '找不到档案' });
+            }
+            folderId = file.folder_id;
+        } else {
+            return res.status(400).json({ success: false, message: '无效的项目类型' });
         }
-        await scanDirectory(userUploadDir);
-        res.json({ success: true, log });
+        
+        res.json({ success: true, encryptedFolderId: encrypt(folderId) });
+
     } catch (error) {
-        log.push({ message: `扫描本地文件时出错: ${error.message}`, type: 'error' });
-        res.status(500).json({ success: false, message: error.message, log });
+        res.status(500).json({ success: false, message: '定位失败：' + error.message });
+    }
+});
+// --- 新增路由结束 ---
+
+app.post('/api/user/change-password', requireLogin, async (req, res) => {
+    const { oldPassword, newPassword } = req.body;
+    if (!oldPassword || !newPassword || newPassword.length < 4) {
+        return res.status(400).json({ success: false, message: '请提供旧密码和新密码，且新密码长度至少 4 个字符。' });
+    }
+    try {
+        const user = await data.findUserById(req.session.userId);
+        if (!user) {
+            return res.status(404).json({ success: false, message: '找不到使用者。' });
+        }
+        const isMatch = await bcrypt.compare(oldPassword, user.password);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: '旧密码不正确。' });
+        }
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+        await data.changeUserPassword(req.session.userId, hashedPassword);
+        res.json({ success: true, message: '密码修改成功。' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '修改密码失败。' });
     }
 });
 
-app.post('/api/scan/webdav', requireAdmin, async (req, res) => {
-    const { userId } = req.body;
-    const log = [];
-    try {
-        if (!userId) throw new Error('未提供使用者 ID');
-        const { createClient } = require('webdav');
-        const config = storageManager.readConfig();
-        if (!config.webdav || !config.webdav.url) {
-            throw new Error('WebDAV 设定不完整');
-        }
-        const client = createClient(config.webdav.url, { username: config.webdav.username, password: config.webdav.password });
-        async function scanWebdavDirectory(remotePath) {
-            const contents = await client.getDirectoryContents(remotePath, { deep: true });
-            for (const item of contents) {
-                if (item.type === 'file') {
-                    const existing = await data.findFileByFileId(item.filename, userId);
-                     if (existing) {
-                        log.push({ message: `已存在: ${item.filename}，跳过。`, type: 'info' });
-                    } else {
-                        const folderPath = path.dirname(item.filename).replace(/\\/g, '/');
-                        const folderId = await data.findOrCreateFolderByPath(folderPath, userId);
-                        const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
-                        await data.addFile({ message_id: messageId, fileName: item.basename, mimetype: item.mime || 'application/octet-stream', size: item.size, file_id: item.filename, date: new Date(item.lastmod).getTime() }, folderId, userId, 'webdav');
-                        log.push({ message: `已汇入: ${item.filename}`, type: 'success' });
-                    }
-                }
-            }
-        }
-        await scanWebdavDirectory('/');
-        res.json({ success: true, log });
-    } catch (error) {
-        let errorMessage = error.message;
-        if (error.response && error.response.status === 403) {
-            errorMessage = '存取被拒绝 (403 Forbidden)。这通常意味着您的 WebDAV 伺服器不允许列出目录内容。请检查您帐号的权限，确保它有读取和浏览目录的权限。';
-            log.push({ message: '扫描失败：无法列出远端目录内容。', type: 'error' });
-        }
-        log.push({ message: `详细错误: ${errorMessage}`, type: 'error' });
-        res.status(500).json({ success: false, message: errorMessage, log });
+app.get('/api/admin/storage-mode', requireAdmin, (req, res) => {
+    res.json({ mode: storageManager.readConfig().storageMode });
+});
+
+app.post('/api/admin/storage-mode', requireAdmin, (req, res) => {
+    const { mode } = req.body;
+    if (storageManager.setStorageMode(mode)) {
+        res.json({ success: true, message: '设定已储存。' });
+    } else {
+        res.status(400).json({ success: false, message: '无效的模式' });
     }
 });
+
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
+    try {
+        const users = await data.listNormalUsers();
+        res.json(users);
+    } catch (error) {
+        res.status(500).json({ success: false, message: '获取使用者列表失败。' });
+    }
+});
+
+app.get('/api/admin/all-users', requireAdmin, async (req, res) => {
+    try {
+        const users = await data.listAllUsers();
+        res.json(users);
+    } catch (error) {
+        res.status(500).json({ success: false, message: '获取所有使用者列表失败。' });
+    }
+});
+
+app.post('/api/admin/add-user', requireAdmin, async (req, res) => {
+    const { username, password } = req.body;
+    if (!username || !password || password.length < 4) {
+        return res.status(400).json({ success: false, message: '使用者名称和密码为必填项，且密码长度至少 4 个字符。' });
+    }
+    try {
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+        const newUser = await data.createUser(username, hashedPassword);
+        await data.createFolder('/', null, newUser.id);
+        await fsp.mkdir(path.join(__dirname, 'data', 'uploads', String(newUser.id)), { recursive: true });
+        res.json({ success: true, user: newUser });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '建立使用者失败，可能使用者名称已被使用。' });
+    }
+});
+
+app.post('/api/admin/change-password', requireAdmin, async (req, res) => {
+    const { userId, newPassword } = req.body;
+    if (!userId || !newPassword || newPassword.length < 4) {
+        return res.status(400).json({ success: false, message: '使用者 ID 和新密码为必填项，且密码长度至少 4 个字符。' });
+    }
+    try {
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+        await data.changeUserPassword(userId, hashedPassword);
+        res.json({ success: true, message: '密码修改成功。' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '修改密码失败。' });
+    }
+});
+
+app.post('/api/admin/delete-user', requireAdmin, async (req, res) => {
+    const { userId } = req.body;
+    if (!userId) {
+        return res.status(400).json({ success: false, message: '缺少使用者 ID。' });
+    }
+    try {
+        await data.deleteUser(userId);
+        res.json({ success: true, message: '使用者已删除。' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '删除使用者失败。' });
+    }
+});
+
+app.get('/api/admin/webdav', requireAdmin, (req, res) => {
+    const config = storageManager.readConfig();
+    const webdavConfig = config.webdav || {};
+    res.json(webdavConfig.url ? [{ id: 1, ...webdavConfig }] : []);
+});
+
+app.post('/api/admin/webdav', requireAdmin, (req, res) => {
+    const { url, username, password } = req.body;
+    if (!url || !username) {
+        return res.status(400).json({ success: false, message: '缺少必要参数' });
+    }
+    const config = storageManager.readConfig();
+    config.webdav = { url, username };
+    if (password) {
+        config.webdav.password = password;
+    }
+    if (storageManager.writeConfig(config)) {
+        res.json({ success: true, message: 'WebDAV 设定已储存' });
+    } else {
+        res.status(500).json({ success: false, message: '写入设定失败' });
+    }
+});
+
+app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
+    const config = storageManager.readConfig();
+    config.webdav = {};
+    if (storageManager.writeConfig(config)) {
+        res.json({ success: true, message: 'WebDAV 设定已删除' });
+    } else {
+        res.status(500).json({ success: false, message: '删除设定失败' });
+    }
+});
+
+// ... (省略 /share/auth, /share/view/file, /share/view/folder, /share/download 等路由) ...
+// (此处省略的代码与您提供的 `server.js` 档案中从 818 行到 1032 行的代码相同)
 
 app.get('/share/auth/:itemType/:token', shareSession, (req, res) => {
     const { itemType, token } = req.params;
@@ -1203,136 +1294,4 @@ app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) =
 
 app.listen(PORT, () => {
     console.log(`✅ 伺服器已在 http://localhost:${PORT} 上运行`);
-});
-
-app.post('/api/user/change-password', requireLogin, async (req, res) => {
-    const { oldPassword, newPassword } = req.body;
-    if (!oldPassword || !newPassword || newPassword.length < 4) {
-        return res.status(400).json({ success: false, message: '请提供旧密码和新密码，且新密码长度至少 4 个字符。' });
-    }
-    try {
-        const user = await data.findUserById(req.session.userId);
-        if (!user) {
-            return res.status(404).json({ success: false, message: '找不到使用者。' });
-        }
-        const isMatch = await bcrypt.compare(oldPassword, user.password);
-        if (!isMatch) {
-            return res.status(401).json({ success: false, message: '旧密码不正确。' });
-        }
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(newPassword, salt);
-        await data.changeUserPassword(req.session.userId, hashedPassword);
-        res.json({ success: true, message: '密码修改成功。' });
-    } catch (error) {
-        res.status(500).json({ success: false, message: '修改密码失败。' });
-    }
-});
-
-app.get('/api/admin/storage-mode', requireAdmin, (req, res) => {
-    res.json({ mode: storageManager.readConfig().storageMode });
-});
-
-app.post('/api/admin/storage-mode', requireAdmin, (req, res) => {
-    const { mode } = req.body;
-    if (storageManager.setStorageMode(mode)) {
-        res.json({ success: true, message: '设定已储存。' });
-    } else {
-        res.status(400).json({ success: false, message: '无效的模式' });
-    }
-});
-
-app.get('/api/admin/users', requireAdmin, async (req, res) => {
-    try {
-        const users = await data.listNormalUsers();
-        res.json(users);
-    } catch (error) {
-        res.status(500).json({ success: false, message: '获取使用者列表失败。' });
-    }
-});
-
-app.get('/api/admin/all-users', requireAdmin, async (req, res) => {
-    try {
-        const users = await data.listAllUsers();
-        res.json(users);
-    } catch (error) {
-        res.status(500).json({ success: false, message: '获取所有使用者列表失败。' });
-    }
-});
-
-app.post('/api/admin/add-user', requireAdmin, async (req, res) => {
-    const { username, password } = req.body;
-    if (!username || !password || password.length < 4) {
-        return res.status(400).json({ success: false, message: '使用者名称和密码为必填项，且密码长度至少 4 个字符。' });
-    }
-    try {
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-        const newUser = await data.createUser(username, hashedPassword);
-        await data.createFolder('/', null, newUser.id);
-        await fsp.mkdir(path.join(__dirname, 'data', 'uploads', String(newUser.id)), { recursive: true });
-        res.json({ success: true, user: newUser });
-    } catch (error) {
-        res.status(500).json({ success: false, message: '建立使用者失败，可能使用者名称已被使用。' });
-    }
-});
-
-app.post('/api/admin/change-password', requireAdmin, async (req, res) => {
-    const { userId, newPassword } = req.body;
-    if (!userId || !newPassword || newPassword.length < 4) {
-        return res.status(400).json({ success: false, message: '使用者 ID 和新密码为必填项，且密码长度至少 4 个字符。' });
-    }
-    try {
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(newPassword, salt);
-        await data.changeUserPassword(userId, hashedPassword);
-        res.json({ success: true, message: '密码修改成功。' });
-    } catch (error) {
-        res.status(500).json({ success: false, message: '修改密码失败。' });
-    }
-});
-
-app.post('/api/admin/delete-user', requireAdmin, async (req, res) => {
-    const { userId } = req.body;
-    if (!userId) {
-        return res.status(400).json({ success: false, message: '缺少使用者 ID。' });
-    }
-    try {
-        await data.deleteUser(userId);
-        res.json({ success: true, message: '使用者已删除。' });
-    } catch (error) {
-        res.status(500).json({ success: false, message: '删除使用者失败。' });
-    }
-});
-
-app.get('/api/admin/webdav', requireAdmin, (req, res) => {
-    const config = storageManager.readConfig();
-    const webdavConfig = config.webdav || {};
-    res.json(webdavConfig.url ? [{ id: 1, ...webdavConfig }] : []);
-});
-
-app.post('/api/admin/webdav', requireAdmin, (req, res) => {
-    const { url, username, password } = req.body;
-    if (!url || !username) {
-        return res.status(400).json({ success: false, message: '缺少必要参数' });
-    }
-    const config = storageManager.readConfig();
-    config.webdav = { url, username };
-    if (password) {
-        config.webdav.password = password;
-    }
-    if (storageManager.writeConfig(config)) {
-        res.json({ success: true, message: 'WebDAV 设定已储存' });
-    } else {
-        res.status(500).json({ success: false, message: '写入设定失败' });
-    }
-});
-
-app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
-    const config = storageManager.readConfig();
-    config.webdav = {};
-    if (storageManager.writeConfig(config)) {
-        res.json({ success: true, message: 'WebDAV 设定已删除' });
-    } else {
-        res.status(500).json({ success: false, message: '删除设定失败' });
-    }
 });
