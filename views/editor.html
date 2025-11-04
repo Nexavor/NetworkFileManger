@@ -143,10 +143,13 @@
                 if (mode === 'edit' && fileId) {
                     try {
                         const fileInfoRes = await axios.get(`/api/file-info/${fileId}`);
-                        const fileContentRes = await axios.get(`/file/content/${fileId}`);
+                        
+                        // --- 关键修正：强制指定回应类型为 'text' ---
+                        // 这样 axios 就不会自动将 JSON 字符串解析为 [object Object]
+                        const fileContentRes = await axios.get(`/file/content/${fileId}`, { responseType: 'text' });
                         
                         initialFileName = fileInfoRes.data.fileName;
-                        initialContent = fileContentRes.data;
+                        initialContent = fileContentRes.data; // 现在 initialContent 保证是字符串
 
                         fileNameInput.value = initialFileName;
                         editor.value = initialContent;
