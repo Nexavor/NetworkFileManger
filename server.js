@@ -394,13 +394,12 @@ app.post('/upload', requireLogin, (req, res) => {
 });
 
 app.post('/api/text-file', requireLogin, async (req, res) => {
-    // 关键修正：明确解析字串 ID
-    const { mode, fileId: fileIdStr, folderId: folderIdStr, fileName, content } = req.body;
+    const { mode, fileId, folderId, fileName, content } = req.body;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
 
     if (!fileName) {
-        return res.status(400).json({ success: false, message: '文件名无效' });
+        return res.status(400).json({ success: false, message: '档名无效' });
     }
 
     const tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.txt`);
@@ -408,27 +407,9 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
     try {
         await fsp.writeFile(tempFilePath, content, 'utf8');
         
-        if (mode === 'edit' && fileIdStr) {
-            // --- 关键修正：将 fileId 从字串转换回数字/BigInt ---
-            // 因为 fileId 可能是来自 Telegram 的普通数字，也可能是 local/webdav 的 BigInt
-            // 它们在 JSON 传输中都变成了字串。
-            let fileId;
-            try {
-                // 优先尝试解析为 BigInt
-                fileId = BigInt(fileIdStr);
-            } catch (e) {
-                // 如果失败（例如 Telegram 的 ID），则使用 parseInt
-                fileId = parseInt(fileIdStr, 10);
-                if (isNaN(fileId)) {
-                    return res.status(400).json({ success: false, message: '无效的 fileId 格式' });
-                }
-            }
-            // --- 修正结束 ---
-
-            const filesToUpdate = await data.getFilesByIds([fileId], userId); // 使用转换后的 fileId
+        if (mode === 'edit' && fileId) {
+            const filesToUpdate = await data.getFilesByIds([fileId], userId);
             if (filesToUpdate.length === 0) {
-                // 添加日志以帮助调试
-                console.error(`[server.js] 找不到档案! mode=edit, fileId (string)='${fileIdStr}', fileId (parsed)=${fileId}, userId=${userId}`);
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
             }
             const originalFile = filesToUpdate[0];
@@ -436,16 +417,14 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
             if (fileName !== originalFile.fileName) {
                 const conflict = await data.checkFullConflict(fileName, originalFile.folder_id, userId);
                 if (conflict) {
-                    return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
+                    return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
                 }
             }
 
             if (originalFile.storage_type === 'telegram') {
                 const fileStream = fs.createReadStream(tempFilePath);
-                // unifiedDelete 内部使用 message_id，它在 DB 中是正确类型
                 await data.unifiedDelete(originalFile.message_id, 'file', userId);
                 const result = await storage.upload(fileStream, fileName, 'text/plain', userId, originalFile.folder_id);
-                // 返回新的 fileId (可能是数字或字串，jsonReplacer 会处理)
                 return res.json({ success: true, fileId: result.fileId });
             } else {
                 const newRelativePath = path.posix.join(path.posix.dirname(originalFile.file_id), fileName);
@@ -465,21 +444,13 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                     }
                 }
                 const stats = await fsp.stat(tempFilePath);
-                // data.updateFile 也需要正确类型的 fileId
                 await data.updateFile(fileId, { fileName, size: stats.size, date: Date.now(), file_id: newRelativePath }, userId);
-                return res.json({ success: true, fileId: fileIdStr }); // 返回前端传来的原始字串 ID，保持一致性
+                return res.json({ success: true, fileId: fileId });
             }
-        } else if (mode === 'create' && folderIdStr) {
-            // 关键修正：同样解析 folderId
-            const folderId = parseInt(folderIdStr, 10);
-            if (isNaN(folderId)) {
-                 return res.status(400).json({ success: false, message: '无效的 folderId' });
-            }
-            // --- 修正结束 ---
-
+        } else if (mode === 'create' && folderId) {
             const conflict = await data.checkFullConflict(fileName, folderId, userId);
             if (conflict) {
-                return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
+                return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
             }
             const fileStream = fs.createReadStream(tempFilePath);
             const result = await storage.upload(fileStream, fileName, 'text/plain', userId, folderId);
@@ -488,7 +459,6 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
             return res.status(400).json({ success: false, message: '请求参数无效' });
         }
     } catch (error) {
-        console.error("[server.js] /api/text-file 错误:", error); // 添加更详细的日志
         res.status(500).json({ success: false, message: '伺服器内部错误: ' + error.message });
     } finally {
         if (fs.existsSync(tempFilePath)) {
@@ -498,19 +468,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
 });
 app.get('/api/file-info/:id', requireLogin, async (req, res) => {
     try {
-        // --- 关键修正：同 /api/text-file, 解析传入的 ID 字串 ---
-        let fileId;
-        const fileIdStr = req.params.id;
-        try {
-            fileId = BigInt(fileIdStr);
-        } catch (e) {
-            fileId = parseInt(fileIdStr, 10);
-            if (isNaN(fileId)) {
-                return res.status(400).json({ success: false, message: '无效的 fileId 格式' });
-            }
-        }
-        // --- 修正结束 ---
-
+        const fileId = parseInt(req.params.id, 10);
         const [fileInfo] = await data.getFilesByIds([fileId], req.session.userId);
         if (fileInfo) {
             res.json(fileInfo);
@@ -719,22 +677,12 @@ app.post('/api/move', requireLogin, async (req, res) => {
         const errors = [];
         for (const itemId of itemIds) {
             try {
-                // --- 关键修正：同 /api/text-file, 解析传入的 ID 字串 ---
-                let parsedItemId;
-                try {
-                    parsedItemId = BigInt(itemId);
-                } catch (e) {
-                    parsedItemId = parseInt(itemId, 10);
-                }
-                // --- 修正结束 ---
-
-                const items = await data.getItemsByIds([parsedItemId], userId);
+                const items = await data.getItemsByIds([itemId], userId);
                 if (items.length === 0) {
                     totalSkipped++;
                     continue;
                 }
                 const item = items[0];
-                // item.id 已经是正确的 (Big)Int 类型
                 const report = await data.moveItem(item.id, item.type, targetFolderId, userId, { resolutions });
                 totalMoved += report.moved;
                 totalSkipped += report.skipped;
@@ -763,18 +711,8 @@ app.post('/delete-multiple', requireLogin, async (req, res) => {
     const { messageIds = [], folderIds = [] } = req.body;
     const userId = req.session.userId;
     try {
-        // --- 关键修正：同 /api/move, 解析传入的 ID 字串 ---
-        for(const idStr of messageIds) {
-            let id;
-            try { id = BigInt(idStr); } catch (e) { id = parseInt(idStr, 10); }
-            await data.unifiedDelete(id, 'file', userId);
-        }
-        for(const idStr of folderIds) {
-            let id;
-            try { id = BigInt(idStr); } catch (e) { id = parseInt(idStr, 10); }
-            await data.unifiedDelete(id, 'folder', userId);
-        }
-        // --- 修正结束 ---
+        for(const id of messageIds) { await data.unifiedDelete(id, 'file', userId); }
+        for(const id of folderIds) { await data.unifiedDelete(id, 'folder', userId); }
         res.json({ success: true, message: '删除成功' });
     } catch (error) {
         res.status(500).json({ success: false, message: '删除失败: ' + error.message });
@@ -783,29 +721,16 @@ app.post('/delete-multiple', requireLogin, async (req, res) => {
 
 app.post('/rename', requireLogin, async (req, res) => {
     try {
-        const { id: idStr, newName, type } = req.body; // id 可能是字串
+        const { id, newName, type } = req.body;
         const userId = req.session.userId;
-        if (!idStr || !newName || !type) {
+        if (!id || !newName || !type) {
             return res.status(400).json({ success: false, message: '缺少必要参数。'});
         }
-        
-        // --- 关键修正：同 /api/move, 解析传入的 ID 字串 ---
-        let id;
-        try {
-            id = BigInt(idStr);
-        } catch (e) {
-            id = parseInt(idStr, 10);
-            if (isNaN(id)) {
-                 return res.status(400).json({ success: false, message: '无效的 ID 格式。'});
-            }
-        }
-        // --- 修正结束 ---
-
         let result;
         if (type === 'file') {
-            result = await data.renameFile(id, newName, userId);
+            result = await data.renameFile(parseInt(id, 10), newName, userId);
         } else if (type === 'folder') {
-            result = await data.renameFolder(id, newName, userId);
+            result = await data.renameFolder(parseInt(id, 10), newName, userId);
         } else {
             return res.status(400).json({ success: false, message: '无效的项目类型。'});
         }
@@ -817,19 +742,7 @@ app.post('/rename', requireLogin, async (req, res) => {
 
 app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     try {
-        // --- 关键修正：同 /api/text-file, 解析传入的 ID 字串 ---
-        let messageId;
-        const idStr = req.params.message_id;
-         try {
-            messageId = BigInt(idStr);
-        } catch (e) {
-            messageId = parseInt(idStr, 10);
-            if (isNaN(messageId)) {
-                return res.status(400).send('无效的 ID 格式');
-            }
-        }
-        // --- 修正结束 ---
-
+        const messageId = parseInt(req.params.message_id, 10);
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) {
             return res.status(403).send('权限不足');
@@ -908,19 +821,7 @@ async function handleFileStream(req, res, fileInfo) {
 
 app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
     try {
-        // --- 关键修正：同 /api/text-file, 解析传入的 ID 字串 ---
-        let messageId;
-        const idStr = req.params.message_id;
-         try {
-            messageId = BigInt(idStr);
-        } catch (e) {
-            messageId = parseInt(idStr, 10);
-            if (isNaN(messageId)) {
-                return res.status(400).send('无效的 ID 格式');
-            }
-        }
-        // --- 修正结束 ---
-
+        const messageId = parseInt(req.params.message_id, 10);
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) return res.status(403).send('权限不足');
         
@@ -935,19 +836,7 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
 
 app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     try {
-        // --- 关键修正：同 /api/text-file, 解析传入的 ID 字串 ---
-        let messageId;
-        const idStr = req.params.message_id;
-         try {
-            messageId = BigInt(idStr);
-        } catch (e) {
-            messageId = parseInt(idStr, 10);
-            if (isNaN(messageId)) {
-                return res.status(400).send('无效的 ID 格式');
-            }
-        }
-        // --- 修正结束 ---
-
+        const messageId = parseInt(req.params.message_id, 10);
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) {
             return res.status(403).send('权限不足');
@@ -981,34 +870,17 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
         if (messageIds.length === 0 && folderIds.length === 0) {
             return res.status(400).send('未提供任何项目 ID');
         }
-
-        // --- 关键修正：解析传入的 ID 列表 (字串 -> 数字/BigInt) ---
-        let parsedMessageIds = [];
-        try {
-            parsedMessageIds = messageIds.map(idStr => {
-                try { return BigInt(idStr); } catch (e) { return parseInt(idStr, 10); }
-            });
-        } catch (e) {}
-        
-        let parsedFolderIds = [];
-         try {
-            parsedFolderIds = folderIds.map(idStr => parseInt(idStr, 10));
-        } catch (e) {}
-        // --- 修正结束 ---
-
         let filesToArchive = [];
-        if (parsedMessageIds.length > 0) {
-            const directFiles = await data.getFilesByIds(parsedMessageIds, userId);
+        if (messageIds.length > 0) {
+            const directFiles = await data.getFilesByIds(messageIds, userId);
             filesToArchive.push(...directFiles.map(f => ({ ...f, path: f.fileName })));
         }
-        for (const folderId of parsedFolderIds) {
-            if (isNaN(folderId)) continue;
+        for (const folderId of folderIds) {
             const folderInfo = (await data.getFolderPath(folderId, userId)).pop();
             const folderName = folderInfo ? folderInfo.name : 'folder';
             const nestedFiles = await data.getFilesRecursive(folderId, userId, folderName);
             filesToArchive.push(...nestedFiles);
         }
-
         if (filesToArchive.length === 0) {
             return res.status(404).send('找不到任何可下载的档案');
         }
@@ -1035,8 +907,8 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
 
 app.post('/share', requireLogin, async (req, res) => {
     try {
-        const { itemId: itemIdStr, itemType, expiresIn, password, customExpiresAt } = req.body; // itemId 可能是字串
-        if (!itemIdStr || !itemType || !expiresIn) {
+        const { itemId, itemType, expiresIn, password, customExpiresAt } = req.body;
+        if (!itemId || !itemType || !expiresIn) {
             return res.status(400).json({ success: false, message: '缺少必要参数。' });
         }
         if (expiresIn === 'custom') {
@@ -1045,20 +917,7 @@ app.post('/share', requireLogin, async (req, res) => {
                 return res.status(400).json({ success: false, message: '无效的自订到期时间。' });
             }
         }
-
-        // --- 关键修正：解析传入的 ID 字串 ---
-        let itemId;
-        try {
-            itemId = BigInt(itemIdStr);
-        } catch (e) {
-            itemId = parseInt(itemIdStr, 10);
-            if (isNaN(itemId)) {
-                 return res.status(400).json({ success: false, message: '无效的 ID 格式。'});
-            }
-        }
-        // --- 修正结束 ---
-
-        const result = await data.createShareLink(itemId, itemType, expiresIn, req.session.userId, password, customExpiresAt);
+        const result = await data.createShareLink(parseInt(itemId, 10), itemType, expiresIn, req.session.userId, password, customExpiresAt);
         if (result.success) {
             const shareUrl = `${req.protocol}://${req.get('host')}/share/view/${itemType}/${result.token}`;
             res.json({ success: true, url: shareUrl });
@@ -1083,22 +942,9 @@ app.get('/api/shares', requireLogin, async (req, res) => {
 
 app.post('/api/cancel-share', requireLogin, async (req, res) => {
     try {
-        const { itemId: itemIdStr, itemType } = req.body; // itemId 可能是字串
-        if (!itemIdStr || !itemType) return res.status(400).json({ success: false, message: '缺少必要参数' });
-        
-        // --- 关键修正：解析传入的 ID 字串 ---
-        let itemId;
-        try {
-            itemId = BigInt(itemIdStr);
-        } catch (e) {
-            itemId = parseInt(itemIdStr, 10);
-             if (isNaN(itemId)) {
-                 return res.status(400).json({ success: false, message: '无效的 ID 格式。'});
-            }
-        }
-        // --- 修正结束 ---
-
-        const result = await data.cancelShare(itemId, itemType, req.session.userId);
+        const { itemId, itemType } = req.body;
+        if (!itemId || !itemType) return res.status(400).json({ success: false, message: '缺少必要参数' });
+        const result = await data.cancelShare(parseInt(itemId, 10), itemType, req.session.userId);
         res.json(result);
     } catch (error) { res.status(500).json({ success: false, message: '取消分享失败' }); }
 });
@@ -1106,24 +952,12 @@ app.post('/api/cancel-share', requireLogin, async (req, res) => {
 // --- 新增： “定位文件” 的 API 路由 ---
 app.get('/api/locate-item', requireLogin, async (req, res) => {
     try {
-        const { id: idStr, type } = req.query; // id 是字串
+        const { id, type } = req.query;
         const userId = req.session.userId;
 
-        if (!idStr || !type) {
+        if (!id || !type) {
             return res.status(400).json({ success: false, message: '缺少项目 ID 或类型' });
         }
-
-        // --- 关键修正：解析传入的 ID 字串 ---
-         let id;
-        try {
-            id = BigInt(idStr);
-        } catch (e) {
-            id = parseInt(idStr, 10);
-             if (isNaN(id)) {
-                 return res.status(400).json({ success: false, message: '无效的 ID 格式。'});
-            }
-        }
-        // --- 修正结束 ---
 
         let folderId;
         if (type === 'folder') {
@@ -1448,18 +1282,7 @@ app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) =
         if (rootFolder.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[folderToken])) {
             return res.status(403).send('需要密码才能下载');
         }
-        // --- 关键修正：解析传入的 ID 字串 ---
-        let parsedFileId;
-         try {
-            parsedFileId = BigInt(fileId);
-        } catch (e) {
-            parsedFileId = parseInt(fileId, 10);
-             if (isNaN(parsedFileId)) {
-                 return res.status(400).send('无效的 ID 格式。');
-            }
-        }
-        // --- 修正结束 ---
-        const fileInfo = await data.findFileInSharedFolder(parsedFileId, folderToken);
+        const fileInfo = await data.findFileInSharedFolder(parseInt(fileId, 10), folderToken);
         if (!fileInfo) {
              return res.status(404).send('文件信息未找到或权限不足');
         }
