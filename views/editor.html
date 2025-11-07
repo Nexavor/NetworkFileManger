@@ -143,13 +143,10 @@
                 if (mode === 'edit' && fileId) {
                     try {
                         const fileInfoRes = await axios.get(`/api/file-info/${fileId}`);
-                        
-                        // --- 关键修正：强制指定回应类型为 'text' ---
-                        // 这样 axios 就不会自动将 JSON 字符串解析为 [object Object]
                         const fileContentRes = await axios.get(`/file/content/${fileId}`, { responseType: 'text' });
                         
                         initialFileName = fileInfoRes.data.fileName;
-                        initialContent = fileContentRes.data; // 现在 initialContent 保证是字符串
+                        initialContent = fileContentRes.data; 
 
                         fileNameInput.value = initialFileName;
                         editor.value = initialContent;
@@ -173,7 +170,7 @@
                 saveBtn.textContent = '储存中...';
                 saveStatus.textContent = '';
 
-                // --- *** 这是重构后的程式码区块 *** ---
+                // --- *** 这是重构后的程式码区块 (V2 修复版) *** ---
                 try {
                     const response = await axios.post('/api/text-file', {
                         mode: mode,
@@ -208,22 +205,21 @@
                     checkForChanges();
 
                 } catch (error) {
-                    // --- 修复开始 ---
                     let errorMsg = error.response?.data?.message || '伺服器错误';
+                    
                     // 检查是否是“找不到档案”的特定错误，并且我们正处于“编辑”模式
                     if (mode === 'edit' && error.response && error.response.status === 404 && errorMsg.includes('找不到')) {
-                        // 这很可能是那场竞争条件
-                        // 自动将模式重设为 'create' 并移除无效的 fileId
-                        mode = 'create';
-                        fileId = null;
-                        history.pushState({}, '', `${window.location.pathname}?mode=create&folderId=${folderId}`);
                         
+                        // 这很可能是那场竞争条件。等待 500ms 并重试 *相同* 的 'edit' 请求
                         saveBtn.textContent = '重试中...';
+                        
+                        await new Promise(resolve => setTimeout(resolve, 500)); // 等待 500ms
+
                         try {
-                            // 再次尝试储存（这次是作为“新建”操作）
+                            // 重试原始的 'edit' 请求
                             const retryResponse = await axios.post('/api/text-file', {
-                                mode: mode, // 'create'
-                                fileId: fileId, // null
+                                mode: mode, // 'edit'
+                                fileId: fileId, // 原始 fileId
                                 folderId: folderId,
                                 fileName,
                                 content
@@ -238,29 +234,30 @@
                             initialFileName = fileName;
                             initialContent = content;
                             
+                            // 检查（尽管不太可能，但以防万一）
                             if (retryResponse.data.success && retryResponse.data.fileId) {
                                 const newFileId = retryResponse.data.fileId;
-                                fileId = newFileId;
-                                mode = 'edit';
-                                const newUrl = `${window.location.pathname}?mode=edit&fileId=${fileId}`;
-                                history.pushState({}, '', newUrl);
+                                if (fileId !== newFileId) {
+                                    fileId = newFileId;
+                                    const newUrl = `${window.location.pathname}?mode=edit&fileId=${fileId}`;
+                                    history.pushState({}, '', newUrl);
+                                }
                                 fileNameInput.value = fileName;
                             }
                             checkForChanges();
                             // --- 复制结束 ---
 
                         } catch (retryError) {
-                            // 如果重试也失败了，才显示错误
-                            alert('储存失败，即使重试也失败了：' + (retryError.response?.data?.message || retryError.message));
+                            // 如果重试也失败了（例如，档案真的被删除了），才显示错误
+                            alert('储存失败：' + (retryError.response?.data?.message || retryError.message));
                             checkForChanges();
                         }
 
                     } else {
-                        // 其他所有错误，正常显示
+                        // 其他所有错误 (例如真正的 409 同名冲突, 500 伺服器错误等)，正常显示
                         alert('储存失败：' + errorMsg);
                         checkForChanges();
                     }
-                    // --- 修复结束 ---
                 } finally {
                     saveBtn.textContent = '保存';
                 }
