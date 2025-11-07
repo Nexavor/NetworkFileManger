@@ -173,6 +173,7 @@
                 saveBtn.textContent = '储存中...';
                 saveStatus.textContent = '';
 
+                // --- *** 这是重构后的程式码区块 *** ---
                 try {
                     const response = await axios.post('/api/text-file', {
                         mode: mode,
@@ -207,11 +208,63 @@
                     checkForChanges();
 
                 } catch (error) {
-                    alert('储存失败：' + (error.response?.data?.message || '伺服器错误'));
-                    checkForChanges();
+                    // --- 修复开始 ---
+                    let errorMsg = error.response?.data?.message || '伺服器错误';
+                    // 检查是否是“找不到档案”的特定错误，并且我们正处于“编辑”模式
+                    if (mode === 'edit' && error.response && error.response.status === 404 && errorMsg.includes('找不到')) {
+                        // 这很可能是那场竞争条件
+                        // 自动将模式重设为 'create' 并移除无效的 fileId
+                        mode = 'create';
+                        fileId = null;
+                        history.pushState({}, '', `${window.location.pathname}?mode=create&folderId=${folderId}`);
+                        
+                        saveBtn.textContent = '重试中...';
+                        try {
+                            // 再次尝试储存（这次是作为“新建”操作）
+                            const retryResponse = await axios.post('/api/text-file', {
+                                mode: mode, // 'create'
+                                fileId: fileId, // null
+                                folderId: folderId,
+                                fileName,
+                                content
+                            });
+
+                            // --- 重试成功后的逻辑 (复制自 try 块) ---
+                            if (window.opener) {
+                                window.opener.postMessage('refresh-files', '*');
+                            }
+                            saveStatus.textContent = '✓ 已储存 (重试成功)';
+                            setTimeout(() => { saveStatus.textContent = ''; }, 2000);
+                            initialFileName = fileName;
+                            initialContent = content;
+                            
+                            if (retryResponse.data.success && retryResponse.data.fileId) {
+                                const newFileId = retryResponse.data.fileId;
+                                fileId = newFileId;
+                                mode = 'edit';
+                                const newUrl = `${window.location.pathname}?mode=edit&fileId=${fileId}`;
+                                history.pushState({}, '', newUrl);
+                                fileNameInput.value = fileName;
+                            }
+                            checkForChanges();
+                            // --- 复制结束 ---
+
+                        } catch (retryError) {
+                            // 如果重试也失败了，才显示错误
+                            alert('储存失败，即使重试也失败了：' + (retryError.response?.data?.message || retryError.message));
+                            checkForChanges();
+                        }
+
+                    } else {
+                        // 其他所有错误，正常显示
+                        alert('储存失败：' + errorMsg);
+                        checkForChanges();
+                    }
+                    // --- 修复结束 ---
                 } finally {
                     saveBtn.textContent = '保存';
                 }
+                // --- *** 重构区块结束 *** ---
             });
 
             backBtn.addEventListener('click', () => {
