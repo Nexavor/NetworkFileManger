@@ -151,12 +151,18 @@
                         fileNameInput.value = initialFileName;
                         editor.value = initialContent;
                     } catch (error) {
-                        alert('载入档案失败！');
-                        window.close();
+                        // 401 错误会由 axios 拦截器处理并自动跳转
+                        if (error.response && error.response.status !== 401) {
+                             alert('载入档案失败！');
+                             window.close();
+                        }
                     }
                 }
                 updateLineNumbers();
             }
+
+            // V3: 增加一个 sleep 辅助函式
+            const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
             saveBtn.addEventListener('click', async () => {
                 let fileName = fileNameInput.value.trim();
@@ -170,7 +176,7 @@
                 saveBtn.textContent = '储存中...';
                 saveStatus.textContent = '';
 
-                // --- *** 这是重构后的程式码区块 (V2 修复版) *** ---
+                // --- *** 这是重构后的程式码区块 (V3 修复版) *** ---
                 try {
                     const response = await axios.post('/api/text-file', {
                         mode: mode,
@@ -210,51 +216,66 @@
                     // 检查是否是“找不到档案”的特定错误，并且我们正处于“编辑”模式
                     if (mode === 'edit' && error.response && error.response.status === 404 && errorMsg.includes('找不到')) {
                         
-                        // 这很可能是那场竞争条件。等待 500ms 并重试 *相同* 的 'edit' 请求
-                        saveBtn.textContent = '重试中...';
-                        
-                        await new Promise(resolve => setTimeout(resolve, 500)); // 等待 500ms
+                        // V3: 竞争条件重试回圈
+                        let success = false;
+                        const maxRetries = 3;
+                        const retryDelay = 500; // 每次延迟 500ms
 
-                        try {
-                            // 重试原始的 'edit' 请求
-                            const retryResponse = await axios.post('/api/text-file', {
-                                mode: mode, // 'edit'
-                                fileId: fileId, // 原始 fileId
-                                folderId: folderId,
-                                fileName,
-                                content
-                            });
+                        for (let i = 1; i <= maxRetries; i++) {
+                            saveBtn.textContent = `重试中... (${i}/${maxRetries})`;
+                            await sleep(retryDelay); // 等待
 
-                            // --- 重试成功后的逻辑 (复制自 try 块) ---
-                            if (window.opener) {
-                                window.opener.postMessage('refresh-files', '*');
-                            }
-                            saveStatus.textContent = '✓ 已储存 (重试成功)';
-                            setTimeout(() => { saveStatus.textContent = ''; }, 2000);
-                            initialFileName = fileName;
-                            initialContent = content;
-                            
-                            // 检查（尽管不太可能，但以防万一）
-                            if (retryResponse.data.success && retryResponse.data.fileId) {
-                                const newFileId = retryResponse.data.fileId;
-                                if (fileId !== newFileId) {
-                                    fileId = newFileId;
-                                    const newUrl = `${window.location.pathname}?mode=edit&fileId=${fileId}`;
-                                    history.pushState({}, '', newUrl);
+                            try {
+                                // 重试完全相同的 'edit' 请求
+                                const retryResponse = await axios.post('/api/text-file', {
+                                    mode: mode, // 'edit'
+                                    fileId: fileId, // 仍然是这个 fileId
+                                    folderId: folderId,
+                                    fileName,
+                                    content
+                                });
+
+                                // --- 重试成功后的逻辑 (复制自 try 块) ---
+                                if (window.opener) {
+                                    window.opener.postMessage('refresh-files', '*');
                                 }
-                                fileNameInput.value = fileName;
-                            }
-                            checkForChanges();
-                            // --- 复制结束 ---
+                                saveStatus.textContent = '✓ 已储存 (重试成功)';
+                                setTimeout(() => { saveStatus.textContent = ''; }, 2000);
+                                initialFileName = fileName;
+                                initialContent = content;
+                                
+                                if (retryResponse.data.success && retryResponse.data.fileId) {
+                                    const newFileId = retryResponse.data.fileId;
+                                    if (fileId !== newFileId) {
+                                        fileId = newFileId;
+                                        const newUrl = `${window.location.pathname}?mode=edit&fileId=${fileId}`;
+                                        history.pushState({}, '', newUrl);
+                                    }
+                                    fileNameInput.value = fileName;
+                                }
+                                checkForChanges();
+                                // --- 复制结束 ---
+                                
+                                success = true; // 标记成功
+                                break; // 跳出重试回圈
 
-                        } catch (retryError) {
-                            // 如果重试也失败了（例如，档案真的被删除了），才显示错误
-                            alert('储存失败：' + (retryError.response?.data?.message || retryError.message));
+                            } catch (retryError) {
+                                // 如果重试也失败了，记录下来并准备下一次循环
+                                console.warn(`重试 ${i} 失败:`, retryError.response?.data?.message || retryError.message);
+                                if (i === maxRetries) {
+                                    errorMsg = `重试 ${maxRetries} 次后储存失败: ` + (retryError.response?.data?.message || retryError.message);
+                                }
+                            }
+                        }
+                        // --- 重试回圈结束 ---
+
+                        if (!success) {
+                            alert(errorMsg); // 如果所有重试都失败了，显示最终的错误讯息
                             checkForChanges();
                         }
 
                     } else {
-                        // 其他所有错误 (例如真正的 409 同名冲突, 500 伺服器错误等)，正常显示
+                        // 其他所有错误 (例如 409 同名冲突, 500 伺服器错误等)，正常显示
                         alert('储存失败：' + errorMsg);
                         checkForChanges();
                     }
