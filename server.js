@@ -1292,6 +1292,12 @@ app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) =
     }
 });
 
-app.listen(PORT, () => {
+// --- *** 关键修正：延长伺服器超时时间 *** ---
+// 预设的 2 分钟 (120000ms) 超时对于大档案上传可能不足
+// 将其延长到 30 分钟 (1800000ms)
+const server = app.listen(PORT, () => {
     console.log(`✅ 伺服器已在 http://localhost:${PORT} 上运行`);
 });
+
+server.setTimeout(1800000); // 30 分钟
+// --- *** 修正结束 *** ---
