@@ -9,7 +9,7 @@ const path = require('path');
 const axios = require('axios');
 const archiver = require('archiver');
 const bcrypt = require('bcrypt');
-const fs = require('fs');
+const fs = require('fs'); // <--- 引入 fs
 const fsp = require('fs').promises;
 const crypto = require('crypto');
 const db = require('./database.js');
@@ -449,6 +449,7 @@ app.post('/upload', requireLogin, (req, res) => {
 });
 // --- *** /upload 路由重构结束 *** ---
 
+// --- *** 重构 /api/text-file 路由 *** ---
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
     const userId = req.session.userId;
@@ -469,37 +470,38 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
             }
             const originalFile = filesToUpdate[0];
-            let existingItem = null; // <-- 关键修正
+            let existingItem = null; 
 
             if (fileName !== originalFile.fileName) {
                 const conflict = await data.checkFullConflict(fileName, originalFile.folder_id, userId);
                 if (conflict) {
                     return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
                 }
+                 // 档名变了，我们仍然传递 existingItem，storage 模组会处理旧档案的清理
+                 existingItem = await data.findItemInFolder(originalFile.fileName, originalFile.folder_id, userId);
             } else {
                  // 档名没变，意味着我们要覆盖自己
                  existingItem = await data.findItemInFolder(fileName, originalFile.folder_id, userId);
             }
-
+            
+            // --- 关键修正：确保 existingItem 被正确找到 ---
+            if (!existingItem) {
+                // 这种情况理论上不该发生，但作为保险
+                 return res.status(404).json({ success: false, message: '找不到符合的原始档案项目。' });
+            }
+            
             const fileStream = fs.createReadStream(tempFilePath);
-            // --- 关键修正：不再手动删除，让 storage.upload 处理覆盖 ---
-            // if (originalFile.storage_type === 'telegram') {
-            //     await data.unifiedDelete(originalFile.message_id, 'file', userId);
-            // }
+            
+            // storage.upload 现在会执行 UPDATE 而不是 DELETE+INSERT
             const result = await storage.upload(fileStream, fileName, 'text/plain', userId, originalFile.folder_id, '', existingItem);
             
-            // --- 关键修正：处理 local/webdav 在档名变更时的旧档清理 ---
-            if (storage.type !== 'telegram' && fileName !== originalFile.fileName) {
-                 await storage.remove([originalFile], [], userId);
-            }
+            // --- 关键修正：旧的清理逻辑已移至 storage 模组 ---
+            // if (storage.type !== 'telegram' && fileName !== originalFile.fileName) {
+            //      await storage.remove([originalFile], [], userId);
+            // }
             
-            // --- 关键修正：如果 storage.upload 返回了新的 fileId (例如 TG)，则更新 fileId ---
-            let finalFileId = fileId;
-            if (result.fileId && String(result.fileId) !== String(fileId)) {
-                finalFileId = result.fileId;
-            }
-
-            return res.json({ success: true, fileId: finalFileId });
+            // --- 关键修正：result.fileId 现在会是 originalFile.id ---
+            return res.json({ success: true, fileId: result.fileId });
 
         } else if (mode === 'create' && folderId) {
             const conflict = await data.checkFullConflict(fileName, folderId, userId);
@@ -515,11 +517,14 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
     } catch (error) {
         res.status(500).json({ success: false, message: '伺服器内部错误: ' + error.message });
     } finally {
-        if (fsSync.existsSync(tempFilePath)) {
+        // --- *** 关键修正：使用 `fs.existsSync` 而不是 `fsSync.existsSync` *** ---
+        if (fs.existsSync(tempFilePath)) {
             await fsp.unlink(tempFilePath).catch(err => {});
         }
     }
 });
+// --- *** /api/text-file 路由重构结束 *** ---
+
 app.get('/api/file-info/:id', requireLogin, async (req, res) => {
     try {
         const fileId = parseInt(req.params.id, 10);
