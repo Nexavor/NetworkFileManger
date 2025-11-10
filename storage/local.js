@@ -21,7 +21,7 @@ async function setup() {
 setup();
 
 // --- *** 重构 upload 函数 *** ---
-async function upload(fileStream, fileName, mimetype, userId, folderId, existingItem = null) { // <-- 接受 existingItem
+async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '', existingItem = null) { // <-- 接受 caption
     const FUNC_NAME = 'upload';
     log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到本地储存...`);
     
@@ -36,11 +36,8 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, existing
     const finalFilePath = path.join(finalFolderPath, fileName);
     const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/');
 
-    // --- 新增：安全覆盖逻辑 ---
     // 1. 定义临时文件路径
     const tempFilePath = finalFilePath + '.' + crypto.randomBytes(6).toString('hex') + '.tmp';
-    let oldDbEntryDeleted = false;
-    // --- 结束：安全覆盖逻辑 ---
 
     return new Promise((resolve, reject) => {
         log('DEBUG', FUNC_NAME, `创建写入流到 (临时): "${tempFilePath}"`);
@@ -63,43 +60,69 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, existing
         writeStream.on('finish', async () => {
             log('INFO', FUNC_NAME, `文件写入磁盘完成 (finish): "${tempFilePath}"`);
             try {
-                // --- 新增：原子化移动/删除逻辑 ---
+                const stats = await fsp.stat(tempFilePath);
+                
+                // --- *** 关键修正：保留共享连结 *** ---
                 if (existingItem) {
-                    log('DEBUG', FUNC_NAME, `覆盖模式: 正在删除旧的数据库条目 (ID: ${existingItem.id})`);
-                    // 4. 先删除旧的数据库条目
-                    await data.deleteFilesByIds([existingItem.id], userId);
-                    oldDbEntryDeleted = true; // 标记
+                    // 这是 UPDATE 逻辑
+                    log('DEBUG', FUNC_NAME, `覆盖 (Update) 模式: 正在更新数据库条目 (ID: ${existingItem.id})`);
+
+                    // 1. 获取旧文件路径，以便稍后清理
+                    const oldRelativePath = existingItem.file_id;
+                    const oldFinalPath = path.join(userDir, oldRelativePath);
+
+                    // 2. 原子化移动临时文件到最终位置（覆盖）
+                    await fsp.rename(tempFilePath, finalFilePath);
+                    log('DEBUG', FUNC_NAME, `临时文件已移动到: "${finalFilePath}"`);
+                    
+                    // 3. 更新数据库 (UPDATE)
+                    await data.updateFile(existingItem.id, userId, {
+                        fileName: fileName, // <-- 允许档名变更
+                        size: stats.size,
+                        file_id: relativeFilePath,
+                        mimetype: mimetype,
+                        date: Date.now(),
+                    });
+                    
+                    // 4. (清理) 如果档名变了，删除旧的实体档案
+                    if (oldFinalPath !== finalFilePath && fs.existsSync(oldFinalPath)) {
+                        log('DEBUG', FUNC_NAME, `档名已变更，正在删除旧的实体档案: "${oldFinalPath}"`);
+                        await fsp.unlink(oldFinalPath).catch(e => {
+                            log('WARN', FUNC_NAME, `删除旧档案 ${oldFinalPath} 失败: ${e.message}`);
+                        });
+                    }
+
+                    log('INFO', FUNC_NAME, `文件 "${fileName}" (ID: ${existingItem.id}) 已成功更新。`);
+                    resolve({ success: true, fileId: existingItem.id }); // <-- 返回旧 ID
+                } else {
+                    // 这是 INSERT 逻辑 (新上传)
+                    log('DEBUG', FUNC_NAME, '新上传模式: 正在新增数据库条目...');
+
+                    // 1. 原子化移动
+                    await fsp.rename(tempFilePath, finalFilePath);
+                    log('DEBUG', FUNC_NAME, `临时文件已移动到: "${finalFilePath}"`);
+
+                    const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
+                    
+                    // 2. 新增数据库 (INSERT)
+                    log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: "${fileName}"`);
+                    const dbResult = await data.addFile({
+                        message_id: messageId,
+                        fileName,
+                        mimetype,
+                        size: stats.size,
+                        file_id: relativeFilePath,
+                        thumb_file_id: null,
+                        date: Date.now(),
+                    }, folderId, userId, 'local');
+                    
+                    log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
+                    resolve({ success: true, message: '文件已储存至本地。', fileId: dbResult.fileId });
                 }
+                // --- *** 修正结束 *** ---
 
-                // 5. 原子化移动临时文件到最终位置（这将自动覆盖旧文件）
-                await fsp.rename(tempFilePath, finalFilePath);
-                log('DEBUG', FUNC_NAME, `临时文件已移动到: "${finalFilePath}"`);
-                // --- 结束：原子化逻辑 ---
-
-                const stats = await fsp.stat(finalFilePath);
-                log('DEBUG', FUNC_NAME, `获取文件状态成功，大小: ${stats.size}`);
-                const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
-                
-                log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: "${fileName}"`);
-                // 6. 添加新的数据库条目
-                const dbResult = await data.addFile({
-                    message_id: messageId,
-                    fileName,
-                    mimetype,
-                    size: stats.size,
-                    file_id: relativeFilePath,
-                    thumb_file_id: null,
-                    date: Date.now(),
-                }, folderId, userId, 'local');
-                
-                log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
-                resolve({ success: true, message: '文件已储存至本地。', fileId: dbResult.fileId });
             } catch (err) {
                  log('ERROR', FUNC_NAME, `写入资料库或移动文件时发生错误 for "${fileName}":`, err);
-                 // 7. 回滚处理
-                 if (oldDbEntryDeleted) {
-                    log('ERROR', FUNC_NAME, '数据库已删除旧条目，但新条目添加失败。数据可能不一致！请检查！');
-                 }
                  fsp.unlink(tempFilePath).catch(e => {}); // 清理临时文件
                  reject(err);
             }
@@ -157,11 +180,11 @@ async function remove(files, folders, userId) {
 
 async function removeEmptyDirsRecursive(directoryPath, userBaseDir) {
     try {
-        if (!fsSync.existsSync(directoryPath) || !directoryPath.startsWith(userBaseDir) || directoryPath === userBaseDir) {
+        if (!fs.existsSync(directoryPath) || !directoryPath.startsWith(userBaseDir) || directoryPath === userBaseDir) {
             return;
         }
         let currentPath = directoryPath;
-        while (currentPath !== userBaseDir && fsSync.existsSync(currentPath)) {
+        while (currentPath !== userBaseDir && fs.existsSync(currentPath)) {
             const files = await fsp.readdir(currentPath);
             if (files.length === 0) {
                 await fsp.rmdir(currentPath);
