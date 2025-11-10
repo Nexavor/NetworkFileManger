@@ -223,17 +223,8 @@
                     checkForChanges();
 
                 } catch (error) {
-                    // --- *** 关键修复：检查 error.response 是否存在 *** ---
-                    // 如果 error.response 不存在，说明是 JavaScript 内部错误
-                    // (例如我们上面修复的 history.pushState)
-                    // 既然保存已成功，我们就不应该显示错误。
-                    if (!error.response) {
-                        console.error("保存成功，但在后续操作中发生内部错误:", error);
-                        // 既然保存成功了，就不要显示错误弹窗，直接返回
-                        checkForChanges(); // 重新启用保存按钮
-                        return; // 提前退出
-                    }
-                    // --- *** 修复结束 *** ---
+                    // --- *** 关键修复：移除了 (!error.response) 的检查 *** ---
+                    // 现在，只有真正的伺服器错误会进入这个 catch 块
 
                     let errorMsg = error.response?.data?.message || '伺服器错误';
                     
