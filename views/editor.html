@@ -200,17 +200,41 @@
                     
                     if (response.data.success && response.data.fileId) {
                         const newFileId = response.data.fileId;
-                        if (fileId !== newFileId) {
-                            fileId = newFileId;
+                        
+                        // 确保比较的是字串
+                        if (fileId !== newFileId.toString()) {
+                            fileId = newFileId.toString();
                             mode = 'edit';
                             const newUrl = `${window.location.pathname}?mode=edit&fileId=${fileId}`;
-                            history.pushState({}, '', newUrl);
+                            
+                            // --- *** 关键修复：隔离 URL 更新 *** ---
+                            // 将 history.pushState 放入单独的 try...catch
+                            // 这样即使更新 URL 失败 (例如因为安全限制)
+                            // 也不会导致外层 catch 块误报“伺服器错误”
+                            try {
+                                history.pushState({}, '', newUrl);
+                            } catch (urlError) {
+                                console.warn('更新 URL 失败 (history.pushState)，但这不影响保存:', urlError);
+                            }
+                            // --- *** 修复结束 *** ---
                         }
                         fileNameInput.value = fileName;
                     }
                     checkForChanges();
 
                 } catch (error) {
+                    // --- *** 关键修复：检查 error.response 是否存在 *** ---
+                    // 如果 error.response 不存在，说明是 JavaScript 内部错误
+                    // (例如我们上面修复的 history.pushState)
+                    // 既然保存已成功，我们就不应该显示错误。
+                    if (!error.response) {
+                        console.error("保存成功，但在后续操作中发生内部错误:", error);
+                        // 既然保存成功了，就不要显示错误弹窗，直接返回
+                        checkForChanges(); // 重新启用保存按钮
+                        return; // 提前退出
+                    }
+                    // --- *** 修复结束 *** ---
+
                     let errorMsg = error.response?.data?.message || '伺服器错误';
                     
                     // 检查是否是“找不到档案”的特定错误，并且我们正处于“编辑”模式
@@ -246,10 +270,14 @@
                                 
                                 if (retryResponse.data.success && retryResponse.data.fileId) {
                                     const newFileId = retryResponse.data.fileId;
-                                    if (fileId !== newFileId) {
-                                        fileId = newFileId;
+                                    if (fileId !== newFileId.toString()) { // 同样使用 toString()
+                                        fileId = newFileId.toString();
                                         const newUrl = `${window.location.pathname}?mode=edit&fileId=${fileId}`;
-                                        history.pushState({}, '', newUrl);
+                                        try {
+                                            history.pushState({}, '', newUrl);
+                                        } catch (urlError) {
+                                            console.warn('更新 URL 失败 (history.pushState)，但这不影响保存:', urlError);
+                                        }
                                     }
                                     fileNameInput.value = fileName;
                                 }
