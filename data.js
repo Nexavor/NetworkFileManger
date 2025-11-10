@@ -223,27 +223,36 @@ async function createFolder(name, parentId, userId) {
     });
 }
 
+// --- *** 重大修复 1 *** ---
 async function getFolderContents(folderId, userId) {
     const FUNC_NAME = 'getFolderContents';
     log('DEBUG', FUNC_NAME, `正在获取资料夹内容: ${folderId} for user: ${userId}`);
+    
+    // 1. 获取资料夹
     const foldersPromise = new Promise((resolve, reject) => {
         db.all("SELECT id, name, is_locked FROM folders WHERE parent_id = ? AND user_id = ?", [folderId, userId], (err, rows) => {
             if (err) return reject(err);
-            // --- *** 关键修正 1：为每个资料夹添加加密 ID *** ---
+            // 为每个资料夹添加类型和加密ID，供前端使用
             resolve(rows.map(r => ({ ...r, type: 'folder', encrypted_id: encrypt(r.id) })));
         });
     });
+    
+    // 2. 获取档案
     const filesPromise = new Promise((resolve, reject) => {
         db.all("SELECT * FROM files WHERE folder_id = ? AND user_id = ?", [folderId, userId], (err, rows) => {
             if (err) return reject(err);
             resolve(rows.map(r => ({ ...r, type: 'file' })));
         });
     });
+    
     const [folders, files] = await Promise.all([foldersPromise, filesPromise]);
+    
     log('DEBUG', FUNC_NAME, `获取成功: ${folders.length} 个资料夹, ${files.length} 个档案。`);
-    // --- *** 关键修正 2：返回一个物件而不是一个阵列 *** ---
+    
+    // 3. 以物件形式返回，而不是阵列
     return { folders, files };
 }
+// --- *** 修复 1 结束 *** ---
 
 async function getFolderDetails(folderId, userId) {
     const FUNC_NAME = 'getFolderDetails';
@@ -341,25 +350,31 @@ async function getItemsByIds(ids, userId) {
 }
 
 
+// --- *** 重大修复 2 *** ---
 async function getFilesRecursive(folderId, userId, currentPath = '') {
     const FUNC_NAME = 'getFilesRecursive';
     log('DEBUG', FUNC_NAME, `正在递归获取档案于: ${folderId} (Path: ${currentPath}) for user: ${userId}`);
     let files = [];
-    // --- *** 关键修正：必须使用 await 并解构 *** ---
-    const { folders: contentsFolders, files: contentsFiles } = await getFolderContents(folderId, userId);
-    const contents = [...contentsFolders, ...contentsFiles];
-    // --- *** 修正结束 *** ---
-    for (const item of contents) {
+    
+    // 1. 呼叫已修复的 getFolderContents
+    const contents = await getFolderContents(folderId, userId);
+    
+    // 2. 迭代档案阵列
+    for (const item of contents.files) {
         const itemPath = path.posix.join(currentPath, item.name);
-        if (item.type === 'file') {
-            files.push({ ...item, path: itemPath });
-        } else if (item.type === 'folder') {
-            const nestedFiles = await getFilesRecursive(item.id, userId, itemPath);
-            files = files.concat(nestedFiles);
-        }
+        files.push({ ...item, path: itemPath });
     }
+    
+    // 3. 迭代资料夹阵列
+    for (const item of contents.folders) {
+        const itemPath = path.posix.join(currentPath, item.name);
+        const nestedFiles = await getFilesRecursive(item.id, userId, itemPath);
+        files = files.concat(nestedFiles);
+    }
+    
     return files;
 }
+// --- *** 修复 2 结束 *** ---
 
 async function addFile(fileData, folderId, userId, storageType) {
     const FUNC_NAME = 'addFile';
@@ -1009,19 +1024,22 @@ async function verifyFolderPassword(folderId, password, userId) {
     return isMatch;
 }
 
+// --- *** 重大修复 3 *** ---
 async function searchItems(query, userId) {
     const FUNC_NAME = 'searchItems';
     log('DEBUG', FUNC_NAME, `正在搜寻 "${query}" for user ${userId}`);
     const searchTerm = `%${query}%`;
     
+    // 1. 搜寻资料夹
     const foldersPromise = new Promise((resolve, reject) => {
         db.all("SELECT id, name, is_locked FROM folders WHERE name LIKE ? AND user_id = ? AND parent_id IS NOT NULL", [searchTerm, userId], (err, rows) => {
             if (err) return reject(err);
-            // --- *** 关键修正 3：为搜寻结果的资料夹添加加密 ID *** ---
+            // 为每个资料夹添加类型和加密ID
             resolve(rows.map(r => ({ ...r, type: 'folder', encrypted_id: encrypt(r.id) })));
         });
     });
     
+    // 2. 搜寻档案
     const filesPromise = new Promise((resolve, reject) => {
         db.all("SELECT * FROM files WHERE fileName LIKE ? AND user_id = ?", [searchTerm, userId], (err, rows) => {
             if (err) return reject(err);
@@ -1031,9 +1049,11 @@ async function searchItems(query, userId) {
 
     const [folders, files] = await Promise.all([foldersPromise, filesPromise]);
     log('DEBUG', FUNC_NAME, `搜寻 "${query}" 结束: ${folders.length} 资料夹, ${files.length} 档案`);
-    // --- *** 关键修正 4：返回一个物件而不是一个阵列 *** ---
+    
+    // 3. 以物件形式返回
     return { folders, files };
 }
+// --- *** 修复 3 结束 *** ---
 
 
 // --- 分享功能 ---
