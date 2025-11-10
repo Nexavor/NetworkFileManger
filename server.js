@@ -9,7 +9,7 @@ const path = require('path');
 const axios = require('axios');
 const archiver = require('archiver');
 const bcrypt = require('bcrypt');
-const fs = require('fs');
+const fs = require('fs'); // <--- fs 在这里定义
 const fsp = require('fs').promises;
 const crypto = require('crypto');
 const db = require('./database.js');
@@ -445,7 +445,8 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                     await fsp.mkdir(path.dirname(newFullPath), { recursive: true });
                     // BUG 1 修复：使用 copyFile (或 rename) 保证原子性覆盖
                     await fsp.copyFile(tempFilePath, newFullPath); 
-                    if (originalFile.file_id !== newRelativePath && fsSync.existsSync(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id))) {
+                    // --- *** 崩溃修复：fsSync.existsSync 改为 fs.existsSync *** ---
+                    if (originalFile.file_id !== newRelativePath && fs.existsSync(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id))) {
                          await fsp.unlink(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id));
                     }
                 } else if (originalFile.storage_type === 'webdav') {
@@ -473,7 +474,8 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
     } catch (error) {
         res.status(500).json({ success: false, message: '伺服器内部错误: ' + error.message });
     } finally {
-        if (fsSync.existsSync(tempFilePath)) {
+        // --- *** 崩溃修复：fsSync.existsSync 改为 fs.existsSync *** ---
+        if (fs.existsSync(tempFilePath)) {
             await fsp.unlink(tempFilePath).catch(err => {});
         }
     }
