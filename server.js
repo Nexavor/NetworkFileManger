@@ -296,6 +296,7 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
+// --- 关键修改：/upload 路由 ---
 app.post('/upload', requireLogin, (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
@@ -335,14 +336,14 @@ app.post('/upload', requireLogin, (req, res) => {
                 }
 
                 const folderPathParts = pathParts;
-
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                 
+                // --- BUG 1 修复逻辑 开始 ---
+                let existingItem = null; // <-- 新增变量
+
                 if (action === 'overwrite') {
-                    const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                    if (existingItem) {
-                        await data.unifiedDelete(existingItem.id, existingItem.type, userId);
-                    }
+                    existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId); // <-- 查找现有项
+                    // 在此处不要删除
                 } else if (action === 'rename') {
                     finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
                 } else {
@@ -353,7 +354,10 @@ app.post('/upload', requireLogin, (req, res) => {
                     }
                 }
                 
-                await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '');
+                // 将 existingItem 传递给 storage.upload
+                await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
+                // --- BUG 1 修复逻辑 结束 ---
+
                 return { skipped: false };
             })().catch(err => {
                 fileStream.resume();
@@ -392,6 +396,7 @@ app.post('/upload', requireLogin, (req, res) => {
         res.status(400).json({ success: false, message: `请求预处理失败: ${err.message}` });
     }
 });
+// --- 路由修改结束 ---
 
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
@@ -423,20 +428,27 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
 
             if (originalFile.storage_type === 'telegram') {
                 const fileStream = fs.createReadStream(tempFilePath);
-                await data.unifiedDelete(originalFile.message_id, 'file', userId);
+                // --- BUG 1 修复逻辑：先上传，再删除旧的 ---
+                // 注意：storage.upload(..., existingItem) 逻辑是为了处理 busboy
+                // 这里的 /api/text-file 逻辑需要手动实现原子替换
                 const result = await storage.upload(fileStream, fileName, 'text/plain', userId, originalFile.folder_id);
+                // 成功上传新文件后，安全删除旧文件
+                await data.unifiedDelete(originalFile.message_id, 'file', userId);
                 return res.json({ success: true, fileId: result.fileId });
             } else {
+                // 对于 local 和 webdav，覆盖是原子性的或由 storage.upload 处理
                 const newRelativePath = path.posix.join(path.posix.dirname(originalFile.file_id), fileName);
+                const fileStream = fs.createReadStream(tempFilePath); // 为 webdav 创建流
+
                 if (originalFile.storage_type === 'local') {
                     const newFullPath = path.join(__dirname, 'data', 'uploads', String(userId), newRelativePath);
                     await fsp.mkdir(path.dirname(newFullPath), { recursive: true });
-                    await fsp.copyFile(tempFilePath, newFullPath);
-                    if (originalFile.file_id !== newRelativePath && fs.existsSync(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id))) {
+                    // BUG 1 修复：使用 copyFile (或 rename) 保证原子性覆盖
+                    await fsp.copyFile(tempFilePath, newFullPath); 
+                    if (originalFile.file_id !== newRelativePath && fsSync.existsSync(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id))) {
                          await fsp.unlink(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id));
                     }
                 } else if (originalFile.storage_type === 'webdav') {
-                    const fileStream = fs.createReadStream(tempFilePath);
                     const client = storage.getClient();
                     await client.putFileContents(newRelativePath, fileStream, { overwrite: true });
                     if (originalFile.file_id !== newRelativePath) {
@@ -461,7 +473,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
     } catch (error) {
         res.status(500).json({ success: false, message: '伺服器内部错误: ' + error.message });
     } finally {
-        if (fs.existsSync(tempFilePath)) {
+        if (fsSync.existsSync(tempFilePath)) {
             await fsp.unlink(tempFilePath).catch(err => {});
         }
     }
