@@ -7,6 +7,8 @@ const path = require('path');
 // --- *** 修正结束 *** ---
 const storageManager = require('./storage');
 const bcrypt = require('bcrypt');
+// --- *** 关键修正：为资料夹导航载入加密函数 *** ---
+const { encrypt } = require('./crypto.js');
 
 const FILE_NAME = 'data.js';
 
@@ -227,7 +229,8 @@ async function getFolderContents(folderId, userId) {
     const foldersPromise = new Promise((resolve, reject) => {
         db.all("SELECT id, name, is_locked FROM folders WHERE parent_id = ? AND user_id = ?", [folderId, userId], (err, rows) => {
             if (err) return reject(err);
-            resolve(rows.map(r => ({ ...r, type: 'folder' })));
+            // --- *** 关键修正 1：为每个资料夹添加加密 ID *** ---
+            resolve(rows.map(r => ({ ...r, type: 'folder', encrypted_id: encrypt(r.id) })));
         });
     });
     const filesPromise = new Promise((resolve, reject) => {
@@ -238,7 +241,8 @@ async function getFolderContents(folderId, userId) {
     });
     const [folders, files] = await Promise.all([foldersPromise, filesPromise]);
     log('DEBUG', FUNC_NAME, `获取成功: ${folders.length} 个资料夹, ${files.length} 个档案。`);
-    return [...folders, ...files];
+    // --- *** 关键修正 2：返回一个物件而不是一个阵列 *** ---
+    return { folders, files };
 }
 
 async function getFolderDetails(folderId, userId) {
@@ -341,7 +345,10 @@ async function getFilesRecursive(folderId, userId, currentPath = '') {
     const FUNC_NAME = 'getFilesRecursive';
     log('DEBUG', FUNC_NAME, `正在递归获取档案于: ${folderId} (Path: ${currentPath}) for user: ${userId}`);
     let files = [];
-    const contents = await getFolderContents(folderId, userId);
+    // --- *** 关键修正：必须使用 await 并解构 *** ---
+    const { folders: contentsFolders, files: contentsFiles } = await getFolderContents(folderId, userId);
+    const contents = [...contentsFolders, ...contentsFiles];
+    // --- *** 修正结束 *** ---
     for (const item of contents) {
         const itemPath = path.posix.join(currentPath, item.name);
         if (item.type === 'file') {
@@ -1010,7 +1017,8 @@ async function searchItems(query, userId) {
     const foldersPromise = new Promise((resolve, reject) => {
         db.all("SELECT id, name, is_locked FROM folders WHERE name LIKE ? AND user_id = ? AND parent_id IS NOT NULL", [searchTerm, userId], (err, rows) => {
             if (err) return reject(err);
-            resolve(rows.map(r => ({ ...r, type: 'folder' })));
+            // --- *** 关键修正 3：为搜寻结果的资料夹添加加密 ID *** ---
+            resolve(rows.map(r => ({ ...r, type: 'folder', encrypted_id: encrypt(r.id) })));
         });
     });
     
@@ -1023,7 +1031,8 @@ async function searchItems(query, userId) {
 
     const [folders, files] = await Promise.all([foldersPromise, filesPromise]);
     log('DEBUG', FUNC_NAME, `搜寻 "${query}" 结束: ${folders.length} 资料夹, ${files.length} 档案`);
-    return [...folders, ...files];
+    // --- *** 关键修正 4：返回一个物件而不是一个阵列 *** ---
+    return { folders, files };
 }
 
 
