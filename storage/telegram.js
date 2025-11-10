@@ -17,6 +17,10 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
     const FUNC_NAME = 'upload';
     log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 Telegram...`);
   
+    // --- *** 关键修正：新增 AbortController *** ---
+    const controller = new AbortController();
+    // --- *** 修正结束 *** ---
+
     return new Promise(async (resolve, reject) => {
         let oldMessageId = null; // <-- 储存旧消息 ID
         try {
@@ -28,6 +32,9 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             // 关键：监听输入流的错误，防止它静默失败
             fileStream.on('error', err => {
                 log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for "${fileName}":`, err);
+                // --- *** 关键修正：中止 axios 请求 *** ---
+                controller.abort(err); 
+                // --- *** 修正结束 *** ---
                 reject(new Error(`输入文件流中断: ${err.message}`));
             });
 
@@ -37,6 +44,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
                 headers: formData.getHeaders(),
                 maxContentLength: Infinity,
                 maxBodyLength: Infinity,
+                signal: controller.signal // <-- 传入 signal
             });
             log('DEBUG', FUNC_NAME, `收到 Telegram API 的响应 for "${fileName}"`);
 
@@ -87,21 +95,25 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
                  reject(new Error(res.data.description || 'Telegram API 返回失败'));
             }
         } catch (error) {
-            const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
-            log('ERROR', FUNC_NAME, `上传到 Telegram 失败 for "${fileName}": ${errorDescription}`);
+            // --- *** 关键修正：捕获 AbortError/Cancel *** ---
+            if (error.name === 'AbortError' || axios.isCancel(error)) {
+                 log('WARN', FUNC_NAME, `Telegram 上传被中止 (可能来自 fileStream 错误): ${fileName}`);
+            } else {
+                const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
+                log('ERROR', FUNC_NAME, `上传到 Telegram 失败 for "${fileName}": ${errorDescription}`);
+            }
+            // --- *** 修正结束 *** ---
+            
             // 确保流在任何错误情况下都被消耗掉
             if (fileStream && typeof fileStream.resume === 'function') {
                 fileStream.resume();
             }
-            reject(new Error(`上传至 Telegram 失败: ${errorDescription}`));
+            reject(new Error(`上传至 Telegram 失败: ${error.message}`));
         }
     });
 }
 // --- *** upload 函数重构结束 *** ---
 
-// --- *** 重构 remove 函数 *** ---
-// 移除函数内部的 data.deleteFilesByIds 调用，
-// 因为 data.unifiedDelete 会统一处理数据库删除。
 async function remove(files, userId) {
     const messageIds = files.map(f => f.message_id);
     const results = { success: [], failure: [] };
@@ -128,13 +140,12 @@ async function remove(files, userId) {
         }
     }
 
-    // if (results.success.length > 0) {
-    //     await data.deleteFilesByIds(results.success, userId);
-    // }
+    if (results.success.length > 0) {
+        await data.deleteFilesByIds(results.success, userId);
+    }
     
     return results;
 }
-// --- *** remove 函数重构结束 *** ---
 
 async function getUrl(file_id) {
   if (!file_id || typeof file_id !== 'string') return null;
