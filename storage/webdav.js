@@ -1,3 +1,4 @@
+// storage/webdav.js
 const { createClient } = require('webdav');
 const data = require('../data.js');
 const db = require('../database.js');
@@ -101,19 +102,28 @@ async function getFolderPath(folderId, userId) {
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
-async function upload(fileStream, fileName, mimetype, userId, folderId) {
+async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '', existingItem = null) { // <-- 新增 existingItem 参数
     const FUNC_NAME = 'upload';
     log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 WebDAV...`);
     
     return new Promise(async (resolve, reject) => {
+        let client; // 为本次上传使用新的客户端
+        let remotePath; // 在更广的作用域中定义 remotePath
         try {
-            const client = getClient();
+            // BUG 2 修复：为本次上传使用新的客户端，防止流中断时污染共享连接
+            const webdavConfig = getWebdavConfig();
+            client = createClient(webdavConfig.url, {
+                username: webdavConfig.username,
+                password: webdavConfig.password
+            });
+
             const folderPath = await getFolderPath(folderId, userId);
-            const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
+            remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
             
             // --- *** 关键修正 开始 *** ---
             // 使用新的健壮的目录创建函数
             if (folderPath && folderPath !== "/") {
+                // 使用 *共享* 客户端来创建目录，以利用其锁机制
                 await ensureDirectoryExists(folderPath);
             }
             // --- *** 关键修正 结束 *** ---
@@ -126,7 +136,15 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
             });
 
             log('DEBUG', FUNC_NAME, `正在调用 putFileContents 上传到: "${remotePath}"`);
-            const success = await client.putFileContents(remotePath, fileStream, { overwrite: true });
+            const success = await client.putFileContents(remotePath, fileStream, { 
+                overwrite: true, // 这同时处理了 Bug 2 (覆盖临时文件) 和 Bug 1 (覆盖)
+                // BUG 2 修复：确保流错误被传播
+                onUploadProgress: (progress) => {
+                    if (fileStream.destroyed) {
+                        throw new Error("File stream was destroyed during upload.");
+                    }
+                }
+            });
 
             if (!success) {
                 return reject(new Error('WebDAV putFileContents 操作失败'));
@@ -135,24 +153,54 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
 
             const stats = await client.stat(remotePath);
             log('DEBUG', FUNC_NAME, `获取 WebDAV 文件状态成功，大小: ${stats.size}`);
-            const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
 
-            const dbResult = await data.addFile({
-                message_id: messageId,
-                fileName,
-                mimetype,
-                size: stats.size,
-                file_id: remotePath,
-                date: Date.now(),
-            }, folderId, userId, 'webdav');
-            
-            log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
-            resolve({ success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId });
+            // --- BUG 1 修复逻辑 ---
+            if (existingItem) {
+                // 覆盖：更新现有数据库条目
+                log('DEBUG', FUNC_NAME, `(覆盖) 正在更新资料库中的文件: "${fileName}" (ID: ${existingItem.id})`);
+                await data.updateFile(existingItem.id, {
+                    mimetype: mimetype,
+                    file_id: remotePath,
+                    size: stats.size,
+                    date: Date.now(),
+                }, userId);
+                log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功在资料库中更新。`);
+                resolve({ success: true, message: '文件已覆盖。', fileId: existingItem.id });
+            } else {
+                // 新增：添加新数据库条目
+                const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
+                log('DEBUG', FUNC_NAME, `(新增) 正在将文件资讯添加到资料库: "${fileName}"`);
+                const dbResult = await data.addFile({
+                    message_id: messageId,
+                    fileName,
+                    mimetype,
+                    size: stats.size,
+                    file_id: remotePath,
+                    date: Date.now(),
+                }, folderId, userId, 'webdav');
+                
+                log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
+                resolve({ success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId });
+            }
+            // --- BUG 1 修复逻辑结束 ---
 
         } catch (error) {
             log('ERROR', FUNC_NAME, `上传到 WebDAV 失败 for "${fileName}":`, error);
             if (fileStream && typeof fileStream.resume === 'function') {
                 fileStream.resume();
+            }
+            
+            // BUG 2 修复：如果上传失败（例如流错误），尝试删除部分文件
+            // 仅当 !existingItem (非覆盖模式) 时才执行此操作，否则我们可能会删除原始的完好文件
+            if (!existingItem && client && remotePath) {
+                try {
+                    await client.deleteFile(remotePath);
+                    log('INFO', FUNC_NAME, `已删除中断的 WebDAV 临时文件: ${remotePath}`);
+                } catch (deleteError) {
+                    if (deleteError.response && deleteError.response.status !== 404) {
+                        log('ERROR', FUNC_NAME, `删除中断的 WebDAV 临时文件失败: ${remotePath}`, deleteError);
+                    }
+                }
             }
             reject(error);
         }
