@@ -102,7 +102,7 @@ async function getFolderPath(folderId, userId) {
 }
 
 // --- *** 重构 upload 函数 *** ---
-async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '', existingItem = null) { // <-- 接受 caption 和 existingItem
+async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '', existingItem = null) { // <-- 接受 caption
     const FUNC_NAME = 'upload';
     log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 WebDAV...`);
     
@@ -143,28 +143,56 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
 
             const stats = await client.stat(remotePath);
             log('DEBUG', FUNC_NAME, `获取 WebDAV 文件状态成功，大小: ${stats.size}`);
-            const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
 
-            // --- 新增：安全覆盖数据库 ---
+            // --- *** 关键修正：保留共享连结 *** ---
             if (existingItem) {
-                log('DEBUG', FUNC_NAME, `覆盖模式: 正在删除旧的数据库条目 (ID: ${existingItem.id})`);
-                // 2. 上传成功后，删除旧的数据库条目
-                await data.deleteFilesByIds([existingItem.id], userId);
-            }
-            // --- 结束：安全覆盖数据库 ---
+                // 这是 UPDATE 逻辑
+                log('DEBUG', FUNC_NAME, `覆盖 (Update) 模式: 正在更新数据库条目 (ID: ${existingItem.id})`);
+                
+                // 1. 获取旧文件路径，以便稍后清理
+                const oldRemotePath = existingItem.file_id;
 
-            // 3. 添加新的数据库条目
-            const dbResult = await data.addFile({
-                message_id: messageId,
-                fileName,
-                mimetype,
-                size: stats.size,
-                file_id: remotePath,
-                date: Date.now(),
-            }, folderId, userId, 'webdav');
-            
-            log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
-            resolve({ success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId });
+                // 2. 更新数据库 (UPDATE)
+                await data.updateFile(existingItem.id, userId, {
+                    fileName: fileName, // <-- 允许档名变更
+                    size: stats.size,
+                    file_id: remotePath,
+                    mimetype: mimetype,
+                    date: Date.now(),
+                });
+                
+                // 3. (清理) 如果档名变了，删除旧的实体档案
+                if (oldRemotePath !== remotePath) {
+                    log('DEBUG', FUNC_NAME, `档名已变更，正在删除旧的 WebDAV 档案: "${oldRemotePath}"`);
+                    try {
+                        await client.deleteFile(oldRemotePath);
+                    } catch (e) {
+                         log('WARN', FUNC_NAME, `删除旧档案 ${oldRemotePath} 失败: ${e.message}`);
+                    }
+                }
+                
+                log('INFO', FUNC_NAME, `文件 "${fileName}" (ID: ${existingItem.id}) 已成功更新。`);
+                resolve({ success: true, fileId: existingItem.id }); // <-- 返回旧 ID
+            } else {
+                // 这是 INSERT 逻辑 (新上传)
+                log('DEBUG', FUNC_NAME, '新上传模式: 正在新增数据库条目...');
+                
+                const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
+                
+                // 1. 新增数据库 (INSERT)
+                const dbResult = await data.addFile({
+                    message_id: messageId,
+                    fileName,
+                    mimetype,
+                    size: stats.size,
+                    file_id: remotePath,
+                    date: Date.now(),
+                }, folderId, userId, 'webdav');
+                
+                log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
+                resolve({ success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId });
+            }
+            // --- *** 修正结束 *** ---
 
         } catch (error) {
             // --- *** 关键修正：捕获 AbortError *** ---
