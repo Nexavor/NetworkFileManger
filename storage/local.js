@@ -1,6 +1,6 @@
 // storage/local.js
 const fsp = require('fs').promises;
-const fs = require('fs');
+const fs = require('fs'); // <--- fs 在这里定义
 const path = require('path');
 const data = require('../data.js');
 
@@ -128,7 +128,8 @@ async function remove(files, folders, userId) {
     for (const file of files) {
         try {
             const filePath = path.join(userDir, file.file_id);
-            if (fsSync.existsSync(filePath)) {
+            // --- *** 崩溃修复：fsSync.existsSync 改为 fs.existsSync *** ---
+            if (fs.existsSync(filePath)) {
                 parentDirs.add(path.dirname(filePath));
                 await fsp.unlink(filePath);
             }
@@ -141,7 +142,8 @@ async function remove(files, folders, userId) {
     for (const folder of folders) {
         try {
             const folderPath = path.join(userDir, folder.path);
-            if (fsSync.existsSync(folderPath)) {
+            // --- *** 崩溃修复：fsSync.existsSync 改为 fs.existsSync *** ---
+            if (fs.existsSync(folderPath)) {
                 parentDirs.add(path.dirname(folderPath));
                  await fsp.rm(folderPath, { recursive: true, force: true });
             }
@@ -160,11 +162,13 @@ async function remove(files, folders, userId) {
 
 async function removeEmptyDirsRecursive(directoryPath, userBaseDir) {
     try {
-        if (!fsSync.existsSync(directoryPath) || !directoryPath.startsWith(userBaseDir) || directoryPath === userBaseDir) {
+        // --- *** 崩溃修复：fsSync.existsSync 改为 fs.existsSync *** ---
+        if (!fs.existsSync(directoryPath) || !directoryPath.startsWith(userBaseDir) || directoryPath === userBaseDir) {
             return;
         }
         let currentPath = directoryPath;
-        while (currentPath !== userBaseDir && fsSync.existsSync(currentPath)) {
+        // --- *** 崩溃修复：fsSync.existsSync 改为 fs.existsSync *** ---
+        while (currentPath !== userBaseDir && fs.existsSync(currentPath)) {
             const files = await fsp.readdir(currentPath);
             if (files.length === 0) {
                 await fsp.rmdir(currentPath);
@@ -185,7 +189,8 @@ async function getUrl(file_id, userId) {
 function stream(file_id, userId) {
     const userDir = path.join(UPLOAD_DIR, String(userId));
     const finalFilePath = path.join(userDir, file_id);
-    if (fsSync.existsSync(finalFilePath)) {
+    // --- *** 崩溃修复：fsSync.existsSync 改为 fs.existsSync *** ---
+    if (fs.existsSync(finalFilePath)) {
         return fs.createReadStream(finalFilePath);
     }
     throw new Error('本地档案不存在');
