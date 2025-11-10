@@ -1,4 +1,4 @@
-// data.js (最终正式版)
+// data.js (最终正式版 - 兼容 server.js 和 storage/*.js)
 
 const db = require('./database.js');
 const fsp = require('fs').promises;
@@ -381,7 +381,7 @@ async function addFile(fileData, folderId, userId, storageType) {
     }
 }
 
-// --- *** 新增 updateFile 函数 *** ---
+// --- *** 新增 updateFile 函数 (修复共享连结丢失BUG) *** ---
 async function updateFile(fileId, userId, newFileInfo) {
     const FUNC_NAME = 'updateFile';
     log('DEBUG', FUNC_NAME, `开始更新档案 ID: ${fileId} for user: ${userId}`);
