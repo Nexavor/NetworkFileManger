@@ -1,8 +1,10 @@
-// data.js (最终正式版 - 兼容 server.js 和 storage/*.js)
+// data.js (最终正式版 - 已修复启动错误)
 
 const db = require('./database.js');
 const fsp = require('fs').promises;
-const path = path = require('path');
+// --- *** 关键修正：修复启动错误 *** ---
+const path = require('path');
+// --- *** 修正结束 *** ---
 const storageManager = require('./storage');
 const bcrypt = require('bcrypt');
 
@@ -203,7 +205,7 @@ async function createFolder(name, parentId, userId) {
             }
             if (!row && parentId !== null) {
                  log('WARN', FUNC_NAME, `建立资料夹失败，父资料夹 ${parentId} 不存在或不属于使用者 ${userId}`);
-                 return reject(new Error('父资料夹不存在或权限不足'));
+                 return reject(new Error('父资料夾不存在或权限不足'));
             }
 
             // 插入新资料夹
@@ -257,7 +259,7 @@ async function getFolderDetails(folderId, userId) {
 async function getFolderPath(folderId, userId) {
     const FUNC_NAME = 'getFolderPath';
     log('DEBUG', FUNC_NAME, `正在递归获取资料夹路径: ${folderId} for user: ${userId}`);
-    let path = [];
+    let pathArr = []; // <-- 修正：确保 path 变量在此处定义
     let currentId = folderId;
     while (currentId !== null) {
         const folder = await new Promise((resolve, reject) => {
@@ -270,11 +272,11 @@ async function getFolderPath(folderId, userId) {
             log('WARN', FUNC_NAME, `路径追踪中断：在 ${currentId} 找不到资料夹 (user: ${userId})`);
             break; // 找不到资料夹或权限不足
         }
-        path.unshift({ id: folder.id, name: folder.name });
+        pathArr.unshift({ id: folder.id, name: folder.name });
         currentId = folder.parent_id;
     }
-    log('DEBUG', FUNC_NAME, `路径获取成功，深度: ${path.length}`);
-    return path;
+    log('DEBUG', FUNC_NAME, `路径获取成功，深度: ${pathArr.length}`);
+    return pathArr;
 }
 
 async function getAllFolders(userId) {
@@ -749,6 +751,9 @@ async function renameFolder(folderId, newName, userId) {
                 const userDir = path.join(__dirname, 'data', 'uploads', String(userId));
                 const oldLocalPath = path.join(userDir, oldFolderPath);
                 const newLocalPath = path.join(userDir, newFolderPath);
+                
+                // --- 修正：检查旧路径是否存在 ---
+                const fs = require('fs'); // 引入 fs (sync)
                 if (fs.existsSync(oldLocalPath)) {
                     await fsp.rename(oldLocalPath, newLocalPath);
                 } else {
@@ -1041,7 +1046,7 @@ async function createShareLink(itemId, itemType, expiresIn, userId, password, cu
     await cancelShare(itemId, itemType, userId);
 
     // 3. 设定参数
-    const token = crypto.randomBytes(16).toString('hex');
+    const token = require('crypto').randomBytes(16).toString('hex'); // <--- 修正：在此处引入 crypto
     let expiresAt = null;
     if (expiresIn === '1h') expiresAt = Date.now() + 3600000;
     else if (expiresIn === '24h') expiresAt = Date.now() + 86400000;
