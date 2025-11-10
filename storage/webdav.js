@@ -102,33 +102,39 @@ async function getFolderPath(folderId, userId) {
 }
 
 // --- *** 重构 upload 函数 *** ---
-async function upload(fileStream, fileName, mimetype, userId, folderId, existingItem = null) { // <-- 接受 existingItem
+async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '', existingItem = null) { // <-- 接受 caption 和 existingItem
     const FUNC_NAME = 'upload';
     log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 WebDAV...`);
     
+    // --- *** 关键修正：新增 AbortController *** ---
+    const controller = new AbortController();
+    // --- *** 修正结束 *** ---
+
     return new Promise(async (resolve, reject) => {
         try {
             const client = getClient();
             const folderPath = await getFolderPath(folderId, userId);
             const remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
             
-            // --- *** 关键修正 开始 *** ---
-            // 使用新的健壮的目录创建函数
             if (folderPath && folderPath !== "/") {
                 await ensureDirectoryExists(folderPath);
             }
-            // --- *** 关键修正 结束 *** ---
-
 
             // 关键：监听输入流的错误
             fileStream.on('error', err => {
                 log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for "${fileName}":`, err);
+                // --- *** 关键修正：中止 WebDAV 请求 *** ---
+                controller.abort(err);
+                // --- *** 修正结束 *** ---
                 reject(new Error(`输入文件流中断: ${err.message}`));
             });
 
             log('DEBUG', FUNC_NAME, `正在调用 putFileContents 上传到: "${remotePath}"`);
             // 1. 上传文件，WebDAV 会自动覆盖
-            const success = await client.putFileContents(remotePath, fileStream, { overwrite: true });
+            const success = await client.putFileContents(remotePath, fileStream, { 
+                overwrite: true,
+                signal: controller.signal // <-- 传入 signal
+            });
 
             if (!success) {
                 return reject(new Error('WebDAV putFileContents 操作失败'));
@@ -161,7 +167,14 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, existing
             resolve({ success: true, message: '档案已上传至 WebDAV。', fileId: dbResult.fileId });
 
         } catch (error) {
-            log('ERROR', FUNC_NAME, `上传到 WebDAV 失败 for "${fileName}":`, error);
+            // --- *** 关键修正：捕获 AbortError *** ---
+            if (error.name === 'AbortError') {
+                 log('WARN', FUNC_NAME, `WebDAV 上传被中止 (可能来自 fileStream 错误): ${fileName}`);
+            } else {
+                log('ERROR', FUNC_NAME, `上传到 WebDAV 失败 for "${fileName}":`, error);
+            }
+            // --- *** 修正结束 *** ---
+
             if (fileStream && typeof fileStream.resume === 'function') {
                 fileStream.resume();
             }
