@@ -101,7 +101,8 @@ async function getFolderPath(folderId, userId) {
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
-async function upload(fileStream, fileName, mimetype, userId, folderId) {
+// --- *** 重构 upload 函数 *** ---
+async function upload(fileStream, fileName, mimetype, userId, folderId, existingItem = null) { // <-- 接受 existingItem
     const FUNC_NAME = 'upload';
     log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 WebDAV...`);
     
@@ -126,6 +127,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
             });
 
             log('DEBUG', FUNC_NAME, `正在调用 putFileContents 上传到: "${remotePath}"`);
+            // 1. 上传文件，WebDAV 会自动覆盖
             const success = await client.putFileContents(remotePath, fileStream, { overwrite: true });
 
             if (!success) {
@@ -137,6 +139,15 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
             log('DEBUG', FUNC_NAME, `获取 WebDAV 文件状态成功，大小: ${stats.size}`);
             const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
 
+            // --- 新增：安全覆盖数据库 ---
+            if (existingItem) {
+                log('DEBUG', FUNC_NAME, `覆盖模式: 正在删除旧的数据库条目 (ID: ${existingItem.id})`);
+                // 2. 上传成功后，删除旧的数据库条目
+                await data.deleteFilesByIds([existingItem.id], userId);
+            }
+            // --- 结束：安全覆盖数据库 ---
+
+            // 3. 添加新的数据库条目
             const dbResult = await data.addFile({
                 message_id: messageId,
                 fileName,
@@ -158,6 +169,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
         }
     });
 }
+// --- *** upload 函数重构结束 *** ---
 
 
 async function remove(files, folders, userId) {
