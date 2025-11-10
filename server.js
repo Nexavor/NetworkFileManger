@@ -296,6 +296,7 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
+// --- *** 重构 /upload 路由 *** ---
 app.post('/upload', requireLogin, (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
@@ -313,6 +314,7 @@ app.post('/upload', requireLogin, (req, res) => {
         const uploadPromises = [];
 
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
+            // 修复 busboy 中文路径名乱码问题
             const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
             
             const fileUploadPromise = (async () => {
@@ -320,9 +322,9 @@ app.post('/upload', requireLogin, (req, res) => {
                 const pathParts = relativePath.split('/').filter(p => p);
                 let finalFilename = pathParts.pop() || relativePath;
 
-                // --- *** 关键修正：改用字节长度进行验证 *** ---
+                // --- 关键修正：改用字节长度进行验证 ---
                 if (Buffer.byteLength(finalFilename, 'utf8') > MAX_FILENAME_BYTES) {
-                    fileStream.resume(); 
+                    fileStream.resume(); // 消耗掉流，防止挂起
                     throw new Error(`档名 "${finalFilename.substring(0, 30)}..." 过长 (超过 ${MAX_FILENAME_BYTES} 字节)。`);
                 }
                 // --- 修正结束 ---
@@ -336,28 +338,38 @@ app.post('/upload', requireLogin, (req, res) => {
 
                 const folderPathParts = pathParts;
 
+                // 找到或创建目标资料夹
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                 
+                let existingItem = null; // <-- 定义 existingItem
+
                 if (action === 'overwrite') {
-                    const existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                    if (existingItem) {
-                        await data.unifiedDelete(existingItem.id, existingItem.type, userId);
+                    existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
+                    if (existingItem && existingItem.type === 'folder') {
+                        fileStream.resume();
+                        throw new Error(`无法用档案覆盖一个同名资料夹: "${finalFilename}"`);
                     }
+                    // *** 不在此处删除 ***
                 } else if (action === 'rename') {
                     finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
-                } else {
+                    // 既然是重命名，就不存在 "existingItem" 了
+                    existingItem = null;
+                } else { // 'upload'
                     const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                     if (conflict) {
+                        // 客户端检查过了，但还是发生了冲突（可能是并发），跳过
                         fileStream.resume();
                         return { skipped: true };
                     }
                 }
                 
-                await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '');
+                // 将 `existingItem` (如果存在) 传递给 storage.upload
+                // storage.upload 现在负责处理原子化的覆盖逻辑
+                await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
                 return { skipped: false };
             })().catch(err => {
-                fileStream.resume();
-                throw err;
+                fileStream.resume(); // 确保流被消耗
+                throw err; // 将错误抛给 Promise.all
             });
             uploadPromises.push(fileUploadPromise);
         });
@@ -373,6 +385,7 @@ app.post('/upload', requireLogin, (req, res) => {
                      res.json({ success: true, message: '上传完成' });
                 }
             } catch (error) {
+                // log('ERROR', 'server.js', 'busboy/finish', '一个或多个文件上传失败:', error);
                 if (!res.headersSent) {
                     res.status(500).json({ success: false, message: `上传任务执行失败: ${error.message}` });
                 }
@@ -380,6 +393,7 @@ app.post('/upload', requireLogin, (req, res) => {
         });
 
         busboy.on('error', (err) => {
+            // log('ERROR', 'server.js', 'busboy/error', 'Busboy 解析出错:', err);
             req.unpipe(busboy);
             if (!res.headersSent) {
                 res.status(500).json({ success: false, message: '上传解析失败' });
@@ -389,9 +403,11 @@ app.post('/upload', requireLogin, (req, res) => {
         req.pipe(busboy);
 
     } catch (err) {
+        // log('ERROR', 'server.js', '/upload', '请求预处理失败:', err);
         res.status(400).json({ success: false, message: `请求预处理失败: ${err.message}` });
     }
 });
+// --- *** /upload 路由重构结束 *** ---
 
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
@@ -413,47 +429,45 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
             }
             const originalFile = filesToUpdate[0];
+            let existingItem = null; // <-- 关键修正
 
             if (fileName !== originalFile.fileName) {
                 const conflict = await data.checkFullConflict(fileName, originalFile.folder_id, userId);
                 if (conflict) {
                     return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
                 }
+            } else {
+                 // 档名没变，意味着我们要覆盖自己
+                 existingItem = await data.findItemInFolder(fileName, originalFile.folder_id, userId);
             }
 
-            if (originalFile.storage_type === 'telegram') {
-                const fileStream = fs.createReadStream(tempFilePath);
-                await data.unifiedDelete(originalFile.message_id, 'file', userId);
-                const result = await storage.upload(fileStream, fileName, 'text/plain', userId, originalFile.folder_id);
-                return res.json({ success: true, fileId: result.fileId });
-            } else {
-                const newRelativePath = path.posix.join(path.posix.dirname(originalFile.file_id), fileName);
-                if (originalFile.storage_type === 'local') {
-                    const newFullPath = path.join(__dirname, 'data', 'uploads', String(userId), newRelativePath);
-                    await fsp.mkdir(path.dirname(newFullPath), { recursive: true });
-                    await fsp.copyFile(tempFilePath, newFullPath);
-                    if (originalFile.file_id !== newRelativePath && fs.existsSync(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id))) {
-                         await fsp.unlink(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id));
-                    }
-                } else if (originalFile.storage_type === 'webdav') {
-                    const fileStream = fs.createReadStream(tempFilePath);
-                    const client = storage.getClient();
-                    await client.putFileContents(newRelativePath, fileStream, { overwrite: true });
-                    if (originalFile.file_id !== newRelativePath) {
-                        await client.deleteFile(originalFile.file_id);
-                    }
-                }
-                const stats = await fsp.stat(tempFilePath);
-                await data.updateFile(fileId, { fileName, size: stats.size, date: Date.now(), file_id: newRelativePath }, userId);
-                return res.json({ success: true, fileId: fileId });
+            const fileStream = fs.createReadStream(tempFilePath);
+            // --- 关键修正：不再手动删除，让 storage.upload 处理覆盖 ---
+            // if (originalFile.storage_type === 'telegram') {
+            //     await data.unifiedDelete(originalFile.message_id, 'file', userId);
+            // }
+            const result = await storage.upload(fileStream, fileName, 'text/plain', userId, originalFile.folder_id, '', existingItem);
+            
+            // --- 关键修正：处理 local/webdav 在档名变更时的旧档清理 ---
+            if (storage.type !== 'telegram' && fileName !== originalFile.fileName) {
+                 await storage.remove([originalFile], [], userId);
             }
+            
+            // --- 关键修正：如果 storage.upload 返回了新的 fileId (例如 TG)，则更新 fileId ---
+            let finalFileId = fileId;
+            if (result.fileId && String(result.fileId) !== String(fileId)) {
+                finalFileId = result.fileId;
+            }
+
+            return res.json({ success: true, fileId: finalFileId });
+
         } else if (mode === 'create' && folderId) {
             const conflict = await data.checkFullConflict(fileName, folderId, userId);
             if (conflict) {
                 return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
             }
             const fileStream = fs.createReadStream(tempFilePath);
-            const result = await storage.upload(fileStream, fileName, 'text/plain', userId, folderId);
+            const result = await storage.upload(fileStream, fileName, 'text/plain', userId, folderId, '', null); // <-- 传递 null
             res.json({ success: true, fileId: result.fileId });
         } else {
             return res.status(400).json({ success: false, message: '请求参数无效' });
@@ -461,7 +475,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
     } catch (error) {
         res.status(500).json({ success: false, message: '伺服器内部错误: ' + error.message });
     } finally {
-        if (fs.existsSync(tempFilePath)) {
+        if (fsSync.existsSync(tempFilePath)) {
             await fsp.unlink(tempFilePath).catch(err => {});
         }
     }
