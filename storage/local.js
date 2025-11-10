@@ -2,6 +2,7 @@ const fsp = require('fs').promises;
 const fs = require('fs');
 const path = require('path');
 const data = require('../data.js');
+const crypto = require('crypto'); // <-- 引入 crypto
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
 const FILE_NAME = 'storage/local.js';
@@ -19,7 +20,8 @@ async function setup() {
 }
 setup();
 
-async function upload(fileStream, fileName, mimetype, userId, folderId) {
+// --- *** 重构 upload 函数 *** ---
+async function upload(fileStream, fileName, mimetype, userId, folderId, existingItem = null) { // <-- 接受 existingItem
     const FUNC_NAME = 'upload';
     log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到本地储存...`);
     
@@ -34,13 +36,20 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
     const finalFilePath = path.join(finalFolderPath, fileName);
     const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/');
 
+    // --- 新增：安全覆盖逻辑 ---
+    // 1. 定义临时文件路径
+    const tempFilePath = finalFilePath + '.' + crypto.randomBytes(6).toString('hex') + '.tmp';
+    let oldDbEntryDeleted = false;
+    // --- 结束：安全覆盖逻辑 ---
+
     return new Promise((resolve, reject) => {
-        log('DEBUG', FUNC_NAME, `创建写入流到: "${finalFilePath}"`);
-        const writeStream = fs.createWriteStream(finalFilePath);
+        log('DEBUG', FUNC_NAME, `创建写入流到 (临时): "${tempFilePath}"`);
+        const writeStream = fs.createWriteStream(tempFilePath); // 2. 写入临时文件
 
         fileStream.on('error', err => {
             log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for "${fileName}":`, err);
             writeStream.close();
+            fsp.unlink(tempFilePath).catch(e => {}); // 3. 清理失败的临时文件
             reject(err);
         });
 
@@ -50,14 +59,29 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
         writeStream.on('drain', () => {
             log('DEBUG', FUNC_NAME, `写入流 'drain' 事件触发 for "${fileName}"。可以继续写入。`);
         });
+
         writeStream.on('finish', async () => {
-            log('INFO', FUNC_NAME, `文件写入磁盘完成 (finish): "${fileName}"`);
+            log('INFO', FUNC_NAME, `文件写入磁盘完成 (finish): "${tempFilePath}"`);
             try {
+                // --- 新增：原子化移动/删除逻辑 ---
+                if (existingItem) {
+                    log('DEBUG', FUNC_NAME, `覆盖模式: 正在删除旧的数据库条目 (ID: ${existingItem.id})`);
+                    // 4. 先删除旧的数据库条目
+                    await data.deleteFilesByIds([existingItem.id], userId);
+                    oldDbEntryDeleted = true; // 标记
+                }
+
+                // 5. 原子化移动临时文件到最终位置（这将自动覆盖旧文件）
+                await fsp.rename(tempFilePath, finalFilePath);
+                log('DEBUG', FUNC_NAME, `临时文件已移动到: "${finalFilePath}"`);
+                // --- 结束：原子化逻辑 ---
+
                 const stats = await fsp.stat(finalFilePath);
                 log('DEBUG', FUNC_NAME, `获取文件状态成功，大小: ${stats.size}`);
                 const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
                 
                 log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: "${fileName}"`);
+                // 6. 添加新的数据库条目
                 const dbResult = await data.addFile({
                     message_id: messageId,
                     fileName,
@@ -71,12 +95,18 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
                 log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
                 resolve({ success: true, message: '文件已储存至本地。', fileId: dbResult.fileId });
             } catch (err) {
-                 log('ERROR', FUNC_NAME, `写入资料库时发生错误 for "${fileName}":`, err);
+                 log('ERROR', FUNC_NAME, `写入资料库或移动文件时发生错误 for "${fileName}":`, err);
+                 // 7. 回滚处理
+                 if (oldDbEntryDeleted) {
+                    log('ERROR', FUNC_NAME, '数据库已删除旧条目，但新条目添加失败。数据可能不一致！请检查！');
+                 }
+                 fsp.unlink(tempFilePath).catch(e => {}); // 清理临时文件
                  reject(err);
             }
         });
         writeStream.on('error', err => {
             log('ERROR', FUNC_NAME, `写入流 (writeStream) 发生错误 for "${fileName}":`, err);
+            fsp.unlink(tempFilePath).catch(e => {}); // 3. 清理失败的临时文件
             reject(err);
         });
         
@@ -84,6 +114,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId) {
         fileStream.pipe(writeStream);
     });
 }
+// --- *** upload 函数重构结束 *** ---
 
 
 async function remove(files, folders, userId) {
@@ -126,11 +157,11 @@ async function remove(files, folders, userId) {
 
 async function removeEmptyDirsRecursive(directoryPath, userBaseDir) {
     try {
-        if (!fs.existsSync(directoryPath) || !directoryPath.startsWith(userBaseDir) || directoryPath === userBaseDir) {
+        if (!fsSync.existsSync(directoryPath) || !directoryPath.startsWith(userBaseDir) || directoryPath === userBaseDir) {
             return;
         }
         let currentPath = directoryPath;
-        while (currentPath !== userBaseDir && fs.existsSync(currentPath)) {
+        while (currentPath !== userBaseDir && fsSync.existsSync(currentPath)) {
             const files = await fsp.readdir(currentPath);
             if (files.length === 0) {
                 await fsp.rmdir(currentPath);
