@@ -28,27 +28,67 @@ const jsonReplacer = (key, value) => {
 app.set('json replacer', jsonReplacer);
 
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
+// --- *** 关键修正：定义 UPLOADS_DIR *** ---
+const UPLOADS_DIR = path.join(__dirname, 'data', 'uploads');
 
 // const log = (level, file, func, message, ...args) => {
 //     // const timestamp = new Date().toISOString();
 //     // console.log(`[${timestamp}] [${level}] [${file}:${func}] - ${message}`, ...args);
 // };
 
-async function cleanupTempDir() {
+// --- *** 关键修正：重构清理函数以支援递归 *** ---
+async function cleanupRecursive(directory) {
+    try {
+        if (!fs.existsSync(directory)) {
+            await fsp.mkdir(directory, { recursive: true });
+            return;
+        }
+        
+        const files = await fsp.readdir(directory, { withFileTypes: true });
+        
+        for (const file of files) {
+            const fullPath = path.join(directory, file.name);
+            if (file.isDirectory()) {
+                // 递归进入子目录
+                await cleanupRecursive(fullPath);
+            } else if (file.isFile() && file.name.endsWith('.tmp')) {
+                // 这是一个孤儿 .tmp 文件，删除它
+                try {
+                    await fsp.unlink(fullPath);
+                    // console.log(`[Scheduler] 清理了孤儿 .tmp 文件: ${fullPath}`);
+                } catch (err) {
+                    // console.error(`[Scheduler] 无法清理 .tmp 文件 ${fullPath}:`, err);
+                }
+            }
+        }
+    } catch (error) {
+         // console.error(`[Scheduler] 递归清理 ${directory} 时出错:`, error);
+    }
+}
+
+async function cleanupTempDirs() {
+    // 1. 清理文字编辑器的临时目录 (data/tmp)
     try {
         if (!fs.existsSync(TMP_DIR)) {
             await fsp.mkdir(TMP_DIR, { recursive: true });
-            return;
-        }
-        const files = await fsp.readdir(TMP_DIR);
-        for (const file of files) {
-            try {
-                await fsp.unlink(path.join(TMP_DIR, file));
-            } catch (err) {}
+        } else {
+            const files = await fsp.readdir(TMP_DIR);
+            for (const file of files) {
+                try {
+                    await fsp.unlink(path.join(TMP_DIR, file));
+                } catch (err) {}
+            }
         }
     } catch (error) {}
+
+    // 2. 递归清理本地储存的孤儿 .tmp 文件 (data/uploads)
+    // console.log('[Scheduler] 开始清理 data/uploads 中的 .tmp 文件...');
+    await cleanupRecursive(UPLOADS_DIR);
+    // console.log('[Scheduler] .tmp 文件清理完成。');
 }
-cleanupTempDir();
+cleanupTempDirs();
+// --- *** 修正结束 *** ---
+
 
 const PORT = process.env.PORT || 8100;
 
