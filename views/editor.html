@@ -163,6 +163,23 @@
 
             // V3: 增加一个 sleep 辅助函式
             const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            
+            // --- *** 关键修复 V4：增加 debounce 辅助函式以解决崩溃问题 *** ---
+            function debounce(func, wait) {
+                let timeout;
+                return function executedFunction(...args) {
+                    const later = () => {
+                        clearTimeout(timeout);
+                        func(...args);
+                    };
+                    clearTimeout(timeout);
+                    timeout = setTimeout(later, wait);
+                };
+            }
+            
+            // V4: 建立一个 debounced 版本的行号更新函式
+            const debouncedUpdateLineNumbers = debounce(updateLineNumbers, 150); // 150ms 延迟
+            // --- *** 修复结束 *** ---
 
             saveBtn.addEventListener('click', async () => {
                 let fileName = fileNameInput.value.trim();
@@ -219,19 +236,26 @@
 
                 } catch (error) {
                     
-                    // --- *** 关键修复 V3 *** ---
+                    // --- *** 关键修复 V4：修复“无提示”问题 *** ---
                     if (!error.response) {
                         // 这是一个内部 JS 错误 (例如 window.opener 失败)
                         // 但 axios.post 已经成功了。
                         console.error("保存成功，但在后续操作中发生内部错误:", error);
                         
                         // 关键：我们必须手动完成被跳过的 "success" 步骤
-                        // 以确保 "保存" 按钮正确变为不可用状态。
+                        
+                        // 1. 显示成功提示
+                        saveStatus.textContent = '✓ 已储存';
+                        setTimeout(() => {
+                            saveStatus.textContent = '';
+                        }, 2000);
+                        
+                        // 2. 更新内部状态以禁用保存按钮
                         initialFileName = fileName;
                         initialContent = content;
                         checkForChanges(); // <-- 这会使按钮正确禁用
                         
-                        // 并且不要显示错误弹窗
+                        // 3. 并且不要显示错误弹窗
                         return; // 提前退出 catch 块
                     }
                     // --- *** 修复结束 *** ---
@@ -322,8 +346,8 @@
             fileNameInput.addEventListener('input', checkForChanges);
             
             editor.addEventListener('input', () => {
-                checkForChanges();
-                updateLineNumbers();
+                checkForChanges(); // 立即检查变更
+                debouncedUpdateLineNumbers(); // V4: 使用 debounced 函式
             });
 
             editor.addEventListener('scroll', () => {
