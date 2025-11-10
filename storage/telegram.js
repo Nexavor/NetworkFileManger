@@ -12,11 +12,13 @@ const log = (level, func, message, ...args) => {
     // console.log(`[${timestamp}] [${level}] [${FILE_NAME}:${func}] - ${message}`, ...args);
 };
 
-async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '') {
+// --- *** 重构 upload 函数 *** ---
+async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '', existingItem = null) { // <-- 接受 existingItem
     const FUNC_NAME = 'upload';
     log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 Telegram...`);
   
     return new Promise(async (resolve, reject) => {
+        let oldMessageId = null; // <-- 储存旧消息 ID
         try {
             const formData = new FormData();
             formData.append('chat_id', process.env.CHANNEL_ID);
@@ -30,6 +32,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             });
 
             log('DEBUG', FUNC_NAME, `正在发送 POST 请求到 Telegram API for "${fileName}"`);
+            // 1. 上传新文件
             const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
                 headers: formData.getHeaders(),
                 maxContentLength: Infinity,
@@ -42,7 +45,18 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
                 const fileData = result.document || result.video || result.audio || result.photo;
 
                 if (fileData && fileData.file_id) {
+                    
+                    // --- 新增：安全覆盖数据库 ---
+                    if (existingItem) {
+                        log('DEBUG', FUNC_NAME, `覆盖模式: 正在删除旧的数据库条目 (ID: ${existingItem.id})`);
+                        oldMessageId = existingItem.id; // 记录旧消息ID，稍后删除
+                        // 2. 上传成功后，删除旧的数据库条目
+                        await data.deleteFilesByIds([existingItem.id], userId);
+                    }
+                    // --- 结束：安全覆盖数据库 ---
+
                     log('DEBUG', FUNC_NAME, `正在将文件资讯添加到资料库: "${fileName}"`);
+                    // 3. 添加新的数据库条目
                     const dbResult = await data.addFile({
                       message_id: result.message_id,
                       fileName,
@@ -52,6 +66,18 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
                       thumb_file_id: fileData.thumb ? fileData.thumb.file_id : null,
                       date: Date.now(),
                     }, folderId, userId, 'telegram');
+                    
+                    // 4. (最佳实践) 在新数据库条目写入成功后，再删除旧的 Telegram 消息
+                    if (oldMessageId) {
+                        axios.post(`${TELEGRAM_API}/deleteMessage`, {
+                            chat_id: process.env.CHANNEL_ID,
+                            message_id: oldMessageId,
+                        }).catch(err => {
+                            const reason = err.response ? err.response.data.description : err.message;
+                            log('WARN', FUNC_NAME, `(非致命) 删除旧的 Telegram 消息 (ID: ${oldMessageId}) 失败: ${reason}`);
+                        });
+                    }
+
                     log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
                     resolve({ success: true, data: res.data, fileId: dbResult.fileId });
                 } else {
@@ -71,7 +97,11 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
         }
     });
 }
+// --- *** upload 函数重构结束 *** ---
 
+// --- *** 重构 remove 函数 *** ---
+// 移除函数内部的 data.deleteFilesByIds 调用，
+// 因为 data.unifiedDelete 会统一处理数据库删除。
 async function remove(files, userId) {
     const messageIds = files.map(f => f.message_id);
     const results = { success: [], failure: [] };
@@ -98,12 +128,13 @@ async function remove(files, userId) {
         }
     }
 
-    if (results.success.length > 0) {
-        await data.deleteFilesByIds(results.success, userId);
-    }
+    // if (results.success.length > 0) {
+    //     await data.deleteFilesByIds(results.success, userId);
+    // }
     
     return results;
 }
+// --- *** remove 函数重构结束 *** ---
 
 async function getUrl(file_id) {
   if (!file_id || typeof file_id !== 'string') return null;
