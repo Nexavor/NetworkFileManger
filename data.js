@@ -1,1443 +1,1374 @@
+// data.js (最终正式版)
+
 const db = require('./database.js');
-const crypto = require('crypto');
-const path = require('path');
-const fs = require('fs').promises;
-const fsSync = require('fs');
+const fsp = require('fs').promises;
+const path = path = require('path');
+const storageManager = require('./storage');
 const bcrypt = require('bcrypt');
-const { encrypt, decrypt } = require('./crypto.js');
 
-const UPLOAD_DIR = path.resolve(__dirname, 'data', 'uploads');
-const creatingFolders = new Set();
+const FILE_NAME = 'data.js';
 
+// --- 日志辅助函数 ---
+const log = (level, func, message, ...args) => {
+    // const timestamp = new Date().toISOString();
+    // console.log(`[${timestamp}] [${level}] [${FILE_NAME}:${func}] - ${message}`, ...args);
+};
 
-function createUser(username, hashedPassword) {
-    return new Promise((resolve, reject) => {
-        const sql = `INSERT INTO users (username, password, is_admin) VALUES (?, ?, 0)`;
-        db.run(sql, [username, hashedPassword], function(err) {
-            if (err) return reject(err);
-            resolve({ id: this.lastID, username });
-        });
-    });
-}
-
-function findUserByName(username) {
+async function findUserByName(username) {
+    const FUNC_NAME = 'findUserByName';
+    log('DEBUG', FUNC_NAME, `正在依名称寻找使用者: ${username}`);
     return new Promise((resolve, reject) => {
         db.get("SELECT * FROM users WHERE username = ?", [username], (err, row) => {
-            if (err) return reject(err);
+            if (err) {
+                log('ERROR', FUNC_NAME, `查询使用者 ${username} 时出错:`, err);
+                return reject(err);
+            }
+            log('DEBUG', FUNC_NAME, `查询完成。 ${row ? '找到' : '未找到'} 使用者。`);
             resolve(row);
         });
     });
 }
 
-function findUserById(id) {
+async function findUserById(id) {
+    const FUNC_NAME = 'findUserById';
+    log('DEBUG', FUNC_NAME, `正在依 ID 寻找使用者: ${id}`);
     return new Promise((resolve, reject) => {
         db.get("SELECT * FROM users WHERE id = ?", [id], (err, row) => {
-            if (err) return reject(err);
+            if (err) {
+                log('ERROR', FUNC_NAME, `查询使用者 ${id} 时出错:`, err);
+                return reject(err);
+            }
+            log('DEBUG', FUNC_NAME, `查询完成。 ${row ? '找到' : '未找到'} 使用者。`);
             resolve(row);
         });
     });
 }
 
-function changeUserPassword(userId, newHashedPassword) {
+async function createUser(username, hashedPassword) {
+    const FUNC_NAME = 'createUser';
+    log('INFO', FUNC_NAME, `正在建立新使用者: ${username}`);
     return new Promise((resolve, reject) => {
-        const sql = `UPDATE users SET password = ? WHERE id = ?`;
-        db.run(sql, [newHashedPassword, userId], function(err) {
-            if (err) return reject(err);
-            resolve({ success: true, changes: this.changes });
+        db.run("INSERT INTO users (username, password) VALUES (?, ?)", [username, hashedPassword], function(err) {
+            if (err) {
+                log('ERROR', FUNC_NAME, `建立使用者 ${username} 失败:`, err);
+                return reject(err);
+            }
+            log('INFO', FUNC_NAME, `使用者 ${username} 建立成功, ID: ${this.lastID}`);
+            resolve({ id: this.lastID, username, is_admin: 0 });
         });
     });
 }
 
-function listNormalUsers() {
+async function listNormalUsers() {
+    const FUNC_NAME = 'listNormalUsers';
+    log('DEBUG', FUNC_NAME, '正在列出所有一般使用者 (is_admin = 0)');
     return new Promise((resolve, reject) => {
-        const sql = `SELECT id, username FROM users WHERE is_admin = 0 ORDER BY username ASC`;
-        db.all(sql, [], (err, rows) => {
-            if (err) return reject(err);
+        db.all("SELECT id, username FROM users WHERE is_admin = 0", (err, rows) => {
+            if (err) {
+                log('ERROR', FUNC_NAME, '查询一般使用者列表失败:', err);
+                return reject(err);
+            }
+            log('DEBUG', FUNC_NAME, `查询成功，找到 ${rows.length} 个一般使用者。`);
             resolve(rows);
         });
     });
 }
 
-function listAllUsers() {
+async function listAllUsers() {
+    const FUNC_NAME = 'listAllUsers';
+    log('DEBUG', FUNC_NAME, '正在列出所有使用者');
     return new Promise((resolve, reject) => {
-        const sql = `SELECT id, username FROM users ORDER BY username ASC`;
-        db.all(sql, [], (err, rows) => {
-            if (err) return reject(err);
+        db.all("SELECT id, username, is_admin FROM users", (err, rows) => {
+            if (err) {
+                log('ERROR', FUNC_NAME, '查询所有使用者列表失败:', err);
+                return reject(err);
+            }
+            log('DEBUG', FUNC_NAME, `查询成功，找到 ${rows.length} 个使用者。`);
             resolve(rows);
         });
     });
 }
-
 
 async function deleteUser(userId) {
-    const userUploadDir = path.join(UPLOAD_DIR, String(userId));
+    const FUNC_NAME = 'deleteUser';
+    log('INFO', FUNC_NAME, `准备删除使用者 ID: ${userId}`);
+    const storage = storageManager.getStorage();
+
     try {
-        await fs.rm(userUploadDir, { recursive: true, force: true });
-    } catch (error) {
-        if (error.code !== 'ENOENT') {
-            // 在生产环境中，可以考虑将此错误记录到专门的日志文件
+        log('DEBUG', FUNC_NAME, `开始资料库事务 (Transaction) for user ${userId}`);
+        await db.run('BEGIN');
+
+        log('DEBUG', FUNC_NAME, `正在收集使用者 ${userId} 的所有资料夹...`);
+        const folders = await new Promise((resolve, reject) => {
+            db.all("SELECT * FROM folders WHERE user_id = ?", [userId], (err, rows) => {
+                if (err) return reject(err);
+                resolve(rows);
+            });
+        });
+
+        log('DEBUG', FUNC_NAME, `正在收集使用者 ${userId} 的所有档案...`);
+        const files = await new Promise((resolve, reject) => {
+            db.all("SELECT * FROM files WHERE user_id = ?", [userId], (err, rows) => {
+                if (err) return reject(err);
+                resolve(rows);
+            });
+        });
+
+        // 1. 删除实体档案/资料夹 (如果储存后端支援)
+        if (storage.type === 'local' || storage.type === 'webdav') {
+            log('DEBUG', FUNC_NAME, `正在请求储存后端 (${storage.type}) 删除实体档案...`);
+            const rootFolder = folders.find(f => f.parent_id === null);
+            const folderPaths = [];
+            if (rootFolder) {
+                // 仅删除根目录，storage.remove 应该会递归处理
+                folderPaths.push({ path: '/' }); 
+            }
+            
+            await storage.remove(files, folderPaths, userId);
+            
+            // 特别处理：删除 Local 模式下的使用者根目录
+            if (storage.type === 'local') {
+                const userUploadDir = path.join(__dirname, 'data', 'uploads', String(userId));
+                try {
+                    await fsp.rm(userUploadDir, { recursive: true, force: true });
+                    log('DEBUG', FUNC_NAME, `已删除本地使用者目录: ${userUploadDir}`);
+                } catch (e) {
+                    log('WARN', FUNC_NAME, `删除本地使用者目录 ${userUploadDir} 失败 (可能不存在): ${e.message}`);
+                }
+            }
         }
+        // 注意: Telegram 模式下，档案会留在频道中
+
+        log('DEBUG', FUNC_NAME, `正在从资料库删除使用者 ${userId} 的所有分享连结...`);
+        await db.run("DELETE FROM shares WHERE user_id = ?", [userId]);
+        
+        log('DEBUG', FUNC_NAME, `正在从资料库删除使用者 ${userId} 的所有 auth_tokens...`);
+        await db.run("DELETE FROM auth_tokens WHERE user_id = ?", [userId]);
+
+        log('DEBUG', FUNC_NAME, `正在从资料库删除使用者 ${userId} 的所有档案...`);
+        await db.run("DELETE FROM files WHERE user_id = ?", [userId]);
+
+        log('DEBUG', FUNC_NAME, `正在从资料库删除使用者 ${userId} 的所有资料夹...`);
+        await db.run("DELETE FROM folders WHERE user_id = ?", [userId]);
+
+        log('DEBUG', FUNC_NAME, `正在从资料库删除使用者 ${userId} 本身...`);
+        await db.run("DELETE FROM users WHERE id = ?", [userId]);
+
+        log('DEBUG', FUNC_NAME, `提交 (Commit) 资料库事务 for user ${userId}`);
+        await db.run('COMMIT');
+        
+        log('INFO', FUNC_NAME, `使用者 ${userId} 已成功删除。`);
+        return { success: true, message: '使用者已成功删除。' };
+    } catch (error) {
+        log('ERROR', FUNC_NAME, `删除使用者 ${userId} 时发生错误，正在回滚 (Rollback)...`, error);
+        await db.run('ROLLBACK');
+        throw new Error(`删除使用者失败: ${error.message}`);
     }
-    
+}
+
+
+async function changeUserPassword(userId, hashedPassword) {
+    const FUNC_NAME = 'changeUserPassword';
+    log('INFO', FUNC_NAME, `正在变更使用者 ID: ${userId} 的密码`);
     return new Promise((resolve, reject) => {
-        const sql = `DELETE FROM users WHERE id = ? AND is_admin = 0`;
-        db.run(sql, [userId], function(err) {
-            if (err) return reject(err);
+        db.run("UPDATE users SET password = ? WHERE id = ?", [hashedPassword, userId], function(err) {
+            if (err) {
+                log('ERROR', FUNC_NAME, `变更使用者 ${userId} 密码失败:`, err);
+                return reject(err);
+            }
+            if (this.changes === 0) {
+                 log('WARN', FUNC_NAME, `尝试变更密码失败，找不到使用者 ID: ${userId}`);
+                 return reject(new Error('找不到使用者'));
+            }
+            log('INFO', FUNC_NAME, `使用者 ${userId} 密码变更成功。`);
             resolve({ success: true, changes: this.changes });
         });
     });
 }
 
-// --- *** 关键修正 开始 *** ---
-// 重写 searchItems 函数以正确处理加密
-function searchItems(query, userId) {
+async function createFolder(name, parentId, userId) {
+    const FUNC_NAME = 'createFolder';
+    log('INFO', FUNC_NAME, `正在建立资料夹 "${name}" in parent: ${parentId} for user: ${userId}`);
     return new Promise((resolve, reject) => {
-        const searchQuery = `%${query}%`;
+        // 验证 parentId 是否存在且属于该使用者 (根目录 parentId 为 null)
+        const checkParentSql = parentId === null 
+            ? "SELECT 1" // 如果是根目录，跳过检查
+            : "SELECT 1 FROM folders WHERE id = ? AND user_id = ?";
+        const checkParams = parentId === null ? [] : [parentId, userId];
 
-        // 此 CTE (Common Table Expression) 递归地建立每个资料夾的祖先路径，
-        // 并确定路径中是否有任何一个资料夾被加密。
-        const baseQuery = `
-            WITH RECURSIVE folder_ancestry(id, parent_id, is_locked) AS (
-                -- 基底查询: 选出该使用者的所有资料夾，并标记其自身的加密状态
-                SELECT id, parent_id, (password IS NOT NULL) as is_locked
-                FROM folders
-                WHERE user_id = ?
-                UNION ALL
-                -- 递归步骤: 向上查找父资料夹，并继承其加密状态
-                SELECT fa.id, f.parent_id, (fa.is_locked OR (f.password IS NOT NULL))
-                FROM folders f
-                JOIN folder_ancestry fa ON f.id = fa.parent_id
-                WHERE f.user_id = ?
-            ),
-            -- 聚合结果: 对每个资料夾ID，只要其路径上有任一加密，最终状态就是加密
-            folder_lock_status AS (
-                SELECT id, MAX(is_locked) as is_path_locked
-                FROM folder_ancestry
-                GROUP BY id
-            )
-        `;
-
-        // 查询未被加密路径下的文件
-        const sqlFiles = baseQuery + `
-            SELECT 
-                f.*, 
-                f.message_id as id, 
-                f.fileName as name, 
-                'file' as type
-            FROM files f
-            JOIN folder_lock_status fls ON f.folder_id = fls.id
-            WHERE f.fileName LIKE ? AND f.user_id = ? AND fls.is_path_locked = 0
-            ORDER BY f.date DESC;
-        `;
-        
-        // 查询未被加密路径下的资料夾
-        const sqlFolders = baseQuery + `
-            SELECT 
-                f.id, 
-                f.name, 
-                f.parent_id, 
-                'folder' as type, 
-                (f.password IS NOT NULL) as is_locked
-            FROM folders f
-            JOIN folder_lock_status fls ON f.id = fls.id
-            WHERE f.name LIKE ? AND f.user_id = ? AND fls.is_path_locked = 0 AND f.parent_id IS NOT NULL
-            ORDER BY f.name ASC;
-        `;
-
-        let contents = { folders: [], files: [] };
-
-        db.all(sqlFolders, [userId, userId, searchQuery, userId], (err, folders) => {
-            if (err) return reject(err);
-            contents.folders = folders.map(f => ({ ...f, encrypted_id: encrypt(f.id) }));
-            db.all(sqlFiles, [userId, userId, searchQuery, userId], (err, files) => {
-                if (err) return reject(err);
-                contents.files = files.map(f => ({ ...f, message_id: f.id }));
-                resolve(contents);
-            });
-        });
-    });
-}
-
-// 新增 isFileAccessible 函数用于在直接存取文件前进行权限验证
-async function isFileAccessible(fileId, userId, unlockedFolders = []) {
-    const file = (await getFilesByIds([fileId], userId))[0];
-    if (!file) {
-        return false; // 找不到档案或档案不属于该使用者
-    }
-
-    const path = await getFolderPath(file.folder_id, userId);
-    if (!path || path.length === 0) {
-        return false; // 资料库不一致，这不应该发生
-    }
-
-    // 一次性查询路径上所有资料夾的加密状态
-    const folderIds = path.map(p => p.id);
-    const placeholders = folderIds.map(() => '?').join(',');
-    const sql = `SELECT id, password IS NOT NULL as is_locked FROM folders WHERE id IN (${placeholders}) AND user_id = ?`;
-    
-    const folderStatuses = await new Promise((resolve, reject) => {
-        db.all(sql, [...folderIds, userId], (err, rows) => {
-            if (err) return reject(err);
-            resolve(new Map(rows.map(row => [row.id, row.is_locked])));
-        });
-    });
-
-    // 检查路径上的每个资料夾
-    for (const folder of path) {
-        if (folderStatuses.get(folder.id) && !unlockedFolders.includes(folder.id)) {
-            return false; // 发现一个已加密但在 session 中未解锁的资料夾
-        }
-    }
-
-    return true; // 路径上所有资料夾都可存取
-}
-// --- *** 关键修正 结束 *** ---
-
-function getItemsByIds(itemIds, userId) {
-    return new Promise((resolve, reject) => {
-        if (!itemIds || itemIds.length === 0) return resolve([]);
-        const placeholders = itemIds.map(() => '?').join(',');
-        const sql = `
-            SELECT id, name, parent_id, 'folder' as type, null as storage_type, null as file_id, password IS NOT NULL as is_locked
-            FROM folders 
-            WHERE id IN (${placeholders}) AND user_id = ?
-            UNION ALL
-            SELECT message_id as id, fileName as name, folder_id as parent_id, 'file' as type, storage_type, file_id, 0 as is_locked
-            FROM files 
-            WHERE message_id IN (${placeholders}) AND user_id = ?
-        `;
-        db.all(sql, [...itemIds, userId, ...itemIds, userId], (err, rows) => {
-            if (err) return reject(err);
-            resolve(rows);
-        });
-    });
-}
-
-function getChildrenOfFolder(folderId, userId) {
-    return new Promise((resolve, reject) => {
-        const sql = `
-            SELECT id, name, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ?
-            UNION ALL
-            SELECT message_id as id, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ?
-        `;
-        db.all(sql, [folderId, userId, folderId, userId], (err, rows) => {
-            if (err) return reject(err);
-            resolve(rows);
-        });
-    });
-}
-
-async function getAllDescendantFolderIds(folderId, userId) {
-    let descendants = [];
-    let queue = [folderId];
-    const visited = new Set(queue);
-
-    while (queue.length > 0) {
-        const currentId = queue.shift();
-        const sql = `SELECT id FROM folders WHERE parent_id = ? AND user_id = ?`;
-        const children = await new Promise((resolve, reject) => {
-            db.all(sql, [currentId, userId], (err, rows) => {
-                if (err) reject(err);
-                else resolve(rows);
-            });
-        });
-
-        for (const child of children) {
-            if (!visited.has(child.id)) {
-                visited.add(child.id);
-                descendants.push(child.id);
-                queue.push(child.id);
+        db.get(checkParentSql, checkParams, (err, row) => {
+            if (err) {
+                 log('ERROR', FUNC_NAME, `验证父资料夹 ${parentId} 时出错:`, err);
+                 return reject(new Error('验证父资料夹时出错'));
             }
-        }
-    }
-    return descendants;
-}
+            if (!row && parentId !== null) {
+                 log('WARN', FUNC_NAME, `建立资料夹失败，父资料夹 ${parentId} 不存在或不属于使用者 ${userId}`);
+                 return reject(new Error('父资料夹不存在或权限不足'));
+            }
 
-function getFolderDetails(folderId, userId) {
-    return new Promise((resolve, reject) => {
-        const sql = `SELECT id, name, parent_id, password, password IS NOT NULL as is_locked FROM folders WHERE id = ? AND user_id = ?`;
-        db.get(sql, [folderId, userId], (err, row) => {
-            if (err) reject(err);
-            else resolve(row);
-        });
-    });
-}
-
-function getFolderContents(folderId, userId) {
-    return new Promise((resolve, reject) => {
-        const sqlFolders = `SELECT id, name, parent_id, 'folder' as type, password IS NOT NULL as is_locked FROM folders WHERE parent_id = ? AND user_id = ? ORDER BY name ASC`;
-        const sqlFiles = `SELECT *, message_id as id, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? ORDER BY name ASC`;
-        let contents = { folders: [], files: [] };
-        db.all(sqlFolders, [folderId, userId], (err, folders) => {
-            if (err) return reject(err);
-            contents.folders = folders.map(f => ({ ...f, encrypted_id: encrypt(f.id) }));
-            db.all(sqlFiles, [folderId, userId], (err, files) => {
-                if (err) return reject(err);
-                contents.files = files.map(f => ({ ...f, message_id: f.id }));
-                resolve(contents);
+            // 插入新资料夹
+            db.run("INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)", [name, parentId, userId], function(err) {
+                if (err) {
+                    log('ERROR', FUNC_NAME, `插入新资料夹 "${name}" 失败:`, err);
+                    return reject(err);
+                }
+                log('INFO', FUNC_NAME, `资料夹 "${name}" 建立成功, ID: ${this.lastID}`);
+                resolve({ id: this.lastID, name: name, type: 'folder' });
             });
         });
     });
 }
+
+async function getFolderContents(folderId, userId) {
+    const FUNC_NAME = 'getFolderContents';
+    log('DEBUG', FUNC_NAME, `正在获取资料夹内容: ${folderId} for user: ${userId}`);
+    const foldersPromise = new Promise((resolve, reject) => {
+        db.all("SELECT id, name, is_locked FROM folders WHERE parent_id = ? AND user_id = ?", [folderId, userId], (err, rows) => {
+            if (err) return reject(err);
+            resolve(rows.map(r => ({ ...r, type: 'folder' })));
+        });
+    });
+    const filesPromise = new Promise((resolve, reject) => {
+        db.all("SELECT * FROM files WHERE folder_id = ? AND user_id = ?", [folderId, userId], (err, rows) => {
+            if (err) return reject(err);
+            resolve(rows.map(r => ({ ...r, type: 'file' })));
+        });
+    });
+    const [folders, files] = await Promise.all([foldersPromise, filesPromise]);
+    log('DEBUG', FUNC_NAME, `获取成功: ${folders.length} 个资料夹, ${files.length} 个档案。`);
+    return [...folders, ...files];
+}
+
+async function getFolderDetails(folderId, userId) {
+    const FUNC_NAME = 'getFolderDetails';
+    log('DEBUG', FUNC_NAME, `正在获取资料夹详细资讯: ${folderId} for user: ${userId}`);
+    return new Promise((resolve, reject) => {
+        db.get("SELECT * FROM folders WHERE id = ? AND user_id = ?", [folderId, userId], (err, row) => {
+            if (err) {
+                log('ERROR', FUNC_NAME, `查询资料夹 ${folderId} 失败:`, err);
+                return reject(err);
+            }
+            log('DEBUG', FUNC_NAME, `查询资料夹 ${folderId} ${row ? '成功' : '失败(未找到)'}。`);
+            resolve(row);
+        });
+    });
+}
+
+async function getFolderPath(folderId, userId) {
+    const FUNC_NAME = 'getFolderPath';
+    log('DEBUG', FUNC_NAME, `正在递归获取资料夹路径: ${folderId} for user: ${userId}`);
+    let path = [];
+    let currentId = folderId;
+    while (currentId !== null) {
+        const folder = await new Promise((resolve, reject) => {
+            db.get("SELECT id, name, parent_id FROM folders WHERE id = ? AND user_id = ?", [currentId, userId], (err, row) => {
+                if (err) return reject(err);
+                resolve(row);
+            });
+        });
+        if (!folder) {
+            log('WARN', FUNC_NAME, `路径追踪中断：在 ${currentId} 找不到资料夹 (user: ${userId})`);
+            break; // 找不到资料夹或权限不足
+        }
+        path.unshift({ id: folder.id, name: folder.name });
+        currentId = folder.parent_id;
+    }
+    log('DEBUG', FUNC_NAME, `路径获取成功，深度: ${path.length}`);
+    return path;
+}
+
+async function getAllFolders(userId) {
+    const FUNC_NAME = 'getAllFolders';
+    log('DEBUG', FUNC_NAME, `正在获取使用者 ${userId} 的所有资料夹`);
+    return new Promise((resolve, reject) => {
+        db.all("SELECT id, name, parent_id FROM folders WHERE user_id = ?", [userId], (err, rows) => {
+            if (err) {
+                log('ERROR', FUNC_NAME, `获取使用者 ${userId} 的所有资料夹失败:`, err);
+                return reject(err);
+            }
+            log('DEBUG', FUNC_NAME, `成功获取 ${rows.length} 个资料夹。`);
+            resolve(rows);
+        });
+    });
+}
+
+async function getFilesByIds(ids, userId) {
+    const FUNC_NAME = 'getFilesByIds';
+    if (!ids || ids.length === 0) return [];
+    log('DEBUG', FUNC_NAME, `正在获取档案 (IDs: ${ids.join(',')}) for user: ${userId}`);
+    const placeholders = ids.map(() => '?').join(',');
+    return new Promise((resolve, reject) => {
+        db.all(`SELECT * FROM files WHERE id IN (${placeholders}) AND user_id = ?`, [...ids, userId], (err, rows) => {
+            if (err) {
+                 log('ERROR', FUNC_NAME, `获取档案 ${ids.join(',')} 失败:`, err);
+                 return reject(err);
+            }
+            log('DEBUG', FUNC_NAME, `成功获取 ${rows.length} 个档案。`);
+            resolve(rows);
+        });
+    });
+}
+
+async function getItemsByIds(ids, userId) {
+    const FUNC_NAME = 'getItemsByIds';
+    if (!ids || ids.length === 0) return [];
+    log('DEBUG', FUNC_NAME, `正在获取项目 (IDs: ${ids.join(',')}) for user: ${userId}`);
+    const placeholders = ids.map(() => '?').join(',');
+    
+    const filesPromise = new Promise((resolve, reject) => {
+        db.all(`SELECT *, 'file' as type FROM files WHERE id IN (${placeholders}) AND user_id = ?`, [...ids, userId], (err, rows) => {
+            if (err) return reject(err);
+            resolve(rows);
+        });
+    });
+    
+    const foldersPromise = new Promise((resolve, reject) => {
+        db.all(`SELECT *, 'folder' as type FROM folders WHERE id IN (${placeholders}) AND user_id = ?`, [...ids, userId], (err, rows) => {
+            if (err) return reject(err);
+            resolve(rows);
+        });
+    });
+    
+    const [files, folders] = await Promise.all([filesPromise, foldersPromise]);
+    log('DEBUG', FUNC_NAME, `获取成功: ${folders.length} 个资料夹, ${files.length} 个档案。`);
+    return [...folders, ...files];
+}
+
 
 async function getFilesRecursive(folderId, userId, currentPath = '') {
-    let allFiles = [];
-    const sqlFiles = "SELECT * FROM files WHERE folder_id = ? AND user_id = ?";
-    const files = await new Promise((res, rej) => db.all(sqlFiles, [folderId, userId], (err, rows) => err ? rej(err) : res(rows)));
-    for (const file of files) {
-        allFiles.push({ ...file, path: path.join(currentPath, file.fileName) });
-    }
-
-    const sqlFolders = "SELECT id, name FROM folders WHERE parent_id = ? AND user_id = ?";
-    const subFolders = await new Promise((res, rej) => db.all(sqlFolders, [folderId, userId], (err, rows) => err ? rej(err) : res(rows)));
-    for (const subFolder of subFolders) {
-        const nestedFiles = await getFilesRecursive(subFolder.id, userId, path.join(currentPath, subFolder.name));
-        allFiles.push(...nestedFiles);
-    }
-    return allFiles;
-}
-
-async function getDescendantFiles(folderIds, userId) {
-    let allFiles = [];
-    for (const folderId of folderIds) {
-        const nestedFiles = await getFilesRecursive(folderId, userId);
-        allFiles.push(...nestedFiles);
-    }
-    return allFiles;
-}
-
-function getFolderPath(folderId, userId) {
-    let pathArr = [];
-    return new Promise((resolve, reject) => {
-        function findParent(id) {
-            if (!id) return resolve(pathArr.reverse());
-            db.get("SELECT id, name, parent_id FROM folders WHERE id = ? AND user_id = ?", [id, userId], (err, folder) => {
-                if (err) return reject(err);
-                if (folder) {
-                    pathArr.push({ id: folder.id, name: folder.name, encrypted_id: encrypt(folder.id) });
-                    findParent(folder.parent_id);
-                } else {
-                    resolve(pathArr.reverse());
-                }
-            });
+    const FUNC_NAME = 'getFilesRecursive';
+    log('DEBUG', FUNC_NAME, `正在递归获取档案于: ${folderId} (Path: ${currentPath}) for user: ${userId}`);
+    let files = [];
+    const contents = await getFolderContents(folderId, userId);
+    for (const item of contents) {
+        const itemPath = path.posix.join(currentPath, item.name);
+        if (item.type === 'file') {
+            files.push({ ...item, path: itemPath });
+        } else if (item.type === 'folder') {
+            const nestedFiles = await getFilesRecursive(item.id, userId, itemPath);
+            files = files.concat(nestedFiles);
         }
-        findParent(folderId);
-    });
+    }
+    return files;
 }
 
-// --- *** 关键修正 开始 *** ---
-async function findFolderBySharePath(shareToken, pathSegments = []) {
-    return new Promise(async (resolve, reject) => {
-        try {
-            // 首先，验证 token 并找到根分享资料夾
-            const rootFolder = await getFolderByShareToken(shareToken);
-            if (!rootFolder) {
-                return resolve(null);
-            }
-
-            if (pathSegments.length === 0) {
-                return resolve(rootFolder);
-            }
-
-            // 从根目录开始，逐层验证路径
-            let currentParentId = rootFolder.id;
-            let currentFolder = rootFolder;
-            const userId = rootFolder.user_id;
-
-            for (const segment of pathSegments) {
-                const sql = `SELECT * FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
-                const row = await new Promise((res, rej) => {
-                    db.get(sql, [segment, currentParentId, userId], (err, row) => err ? rej(err) : res(row));
-                });
-
-                if (!row) {
-                    return resolve(null); // 路径无效
-                }
-                
-                // 检查子资料夾是否已加密
-                if(row.password) {
-                    return resolve(null); // 不允许存取加密的子资料夾
-                }
-
-                currentFolder = row;
-                currentParentId = row.id;
-            }
-            
-            // 返回最终找到的子资料夹资讯
-            resolve(currentFolder);
-
-        } catch (error) {
-            reject(error);
-        }
-    });
-}
-// --- *** 关键修正 结束 *** ---
-
-function createFolder(name, parentId, userId) {
-    const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
-    return new Promise((resolve, reject) => {
-        db.run(sql, [name, parentId, userId], function (err) {
-            if (err) {
-                if (err.message.includes('UNIQUE')) return reject(new Error('同目录下已存在同名资料夹。'));
-                return reject(err);
-            }
-            resolve({ success: true, id: this.lastID });
-        });
-    });
-}
-
-function findFolderByName(name, parentId, userId) {
-    return new Promise((resolve, reject) => {
-        const sql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
-        db.get(sql, [name, parentId, userId], (err, row) => {
-            if (err) return reject(err);
-            resolve(row);
-        });
-    });
-}
-
-async function findFolderByPath(startFolderId, pathParts, userId) {
-    let currentParentId = startFolderId;
-    for (const part of pathParts) {
-        if (!part) continue;
+async function addFile(fileData, folderId, userId, storageType) {
+    const FUNC_NAME = 'addFile';
+    try {
+        const { message_id, fileName, mimetype, size, file_id, thumb_file_id, date } = fileData;
+        
+        // 1. 验证 folderId 是否有效且属于该使用者
         const folder = await new Promise((resolve, reject) => {
-            const sql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
-            db.get(sql, [part, currentParentId, userId], (err, row) => err ? reject(err) : resolve(row));
+            db.get("SELECT id FROM folders WHERE id = ? AND user_id = ?", [folderId, userId], (err, row) => {
+                if (err) return reject(new Error('查询资料夾时出错: ' + err.message));
+                if (!row) return reject(new Error('目标资料夹无效或权限不足'));
+                resolve(row);
+            });
         });
 
-        if (folder) {
-            currentParentId = folder.id;
-        } else {
-            return null; 
-        }
-    }
-    return currentParentId;
-}
-
-
-function getAllFolders(userId) {
-    return new Promise((resolve, reject) => {
-        const sql = "SELECT id, name, parent_id FROM folders WHERE user_id = ? ORDER BY parent_id, name ASC";
-        db.all(sql, [userId], (err, rows) => {
-            if (err) {
-                reject(err);
-            } else {
-                const foldersWithEncryptedId = rows.map(folder => ({
-                    ...folder,
-                    encrypted_id: encrypt(folder.id)
-                }));
-                resolve(foldersWithEncryptedId);
-            }
-        });
-    });
-}
-
-
-async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, depth = 0) {
-    // console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}, 深度: ${depth}`);
-    const { resolutions = {}, pathPrefix = '' } = options;
-    const report = { moved: 0, skipped: 0, errors: 0 };
-
-    const sourceItem = await new Promise((resolve, reject) => {
-        const table = itemType === 'folder' ? 'folders' : 'files';
-        const idColumn = itemType === 'folder' ? 'id' : 'message_id';
-        const nameColumn = itemType === 'folder' ? 'name' : 'fileName';
-        const sql = `SELECT ${idColumn} as id, ${nameColumn} as name, '${itemType}' as type FROM ${table} WHERE ${idColumn} = ? AND user_id = ?`;
-        db.get(sql, [itemId, userId], (err, row) => err ? reject(err) : resolve(row));
-    });
-
-    if (!sourceItem) {
-        report.errors++;
-        // console.error(`[Data] moveItem: 找不到来源项目 ID ${itemId} (类型: ${itemType})`);
-        return report;
-    }
-
-    const currentPath = path.posix.join(pathPrefix, sourceItem.name);
-    const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
-    let resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
-
-    // --- *** 关键修正 开始：修复深度合并BUG *** ---
-    // 删除这个错误地将深度合并强制转换为覆盖的代码块，以允许用户选择的解决方案在所有层级生效
-    /*
-    if (depth > 0 && itemType === 'folder' && existingItemInTarget && existingItemInTarget.type === 'folder' && resolutionAction === 'merge') {
-        resolutionAction = 'overwrite';
-    }
-    */
-    // --- *** 关键修正 结束 *** ---
-
-    // console.log(`[Data] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
-
-    switch (resolutionAction) {
-        case 'skip':
-        case 'skip_default':
-            report.skipped++;
-            // console.log(`[Data] moveItem: 跳过项目 "${currentPath}"`);
-            return report;
-
-        // --- *** 关键修正 开始：修复文件夹移动时“重命名”执行“覆盖”的BUG *** ---
-        case 'rename':
-            // console.log(`[Data] moveItem: 重新命名项目 "${currentPath}"`);
-            const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
-            // console.log(`[Data] moveItem: 找到可用新名称 "${newName}"`);
-            if (itemType === 'folder') {
-                // 使用专用的 renameAndMoveFolder 函数，确保操作的原子性和正确性
-                await renameAndMoveFolder(itemId, newName, targetFolderId, userId);
-            } else {
-                await renameAndMoveFile(itemId, newName, targetFolderId, userId);
-            }
-            report.moved++;
-            return report;
-        // --- *** 关键修正 结束 *** ---
-
-        case 'overwrite':
-            if (!existingItemInTarget) {
-                // console.warn(`[Data] moveItem: 尝试覆盖但目标项目 "${currentPath}" 不存在，跳过。`);
-                report.skipped++;
-                return report;
-            }
-            // console.log(`[Data] moveItem: 覆盖目标项目 "${currentPath}" (ID: ${existingItemInTarget.id}, 类型: ${existingItemInTarget.type})`);
-            await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
-            await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
-            report.moved++;
-            return report;
-
-        case 'merge':
-            if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') {
-                // console.warn(`[Data] moveItem: 尝试合并但目标项目 "${currentPath}" 不是资料夾，跳过。`);
-                report.skipped++;
-                return report;
-            }
-
-            // console.log(`[Data] moveItem: 合并资料夾 "${currentPath}" 到目标资料夾 ID ${existingItemInTarget.id}`);
-            const { folders: childFolders, files: childFiles } = await getFolderContents(itemId, userId);
-            let allChildrenProcessedSuccessfully = true;
-
-            for (const childFolder of childFolders) {
-                // console.log(`[Data] moveItem: 递回移动子资料夹 "${childFolder.name}" (ID: ${childFolder.id})`);
-                const childReport = await moveItem(childFolder.id, 'folder', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath }, depth + 1);
-                report.moved += childReport.moved;
-                report.skipped += childReport.skipped;
-                report.errors += childReport.errors;
-                if (childReport.skipped > 0 || childReport.errors > 0) {
-                    allChildrenProcessedSuccessfully = false;
-                }
-            }
-            
-            for (const childFile of childFiles) {
-                // console.log(`[Data] moveItem: 递回移动子档案 "${childFile.name}" (ID: ${childFile.id})`);
-                const childReport = await moveItem(childFile.id, 'file', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath }, depth + 1);
-                report.moved += childReport.moved;
-                report.skipped += childReport.skipped;
-                report.errors += childReport.errors;
-                 if (childReport.skipped > 0 || childReport.errors > 0) {
-                    allChildrenProcessedSuccessfully = false;
-                }
-            }
-            
-            if (allChildrenProcessedSuccessfully) {
-                // console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夾 ID ${itemId}`);
-                await unifiedDelete(itemId, 'folder', userId);
-            } else {
-                 // console.warn(`[Data] moveItem: 部分子项目未能成功合并，保留原始资料夾 ID ${itemId}`);
-            }
-            
-            return report;
-
-        default: // 'move'
-            // console.log(`[Data] moveItem: 直接移动项目 "${currentPath}"`);
-            await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
-            report.moved++;
-            return report;
+        // 2. 插入档案资料
+        const result = await db.run(
+            `INSERT INTO files 
+             (message_id, fileName, mimetype, size, folder_id, user_id, file_id, thumb_file_id, date, storage_type) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [message_id, fileName, mimetype, size, folder.id, userId, file_id, thumb_file_id, date, storageType]
+        );
+        
+        return { success: true, fileId: result.lastID };
+    } catch (error) {
+        log('ERROR', FUNC_NAME, `新增档案到资料库失败:`, error);
+        throw error; 
     }
 }
 
-
-async function unifiedDelete(itemId, itemType, userId) {
-    const storage = require('./storage').getStorage();
-    let filesForStorage = [];
-    let foldersForStorage = [];
-    
-    if (itemType === 'folder') {
-        const deletionData = await getFolderDeletionData(itemId, userId);
-        filesForStorage.push(...deletionData.files);
-        foldersForStorage.push(...deletionData.folders);
-    } else {
-        const directFiles = await getFilesByIds([itemId], userId);
-        filesForStorage.push(...directFiles);
-    }
+// --- *** 新增 updateFile 函数 *** ---
+async function updateFile(fileId, userId, newFileInfo) {
+    const FUNC_NAME = 'updateFile';
+    log('DEBUG', FUNC_NAME, `开始更新档案 ID: ${fileId} for user: ${userId}`);
     
     try {
-        await storage.remove(filesForStorage, foldersForStorage, userId);
-    } catch (err) {
-        throw new Error("实体档案删除失败，操作已中止。");
-    }
-    
-    await executeDeletion(filesForStorage.map(f => f.message_id), foldersForStorage.map(f => f.id), userId);
-}
+        const { fileName, size, file_id, mimetype, date, thumb_file_id, message_id } = newFileInfo;
 
-async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
-    const storage = require('./storage').getStorage();
-
-    if (storage.type === 'local' || storage.type === 'webdav') {
-        const client = storage.type === 'webdav' ? storage.getClient() : null;
-        
-        const targetPathParts = await getFolderPath(targetFolderId, userId);
-        const targetFullPath = path.posix.join(...targetPathParts.slice(1).map(p => p.name));
-
-        const filesToMove = await getFilesByIds(fileIds, userId);
-        for (const file of filesToMove) {
-            const oldRelativePath = file.file_id;
-            const newRelativePath = path.posix.join(targetFullPath, file.fileName);
-            
-            try {
-                if (storage.type === 'local') {
-                    const oldFullPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath);
-                    const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
-                    await fs.mkdir(path.dirname(newFullPath), { recursive: true });
-                    await fs.rename(oldFullPath, newFullPath);
-                } else if (client) {
-                    await client.moveFile(oldRelativePath, newRelativePath);
-                }
-                
-                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [newRelativePath, file.message_id], (e) => e ? rej(e) : res()));
-
-            } catch (err) {
-                throw new Error(`物理移动文件 ${file.fileName} 失败`);
-            }
-        }
-        
-        const foldersToMove = (await getItemsByIds(folderIds, userId)).filter(i => i.type === 'folder');
-        for (const folder of foldersToMove) {
-            const oldPathParts = await getFolderPath(folder.id, userId);
-            const oldFullPath = path.posix.join(...oldPathParts.slice(1).map(p => p.name));
-            const newFullPath = path.posix.join(targetFullPath, folder.name);
-
-            try {
-                 if (storage.type === 'local') {
-                    const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldFullPath);
-                    const newAbsPath = path.join(UPLOAD_DIR, String(userId), newFullPath);
-                    if (fsSync.existsSync(oldAbsPath)) {
-                       await fs.rename(oldAbsPath, newAbsPath);
-                    }
-                 } else if (client) {
-                    await client.moveFile(oldFullPath, newFullPath);
-                 }
-
-                const descendantFiles = await getFilesRecursive(folder.id, userId);
-                for (const file of descendantFiles) {
-                    const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
-                    await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id], (e) => e ? rej(e) : res()));
-                }
-            } catch (err) {
-                throw new Error(`物理移动文件夹 ${folder.name} 失败`);
-            }
-        }
-    }
-
-    return new Promise((resolve, reject) => {
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION;");
-            const promises = [];
-
-            if (fileIds.length > 0) {
-                const place = fileIds.map(() => '?').join(',');
-                promises.push(new Promise((res, rej) => db.run(`UPDATE files SET folder_id = ? WHERE message_id IN (${place}) AND user_id = ?`, [targetFolderId, ...fileIds, userId], (e) => e ? rej(e) : res())));
-            }
-
-            if (folderIds.length > 0) {
-                const place = folderIds.map(() => '?').join(',');
-                promises.push(new Promise((res, rej) => db.run(`UPDATE folders SET parent_id = ? WHERE id IN (${place}) AND user_id = ?`, [targetFolderId, ...folderIds, userId], (e) => e ? rej(e) : res())));
-            }
-
-            Promise.all(promises)
-                .then(() => db.run("COMMIT;", (e) => e ? reject(e) : resolve({ success: true })))
-                .catch((err) => db.run("ROLLBACK;", () => reject(err)));
-        });
-    });
-}
-
-function deleteSingleFolder(folderId, userId) {
-    return new Promise((resolve, reject) => {
-        const sql = `DELETE FROM folders WHERE id = ? AND user_id = ?`;
-        db.run(sql, [folderId, userId], function(err) {
-            if (err) return reject(err);
-            resolve({ success: true, changes: this.changes });
-        });
-    });
-}
-
-async function getFolderDeletionData(folderId, userId) {
-    let filesToDelete = [];
-    let foldersToDeleteIds = [folderId];
-
-    async function findContentsRecursive(currentFolderId) {
-        const sqlFiles = `SELECT * FROM files WHERE folder_id = ? AND user_id = ?`;
-        const files = await new Promise((res, rej) => db.all(sqlFiles, [currentFolderId, userId], (err, rows) => err ? rej(err) : res(rows)));
-        filesToDelete.push(...files);
-        
-        const sqlFolders = `SELECT id FROM folders WHERE parent_id = ? AND user_id = ?`;
-        const subFolders = await new Promise((res, rej) => db.all(sqlFolders, [currentFolderId, userId], (err, rows) => err ? rej(err) : res(rows)));
-        
-        for (const subFolder of subFolders) {
-            foldersToDeleteIds.push(subFolder.id);
-            await findContentsRecursive(subFolder.id);
-        }
-    }
-
-    await findContentsRecursive(folderId);
-
-    const allUserFolders = await getAllFolders(userId);
-    const folderMap = new Map(allUserFolders.map(f => [f.id, f]));
-    
-    function buildPath(fId) {
-        let pathParts = [];
-        let current = folderMap.get(fId);
-        while(current && current.parent_id) {
-            pathParts.unshift(current.name);
-            current = folderMap.get(current.parent_id);
-        }
-        return path.join(...pathParts);
-    }
-
-    const foldersToDeleteWithPaths = foldersToDeleteIds.map(id => ({
-        id: id,
-        path: buildPath(id)
-    }));
-
-    return { files: filesToDelete, folders: foldersToDeleteWithPaths };
-}
-
-
-function executeDeletion(fileIds, folderIds, userId) {
-    return new Promise((resolve, reject) => {
-        if (fileIds.length === 0 && folderIds.length === 0) return resolve({ success: true });
-        
-        db.serialize(() => {
-            db.run("BEGIN TRANSACTION;");
-            const promises = [];
-            
-            if (fileIds.length > 0) {
-                const place = Array.from(new Set(fileIds)).map(() => '?').join(',');
-                promises.push(new Promise((res, rej) => db.run(`DELETE FROM files WHERE message_id IN (${place}) AND user_id = ?`, [...new Set(fileIds), userId], (e) => e ? rej(e) : res())));
-            }
-            if (folderIds.length > 0) {
-                const place = Array.from(new Set(folderIds)).map(() => '?').join(',');
-                promises.push(new Promise((res, rej) => db.run(`DELETE FROM folders WHERE id IN (${place}) AND user_id = ?`, [...new Set(folderIds), userId], (e) => e ? rej(e) : res())));
-            }
-
-            Promise.all(promises)
-                .then(() => db.run("COMMIT;", (e) => e ? reject(e) : resolve({ success: true })))
-                .catch((err) => db.run("ROLLBACK;", () => reject(err)));
-        });
-    });
-}
-
-
-function addFile(fileData, folderId = 1, userId, storageType) {
-    const { message_id, fileName, mimetype, file_id, thumb_file_id, date, size } = fileData;
-    const sql = `INSERT INTO files (message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folder_id, user_id, storage_type)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-    return new Promise((resolve, reject) => {
-        db.run(sql, [message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
-            if (err) reject(err);
-            else resolve({ success: true, id: this.lastID, fileId: message_id });
-        });
-    });
-}
-
-function updateFile(fileId, updates, userId) {
-    return new Promise((resolve, reject) => {
         const fields = [];
-        const values = [];
-        const validKeys = ['fileName', 'mimetype', 'file_id', 'thumb_file_id', 'size', 'date', 'message_id'];
+        const params = [];
 
-        for (const key in updates) {
-            if (Object.hasOwnProperty.call(updates, key) && validKeys.includes(key)) {
-                fields.push(`${key} = ?`);
-                values.push(updates[key]);
-            }
-        }
+        // 只有在提供了值的情况下才更新栏位
+        if (fileName !== undefined) { fields.push('fileName = ?'); params.push(fileName); }
+        if (size !== undefined) { fields.push('size = ?'); params.push(size); }
+        if (file_id !== undefined) { fields.push('file_id = ?'); params.push(file_id); }
+        if (mimetype !== undefined) { fields.push('mimetype = ?'); params.push(mimetype); }
+        if (date !== undefined) { fields.push('date = ?'); params.push(date); }
+        if (thumb_file_id !== undefined) { fields.push('thumb_file_id = ?'); params.push(thumb_file_id); }
+        if (message_id !== undefined) { fields.push('message_id = ?'); params.push(message_id); }
 
         if (fields.length === 0) {
-            return resolve({ success: true, changes: 0 });
+            log('WARN', FUNC_NAME, `更新档案 ${fileId} 失败：没有提供任何栏位。`);
+            return; // 没有要更新的
+        }
+
+        params.push(fileId, userId);
+        
+        const query = `UPDATE files SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`;
+        
+        log('DEBUG', FUNC_NAME, `执行 SQL: ${query}
+ 参数: ${JSON.stringify(params)}`);
+        
+        const result = await db.run(query, params);
+        
+        if (result.changes === 0) {
+            log('WARN', FUNC_NAME, `更新档案 ${fileId} 时找不到匹配的行。`);
+            throw new Error('找不到要更新的档案或权限不足。');
         }
         
-        values.push(fileId, userId);
-        const sql = `UPDATE files SET ${fields.join(', ')} WHERE message_id = ? AND user_id = ?`;
+        log('INFO', FUNC_NAME, `档案 ${fileId} 更新成功。`);
+        return { success: true, changes: result.changes };
         
-        db.run(sql, values, function(err) {
-            if (err) {
-                return reject(err);
-            }
-            resolve({ success: true, changes: this.changes });
-        });
-    });
-}
-
-
-function getFilesByIds(messageIds, userId) {
-    if (!messageIds || messageIds.length === 0) {
-        return Promise.resolve([]);
+    } catch (error) {
+        log('ERROR', FUNC_NAME, `更新档案 ${fileId} 到资料库失败:`, error);
+        throw error;
     }
-    const placeholders = messageIds.map(() => '?').join(',');
-    const sql = `SELECT * FROM files WHERE message_id IN (${placeholders}) AND user_id = ?`;
+}
+// --- *** updateFile 函数结束 *** ---
+
+async function findFileInFolder(fileName, folderId, userId) {
+    const FUNC_NAME = 'findFileInFolder';
+    log('DEBUG', FUNC_NAME, `正在寻找档案 "${fileName}" in folder ${folderId} for user ${userId}`);
     return new Promise((resolve, reject) => {
-        db.all(sql, [...messageIds, userId], (err, rows) => {
-            if (err) reject(err);
-            else resolve(rows);
-        });
+        db.get(
+            "SELECT * FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?",
+            [fileName, folderId, userId],
+            (err, row) => {
+                if (err) {
+                    log('ERROR', FUNC_NAME, `寻找档案 "${fileName}" 时出错:`, err);
+                    return reject(err);
+                }
+                log('DEBUG', FUNC_NAME, `寻找档案 "${fileName}" ${row ? '成功' : '失败(未找到)'}。`);
+                resolve(row);
+            }
+        );
     });
 }
 
-// --- *** 关键修正 开始 *** ---
-// 修复了访问过期分享链接可能导致密码失效的BUG。
-// 重构函数以确保在检查链接状态时，严格执行“只读”操作，绝不修改数据库。
-// 这样可以防止因意外的“清理”逻辑而错误地清除了分享密码。
-async function getFileByShareToken(token) {
-    const getShareSql = "SELECT * FROM files WHERE share_token = ?";
+async function findItemInFolder(name, folderId, userId) {
+    const FUNC_NAME = 'findItemInFolder';
+    log('DEBUG', FUNC_NAME, `正在寻找项目 "${name}" in folder ${folderId} for user ${userId}`);
+    const file = await findFileInFolder(name, folderId, userId);
+    if (file) return { ...file, type: 'file' };
     
-    const row = await new Promise((resolve, reject) => {
-        db.get(getShareSql, [token], (err, row) => {
+    const folder = await new Promise((resolve, reject) => {
+        db.get(
+            "SELECT * FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?",
+            [name, folderId, userId],
+            (err, row) => {
+                if (err) return reject(err);
+                resolve(row);
+            }
+        );
+    });
+    if (folder) return { ...folder, type: 'folder' };
+    
+    log('DEBUG', FUNC_NAME, `项目 "${name}" 在 folder ${folderId} 中未找到。`);
+    return null;
+}
+
+async function checkFullConflict(name, folderId, userId) {
+    const FUNC_NAME = 'checkFullConflict';
+    log('DEBUG', FUNC_NAME, `正在检查完整冲突 "${name}" in folder ${folderId} for user ${userId}`);
+    return new Promise((resolve, reject) => {
+        db.get(
+            `SELECT 'file' as type FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?
+             UNION ALL
+             SELECT 'folder' as type FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`,
+            [name, folderId, userId, name, folderId, userId],
+            (err, row) => {
+                if (err) {
+                     log('ERROR', FUNC_NAME, `检查冲突 "${name}" 时出错:`, err);
+                     return reject(err);
+                }
+                log('DEBUG', FUNC_NAME, `检查冲突 "${name}" ${row ? `发现冲突 (type: ${row.type})` : '无冲突'}。`);
+                resolve(row);
+            }
+        );
+    });
+}
+
+async function findAvailableName(baseName, folderId, userId, isFolder) {
+    const FUNC_NAME = 'findAvailableName';
+    log('DEBUG', FUNC_NAME, `正在寻找可用名称，基础: "${baseName}" in folder ${folderId}`);
+    let newName = baseName;
+    let counter = 1;
+    const extension = isFolder ? '' : path.extname(baseName);
+    const nameWithoutExt = isFolder ? baseName : baseName.substring(0, baseName.length - extension.length);
+
+    while (true) {
+        const conflict = await checkFullConflict(newName, folderId, userId);
+        if (!conflict) {
+            log('DEBUG', FUNC_NAME, `找到可用名称: "${newName}"`);
+            return newName;
+        }
+        newName = `${nameWithoutExt} (${counter})${extension}`;
+        counter++;
+        if (counter > 100) { // 防止无限回圈
+             log('ERROR', FUNC_NAME, `无法为 "${baseName}" 找到可用名称 (已尝试 100 次)`);
+             throw new Error("无法找到可用的档名");
+        }
+    }
+}
+
+async function getConflictingItems(items, targetFolderId, userId) {
+    const FUNC_NAME = 'getConflictingItems';
+    log('DEBUG', FUNC_NAME, `正在检查 ${items.length} 个项目移至 ${targetFolderId} 时的冲突`);
+    const fileConflicts = [];
+    const folderConflicts = [];
+
+    for (const item of items) {
+        const conflict = await checkFullConflict(item.name, targetFolderId, userId);
+        if (conflict) {
+            if (conflict.type === 'file') fileConflicts.push(item.name);
+            if (conflict.type === 'folder') folderConflicts.push(item.name);
+        }
+    }
+    log('DEBUG', FUNC_NAME, `冲突检查完成: ${fileConflicts.length} 个档案, ${folderConflicts.length} 个资料夹。`);
+    return { fileConflicts, folderConflicts };
+}
+
+
+async function moveItem(itemId, itemType, targetFolderId, userId, options = {}) {
+    const FUNC_NAME = 'moveItem';
+    log('INFO', FUNC_NAME, `准备移动 ${itemType} ID: ${itemId} 至资料夹 ${targetFolderId} (User: ${userId})`);
+    
+    const { resolutions = {} } = options;
+    const report = { moved: 0, skipped: 0, errors: 0 };
+
+    try {
+        let item;
+        if (itemType === 'file') {
+            item = (await getFilesByIds([itemId], userId))[0];
+        } else {
+            item = await getFolderDetails(itemId, userId);
+        }
+
+        if (!item) {
+            log('WARN', FUNC_NAME, `移动失败：找不到 ${itemType} ID: ${itemId}`);
+            report.errors++;
+            return report;
+        }
+
+        // 1. 检查是否移动到自身
+        if (itemType === 'folder' && item.id === targetFolderId) {
+             log('WARN', FUNC_NAME, `移动失败：无法将资料夹 ${itemId} 移至其自身。`);
+             report.errors++;
+             return report;
+        }
+        
+        // 2. 检查是否移动到自己的子资料夹
+        if (itemType === 'folder') {
+            const targetFolderPath = await getFolderPath(targetFolderId, userId);
+            if (targetFolderPath.some(p => p.id === item.id)) {
+                 log('WARN', FUNC_NAME, `移动失败：无法将资料夹 ${itemId} 移至其子资料夹 ${targetFolderId}`);
+                 report.errors++;
+                 return report;
+            }
+        }
+        
+        // 3. 检查是否已经在目标资料夹
+        const parentIdKey = (itemType === 'file') ? 'folder_id' : 'parent_id';
+        if (item[parentIdKey] === targetFolderId) {
+             log('INFO', FUNC_NAME, `项目 ${itemId} 已在目标资料夹 ${targetFolderId}，跳过。`);
+             report.skipped++;
+             return report;
+        }
+
+        // 4. 检查名称冲突
+        const conflict = await findItemInFolder(item.name, targetFolderId, userId);
+        let action = 'move';
+        if (conflict) {
+            action = resolutions[item.name] || 'skip'; // 预设为跳过
+            log('DEBUG', FUNC_NAME, `发现冲突: "${item.name}", 解决策略: ${action}`);
+        }
+
+        if (action === 'skip') {
+            report.skipped++;
+            return report;
+        }
+        
+        if (action === 'overwrite') {
+            if (conflict.type === itemType) {
+                // 覆盖：删除目标项目
+                log('DEBUG', FUNC_NAME, `覆盖: 正在删除目标 ${conflict.type} ID: ${conflict.id}`);
+                await unifiedDelete(conflict.id, conflict.type, userId);
+            } else {
+                // 无法覆盖 (档案 vs 资料夹)
+                 log('WARN', FUNC_NAME, `移动失败：无法用 ${itemType} 覆盖 ${conflict.type} ("${item.name}")`);
+                 report.errors++;
+                 return report;
+            }
+        }
+        
+        if (action === 'rename') {
+            const newName = await findAvailableName(item.name, targetFolderId, userId, itemType === 'folder');
+            log('DEBUG', FUNC_NAME, `重命名: "${item.name}" -> "${newName}"`);
+            if (itemType === 'file') {
+                await renameFile(item.id, newName, userId);
+            } else {
+                await renameFolder(item.id, newName, userId);
+            }
+            item.name = newName; // 更新本地物件以进行后续移动
+        }
+
+        // 5. 执行移动 (更新父 ID)
+        if (itemType === 'file') {
+            await db.run("UPDATE files SET folder_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
+        } else {
+            await db.run("UPDATE folders SET parent_id = ? WHERE id = ? AND user_id = ?", [targetFolderId, item.id, userId]);
+        }
+
+        log('INFO', FUNC_NAME, `移动成功: ${itemType} ID: ${item.id} ("${item.name}") 移至 ${targetFolderId}`);
+        report.moved++;
+        return report;
+        
+    } catch (error) {
+        log('ERROR', FUNC_NAME, `移动 ${itemType} ID: ${itemId} 时发生严重错误:`, error);
+        report.errors++;
+        return report;
+    }
+}
+
+
+async function renameFile(fileId, newName, userId) {
+    const FUNC_NAME = 'renameFile';
+    log('INFO', FUNC_NAME, `准备重命名档案 ${fileId} 为 "${newName}" (User: ${userId})`);
+    
+    // 1. 获取档案资讯
+    const file = (await getFilesByIds([fileId], userId))[0];
+    if (!file) {
+        log('WARN', FUNC_NAME, `重命名失败：找不到档案 ${fileId}`);
+        throw new Error('找不到档案');
+    }
+    
+    // 2. 检查新名称冲突
+    const conflict = await checkFullConflict(newName, file.folder_id, userId);
+    if (conflict) {
+        log('WARN', FUNC_NAME, `重命名失败：名称 "${newName}" 已存在于资料夹 ${file.folder_id}`);
+        throw new Error('名称已存在');
+    }
+    
+    // 3. (仅 Local/WebDAV) 重命名实体档案
+    const storage = storageManager.getStorage();
+    let newFileId = file.file_id; // TG 模式下 file_id 不变
+    
+    if (storage.type === 'local' || storage.type === 'webdav') {
+        const oldPath = file.file_id;
+        const newPath = path.posix.join(path.posix.dirname(oldPath), newName);
+        newFileId = newPath;
+        
+        try {
+            if (storage.type === 'local') {
+                const userDir = path.join(__dirname, 'data', 'uploads', String(userId));
+                const oldLocalPath = path.join(userDir, oldPath);
+                const newLocalPath = path.join(userDir, newPath);
+                await fsp.rename(oldLocalPath, newLocalPath);
+            } else if (storage.type === 'webdav') {
+                const client = storage.getClient();
+                await client.moveFile(oldPath, newPath);
+            }
+            log('DEBUG', FUNC_NAME, `实体档案已重命名: "${oldPath}" -> "${newPath}"`);
+        } catch (e) {
+            log('ERROR', FUNC_NAME, `重命名实体档案 "${oldPath}" 失败:`, e);
+            throw new Error(`重命名储存后端档案失败: ${e.message}`);
+        }
+    }
+    
+    // 4. 更新资料库
+    try {
+        await db.run(
+            "UPDATE files SET fileName = ?, file_id = ? WHERE id = ? AND user_id = ?", 
+            [newName, newFileId, fileId, userId]
+        );
+        log('INFO', FUNC_NAME, `资料库已更新：档案 ${fileId} 重命名为 "${newName}"`);
+        return { success: true };
+    } catch (dbError) {
+         log('ERROR', FUNC_NAME, `更新资料库中的档案 ${fileId} 名称失败:`, dbError);
+         // (回滚) 尝试将实体档案改回去
+         if (storage.type === 'local' || storage.type === 'webdav') {
+            try {
+                if (storage.type === 'local') {
+                    const userDir = path.join(__dirname, 'data', 'uploads', String(userId));
+                    await fsp.rename(path.join(userDir, newPath), path.join(userDir, oldPath));
+                } else if (storage.type === 'webdav') {
+                    await storage.getClient().moveFile(newPath, oldPath);
+                }
+                 log('WARN', FUNC_NAME, `(回滚) 实体档案已从 "${newPath}" 恢复为 "${oldPath}"`);
+            } catch(rollbackError) {
+                 log('ERROR', FUNC_NAME, `(灾难) 资料库更新失败且实体档案回滚失败! 路径: "${newPath}"`);
+            }
+         }
+         throw new Error(`更新资料库失败: ${dbError.message}`);
+    }
+}
+
+async function renameFolder(folderId, newName, userId) {
+    const FUNC_NAME = 'renameFolder';
+    log('INFO', FUNC_NAME, `准备重命名资料夹 ${folderId} 为 "${newName}" (User: ${userId})`);
+
+    // 1. 获取资料夹资讯
+    const folder = await getFolderDetails(folderId, userId);
+    if (!folder) {
+        log('WARN', FUNC_NAME, `重命名失败：找不到资料夹 ${folderId}`);
+        throw new Error('找不到资料夹');
+    }
+    // 无法重命名根目录
+    if (folder.parent_id === null) {
+        log('WARN', FUNC_NAME, '重命名失败：无法重命名根目录');
+        throw new Error('无法重命名根目录');
+    }
+    
+    // 2. 检查新名称冲突
+    const conflict = await checkFullConflict(newName, folder.parent_id, userId);
+    if (conflict) {
+        log('WARN', FUNC_NAME, `重命名失败：名称 "${newName}" 已存在于资料夹 ${folder.parent_id}`);
+        throw new Error('名称已存在');
+    }
+
+    const storage = storageManager.getStorage();
+
+    // 3. (仅 Local/WebDAV) 重命名实体资料夹
+    if (storage.type === 'local' || storage.type === 'webdav') {
+        // 我们需要重新命名资料夹，这会影响其下所有子档案的 file_id
+        await db.run('BEGIN');
+        try {
+            const folderPathParts = await getFolderPath(folderId, userId);
+            const oldFolderPath = path.posix.join(...folderPathParts.slice(1).map(p => p.name));
+            
+            // 替换路径的最后一部分
+            folderPathParts[folderPathParts.length - 1].name = newName; 
+            const newFolderPath = path.posix.join(...folderPathParts.slice(1).map(p => p.name));
+            
+            // 3a. 重命名实体资料夹
+            if (storage.type === 'local') {
+                const userDir = path.join(__dirname, 'data', 'uploads', String(userId));
+                const oldLocalPath = path.join(userDir, oldFolderPath);
+                const newLocalPath = path.join(userDir, newFolderPath);
+                if (fs.existsSync(oldLocalPath)) {
+                    await fsp.rename(oldLocalPath, newLocalPath);
+                } else {
+                    await fsp.mkdir(newLocalPath, { recursive: true });
+                }
+            } else if (storage.type === 'webdav') {
+                const client = storage.getClient();
+                if (await client.exists(oldFolderPath)) {
+                    await client.moveFile(oldFolderPath, newFolderPath);
+                } else {
+                    await storage.createDirectory(newFolderPath);
+                }
+            }
+            log('DEBUG', FUNC_NAME, `实体资料夹已重命名: "${oldFolderPath}" -> "${newFolderPath}"`);
+            
+            // 3b. 更新资料库中的资料夹名称
+            await db.run("UPDATE folders SET name = ? WHERE id = ? AND user_id = ?", [newName, folderId, userId]);
+            
+            // 3c. 递归更新所有子档案的 file_id
+            log('DEBUG', FUNC_NAME, `正在递归更新子档案的 file_id...`);
+            await db.run(
+                `UPDATE files 
+                 SET file_id = ? || SUBSTR(file_id, ?) 
+                 WHERE file_id LIKE ? AND user_id = ?`,
+                [newFolderPath + '/', oldFolderPath.length + 2, oldFolderPath + '/%', userId]
+            );
+
+            await db.run('COMMIT');
+            log('INFO', FUNC_NAME, `资料夹 ${folderId} (及子档案) 重命名为 "${newName}" 成功。`);
+            return { success: true };
+            
+        } catch (e) {
+            await db.run('ROLLBACK');
+            log('ERROR', FUNC_NAME, `重命名 (Local/WebDAV) 资料夹 ${folderId} 失败:`, e);
+            throw new Error(`重命名储存后端资料夹失败: ${e.message}`);
+        }
+    } else {
+        // 4. (仅 TG 模式) 只更新资料库
+        try {
+            await db.run("UPDATE folders SET name = ? WHERE id = ? AND user_id = ?", [newName, folderId, userId]);
+            log('INFO', FUNC_NAME, `(TG模式) 资料夹 ${folderId} 重命名为 "${newName}" 成功。`);
+            return { success: true };
+        } catch (dbError) {
+             log('ERROR', FUNC_NAME, `(TG模式) 更新资料库中的资料夹 ${folderId} 名称失败:`, dbError);
+             throw new Error(`更新资料库失败: ${dbError.message}`);
+        }
+    }
+}
+
+
+async function deleteFilesByIds(dbIds, userId) {
+    const FUNC_NAME = 'deleteFilesByIds';
+    if (!dbIds || dbIds.length === 0) return;
+    log('DEBUG', FUNC_NAME, `准备从资料库删除档案 (DB IDs): ${dbIds.join(',')} (User: ${userId})`);
+    
+    try {
+        const placeholders = dbIds.map(() => '?').join(',');
+        
+        // 1. 删除关联的分享连结
+        await db.run(`DELETE FROM shares WHERE item_id IN (${placeholders}) AND type = 'file' AND user_id = ?`, [...dbIds, userId]);
+        
+        // 2. 删除档案条目
+        const result = await db.run(`DELETE FROM files WHERE id IN (${placeholders}) AND user_id = ?`, [...dbIds, userId]);
+        
+        log('INFO', FUNC_NAME, `成功从资料库删除 ${result.changes} 个档案条目。`);
+    } catch (error) {
+        log('ERROR', FUNC_NAME, `从资料库删除档案 (IDs: ${dbIds.join(',')}) 失败:`, error);
+        throw new Error(`资料库档案删除失败: ${error.message}`);
+    }
+}
+
+async function unifiedDelete(itemId, itemType, userId) {
+    const FUNC_NAME = 'unifiedDelete';
+    log('INFO', FUNC_NAME, `开始统一删除 ${itemType} ID: ${itemId} (User: ${userId})`);
+    
+    const storage = storageManager.getStorage();
+    
+    try {
+        if (itemType === 'file') {
+            const files = await getFilesByIds([itemId], userId);
+            if (files.length === 0) {
+                 log('WARN', FUNC_NAME, `找不到要删除的档案 ID: ${itemId}`);
+                 return; // 找不到档案
+            }
+            
+            // 1. (TG/Local/WebDAV) 删除实体档案
+            // 注意: `storage.remove` 在 TG 模式下也会处理资料库删除 (deleteFilesByIds)
+            // 但在 Local/WebDAV 模式下不会
+            const removeResult = await storage.remove(files, [], userId);
+            
+            // 2. (仅 Local/WebDAV) 删除资料库条目
+            if (storage.type === 'local' || storage.type === 'webdav') {
+                if (removeResult.success) {
+                    await deleteFilesByIds([itemId], userId);
+                } else {
+                     throw new Error(`删除实体档案失败: ${removeResult.errors.join(', ')}`);
+                }
+            }
+            log('INFO', FUNC_NAME, `档案 ${itemId} 删除成功。`);
+
+        } else if (itemType === 'folder') {
+            const folder = await getFolderDetails(itemId, userId);
+            if (!folder) {
+                 log('WARN', FUNC_NAME, `找不到要删除的资料夹 ID: ${itemId}`);
+                 return; // 找不到资料夹
+            }
+            if (folder.parent_id === null) {
+                log('ERROR', FUNC_NAME, `拒绝删除根目录 ID: ${itemId}`);
+                throw new Error("无法删除根目录");
+            }
+            
+            await db.run('BEGIN');
+            
+            // 1. 递归收集所有子项目
+            const folderPathParts = await getFolderPath(itemId, userId);
+            const folderRelativePath = path.posix.join(...folderPathParts.slice(1).map(p => p.name));
+            
+            const filesToDelete = await getFilesRecursive(itemId, userId, folderRelativePath);
+            const foldersToDelete = await (async function getSubFolders(fId) {
+                let subs = [];
+                const children = await new Promise((resolve, reject) => {
+                     db.all("SELECT * FROM folders WHERE parent_id = ? AND user_id = ?", [fId, userId], (err, rows) => {
+                         if (err) return reject(err);
+                         resolve(rows);
+                     });
+                });
+                for (const child of children) {
+                    subs.push(child);
+                    subs = subs.concat(await getSubFolders(child.id));
+                }
+                return subs;
+            })(itemId);
+            
+            // 将自身加入待删列表
+            foldersToDelete.push(folder);
+
+            const fileDbIds = filesToDelete.map(f => f.id);
+            const folderDbIds = foldersToDelete.map(f => f.id);
+            const folderPaths = foldersToDelete.map(async f => {
+                 const pParts = await getFolderPath(f.id, userId);
+                 return { path: path.posix.join(...pParts.slice(1).map(p => p.name)) };
+            });
+            const folderPathObjects = await Promise.all(folderPaths);
+            
+            log('DEBUG', FUNC_NAME, `递归删除 ${itemId}: ${fileDbIds.length} 档案, ${folderDbIds.length} 资料夹`);
+
+            // 2. (TG/Local/WebDAV) 删除实体档案/资料夹
+            if (filesToDelete.length > 0 || folderPathObjects.length > 0) {
+                 const removeResult = await storage.remove(filesToDelete, folderPathObjects, userId);
+                 // (仅 Local/WebDAV)
+                 if (storage.type === 'local' || storage.type === 'webdav') {
+                     if (!removeResult.success) {
+                         throw new Error(`删除实体项目失败: ${removeResult.errors.join(', ')}`);
+                     }
+                 }
+            }
+
+            // 3. 删除资料库条目 (所有模式)
+            if (fileDbIds.length > 0) {
+                await deleteFilesByIds(fileDbIds, userId);
+            }
+            if (folderDbIds.length > 0) {
+                const folderPlaceholders = folderDbIds.map(() => '?').join(',');
+                // 3a. 删除关联分享
+                await db.run(`DELETE FROM shares WHERE item_id IN (${folderPlaceholders}) AND type = 'folder' AND user_id = ?`, [...folderDbIds, userId]);
+                // 3b. 删除资料夹
+                await db.run(`DELETE FROM folders WHERE id IN (${folderPlaceholders}) AND user_id = ?`, [...folderDbIds, userId]);
+            }
+            
+            await db.run('COMMIT');
+             log('INFO', FUNC_NAME, `资料夹 ${itemId} (及所有子项目) 删除成功。`);
+
+        }
+    } catch (error) {
+         if (itemType === 'folder') await db.run('ROLLBACK');
+         log('ERROR', FUNC_NAME, `统一删除 ${itemType} ID: ${itemId} 失败:`, error);
+         throw error;
+    }
+}
+
+async function isFileAccessible(fileId, userId, unlockedFolderIds = []) {
+    const FUNC_NAME = 'isFileAccessible';
+    log('DEBUG', FUNC_NAME, `检查档案 ${fileId} 存取权 for user ${userId}`);
+    
+    let file;
+    try {
+        file = (await getFilesByIds([fileId], userId))[0];
+    } catch(e) { return false; }
+    
+    if (!file) {
+        log('DEBUG', FUNC_NAME, `存取 ${fileId} 失败：档案不存在或不属于 user ${userId}`);
+        return false;
+    }
+
+    let currentFolderId = file.folder_id;
+    let checkedCount = 0;
+    
+    while (currentFolderId !== null) {
+        if (checkedCount++ > 50) { // 防止无限回圈
+             log('ERROR', FUNC_NAME, `检查存取权 ${fileId} 时路径过深 (超过 50 层)`);
+             return false;
+        }
+        
+        const folder = await getFolderDetails(currentFolderId, userId);
+        if (!folder) {
+             log('DEBUG', FUNC_NAME, `存取 ${fileId} 失败：路径上的资料夹 ${currentFolderId} 找不到`);
+             return false;
+        }
+        
+        if (folder.is_locked && !unlockedFolderIds.includes(folder.id)) {
+            log('DEBUG', FUNC_NAME, `存取 ${fileId} 失败：资料夹 ${folder.id} ("${folder.name}") 已锁定`);
+            return false;
+        }
+        
+        currentFolderId = folder.parent_id;
+    }
+    
+    log('DEBUG', FUNC_NAME, `存取 ${fileId} 成功。`);
+    return true;
+}
+
+async function setFolderPassword(folderId, hashedPassword, userId) {
+    const FUNC_NAME = 'setFolderPassword';
+    const isLocked = hashedPassword !== null;
+    log('INFO', FUNC_NAME, `正在设定资料夹 ${folderId} 锁定状态为: ${isLocked} (User: ${userId})`);
+    return db.run(
+        "UPDATE folders SET password = ?, is_locked = ? WHERE id = ? AND user_id = ?",
+        [hashedPassword, isLocked ? 1 : 0, folderId, userId]
+    );
+}
+
+async function verifyFolderPassword(folderId, password, userId) {
+    const FUNC_NAME = 'verifyFolderPassword';
+    log('DEBUG', FUNC_NAME, `正在验证资料夹 ${folderId} 密码 (User: ${userId})`);
+    const folder = await getFolderDetails(folderId, userId);
+    if (!folder) {
+         log('WARN', FUNC_NAME, `验证 ${folderId} 失败：找不到资料夹。`);
+         return false;
+    }
+    if (!folder.is_locked || !folder.password) {
+         log('DEBUG', FUNC_NAME, `验证 ${folderId} 失败：资料夹未锁定。`);
+         return false;
+    }
+    const isMatch = await bcrypt.compare(password, folder.password);
+    log('DEBUG', FUNC_NAME, `验证 ${folderId} ${isMatch ? '成功' : '失败'}`);
+    return isMatch;
+}
+
+async function searchItems(query, userId) {
+    const FUNC_NAME = 'searchItems';
+    log('DEBUG', FUNC_NAME, `正在搜寻 "${query}" for user ${userId}`);
+    const searchTerm = `%${query}%`;
+    
+    const foldersPromise = new Promise((resolve, reject) => {
+        db.all("SELECT id, name, is_locked FROM folders WHERE name LIKE ? AND user_id = ? AND parent_id IS NOT NULL", [searchTerm, userId], (err, rows) => {
             if (err) return reject(err);
-            resolve(row);
+            resolve(rows.map(r => ({ ...r, type: 'folder' })));
+        });
+    });
+    
+    const filesPromise = new Promise((resolve, reject) => {
+        db.all("SELECT * FROM files WHERE fileName LIKE ? AND user_id = ?", [searchTerm, userId], (err, rows) => {
+            if (err) return reject(err);
+            resolve(rows.map(r => ({ ...r, type: 'file' })));
         });
     });
 
-    // 如果根据token找不到任何分享，直接返回null
-    if (!row) {
-        return null;
+    const [folders, files] = await Promise.all([foldersPromise, filesPromise]);
+    log('DEBUG', FUNC_NAME, `搜寻 "${query}" 结束: ${folders.length} 资料夹, ${files.length} 档案`);
+    return [...folders, ...files];
+}
+
+
+// --- 分享功能 ---
+
+async function createShareLink(itemId, itemType, expiresIn, userId, password, customExpiresAt) {
+    const FUNC_NAME = 'createShareLink';
+    log('INFO', FUNC_NAME, `正在建立分享: ${itemType} ID: ${itemId} (User: ${userId}), 效期: ${expiresIn}`);
+    
+    // 1. 验证项目存在
+    if (itemType === 'file') {
+        const file = (await getFilesByIds([itemId], userId))[0];
+        if (!file) return { success: false, message: '找不到档案' };
+    } else {
+        const folder = await getFolderDetails(itemId, userId);
+        if (!folder) return { success: false, message: '找不到资料夹' };
     }
 
-    // 检查分享是否已过期 (row.share_expires_at 为 null 表示永不过期)
-    const isExpired = row.share_expires_at && Date.now() > row.share_expires_at;
+    // 2. 取消现有的分享
+    await cancelShare(itemId, itemType, userId);
 
-    // 如果链接已过期，我们将其视为无效链接，返回 null。
-    // 重要的是，我们不执行任何数据库写操作，从而避免了因过期检查而清除密码的风险。
-    if (isExpired) {
-        return null; 
+    // 3. 设定参数
+    const token = crypto.randomBytes(16).toString('hex');
+    let expiresAt = null;
+    if (expiresIn === '1h') expiresAt = Date.now() + 3600000;
+    else if (expiresIn === '24h') expiresAt = Date.now() + 86400000;
+    else if (expiresIn === '7d') expiresAt = Date.now() + 604800000;
+    else if (expiresIn === 'custom' && customExpiresAt) {
+        expiresAt = parseInt(customExpiresAt, 10);
     }
     
-    // 如果分享有效且未过期，返回完整的分享信息。
+    let hashedPassword = null;
+    if (password) {
+        const salt = await bcrypt.genSalt(10);
+        hashedPassword = await bcrypt.hash(password, salt);
+    }
+    
+    // 4. 写入资料库
+    try {
+        await db.run(
+            `INSERT INTO shares (item_id, type, user_id, share_token, expires_at, share_password) 
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [itemId, itemType, userId, token, expiresAt, hashedPassword]
+        );
+        log('INFO', FUNC_NAME, `分享建立成功: ${itemType} ID: ${itemId}, Token: ${token}`);
+        return { success: true, token: token };
+    } catch (e) {
+        log('ERROR', FUNC_NAME, `建立分享 ${itemType} ID: ${itemId} 失败:`, e);
+        return { success: false, message: '建立分享时发生资料库错误' };
+    }
+}
+
+async function cancelShare(itemId, itemType, userId) {
+    const FUNC_NAME = 'cancelShare';
+    log('INFO', FUNC_NAME, `正在取消分享: ${itemType} ID: ${itemId} (User: ${userId})`);
+    try {
+        const result = await db.run(
+            "DELETE FROM shares WHERE item_id = ? AND type = ? AND user_id = ?",
+            [itemId, itemType, userId]
+        );
+        return { success: true, message: '分享已取消', changes: result.changes };
+    } catch (e) {
+        log('ERROR', FUNC_NAME, `取消分享 ${itemType} ID: ${itemId} 失败:`, e);
+        return { success: false, message: '取消分享时发生资料库错误' };
+    }
+}
+
+async function getActiveShares(userId) {
+    const FUNC_NAME = 'getActiveShares';
+    log('DEBUG', FUNC_NAME, `正在获取使用者 ${userId} 的有效分享`);
+    
+    // 1. 清理过期的
+    await db.run("DELETE FROM shares WHERE expires_at IS NOT NULL AND expires_at < ?", [Date.now()]);
+    
+    // 2. 获取档案分享
+    const filesPromise = db.all(
+        `SELECT s.item_id, s.type, s.share_token, s.expires_at, s.share_password, f.fileName as name 
+         FROM shares s JOIN files f ON s.item_id = f.id 
+         WHERE s.user_id = ? AND s.type = 'file'`, 
+        [userId]
+    );
+    
+    // 3. 获取资料夹分享
+    const foldersPromise = db.all(
+        `SELECT s.item_id, s.type, s.share_token, s.expires_at, s.share_password, f.name 
+         FROM shares s JOIN folders f ON s.item_id = f.id 
+         WHERE s.user_id = ? AND s.type = 'folder'`, 
+        [userId]
+    );
+    
+    const [files, folders] = await Promise.all([filesPromise, foldersPromise]);
+    log('DEBUG', FUNC_NAME, `获取成功: ${folders.length} 资料夹, ${files.length} 档案`);
+    return [...files, ...folders].map(s => ({ ...s, has_password: !!s.share_password }));
+}
+
+async function getFileByShareToken(token) {
+    const FUNC_NAME = 'getFileByShareToken';
+    log('DEBUG', FUNC_NAME, `正在依 Token 寻找分享档案: ${token}`);
+    
+    const row = await db.get(
+        `SELECT f.*, s.share_password 
+         FROM files f JOIN shares s ON f.id = s.item_id 
+         WHERE s.share_token = ? AND s.type = 'file' 
+         AND (s.expires_at IS NULL OR s.expires_at > ?)`,
+        [token, Date.now()]
+    );
+    
+    if (!row) {
+        log('DEBUG', FUNC_NAME, `Token ${token} 未找到或已过期。`);
+        // 清理过期的
+        await db.run("DELETE FROM shares WHERE share_token = ?", [token]);
+    }
     return row;
 }
 
 async function getFolderByShareToken(token) {
-    const getShareSql = "SELECT * FROM folders WHERE share_token = ?";
-
-    const row = await new Promise((resolve, reject) => {
-        db.get(getShareSql, [token], (err, row) => {
-            if (err) return reject(err);
-            resolve(row);
-        });
-    });
-
-    // 如果根据token找不到任何分享，直接返回null
+    const FUNC_NAME = 'getFolderByShareToken';
+     log('DEBUG', FUNC_NAME, `正在依 Token 寻找分享资料夹: ${token}`);
+     
+    const row = await db.get(
+        `SELECT f.*, s.share_password 
+         FROM folders f JOIN shares s ON f.id = s.item_id 
+         WHERE s.share_token = ? AND s.type = 'folder' 
+         AND (s.expires_at IS NULL OR s.expires_at > ?)`,
+        [token, Date.now()]
+    );
+    
     if (!row) {
-        return null;
+         log('DEBUG', FUNC_NAME, `Token ${token} 未找到或已过期。`);
+        // 清理过期的
+        await db.run("DELETE FROM shares WHERE share_token = ?", [token]);
     }
-
-    // 检查分享是否已过期 (row.share_expires_at 为 null 表示永不过期)
-    const isExpired = row.share_expires_at && Date.now() > row.share_expires_at;
-
-    // 如果链接已过期，我们将其视为无效链接，返回 null。
-    // 重要的是，我们在这里不执行任何数据库写操作（如 UPDATE 或 DELETE）。
-    // 这可以防止仅仅因为一次过期的访问就清除了分享密码等重要信息。
-    if (isExpired) {
-        return null; 
-    }
-
-    // 如果分享有效且未过期，返回完整的分享信息。
     return row;
 }
-// --- *** 关键修正 结束 *** ---
 
-// --- *** 关键修正 开始 *** ---
-async function findFileInSharedFolder(fileId, folderToken) {
-    return new Promise((resolve, reject) => {
-        const sql = `
-            WITH RECURSIVE shared_folder_tree(id) AS (
-                -- Base case: the root folder with the share token. It must not be locked.
-                SELECT id FROM folders WHERE share_token = ? AND password IS NULL
-                UNION ALL
-                -- Recursive step: find all children of the folders already in the tree.
-                -- Crucially, do not include children that are themselves locked.
-                SELECT f.id FROM folders f
-                JOIN shared_folder_tree sft ON f.parent_id = sft.id
-                WHERE f.password IS NULL
-            )
-            -- Final selection: get the file if its folder_id is in our allowed tree.
-            SELECT f.* FROM files f
-            WHERE f.message_id = ? AND f.folder_id IN (SELECT id FROM shared_folder_tree);
-        `;
-
-        db.get(sql, [folderToken, fileId], (err, row) => {
-            if (err) return reject(err);
-            resolve(row); // row will be the file object or null if not found/not allowed
-        });
-    });
-}
-// --- *** 关键修正 结束 *** ---
-
-async function renameFile(messageId, newFileName, userId) {
-    const file = (await getFilesByIds([messageId], userId))[0];
-    if (!file) return { success: false, message: '文件未找到。' };
-
-    const storage = require('./storage').getStorage();
-
-    if (storage.type === 'local' || storage.type === 'webdav') {
-        const oldRelativePath = file.file_id;
-        const newRelativePath = path.posix.join(path.posix.dirname(oldRelativePath), newFileName);
-
-        try {
-            if (storage.type === 'local') {
-                const oldFullPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath);
-                const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
-                await fs.rename(oldFullPath, newFullPath);
-            } else if (storage.type === 'webdav') {
-                const client = storage.getClient();
-                await client.moveFile(oldRelativePath, newRelativePath);
-            }
-        } catch(err) {
-            throw new Error(`实体档案重新命名失败`);
-        }
-        
-        const sql = `UPDATE files SET fileName = ?, file_id = ? WHERE message_id = ? AND user_id = ?`;
-        return new Promise((resolve, reject) => {
-            db.run(sql, [newFileName, newRelativePath, messageId, userId], function(err) {
-                 if (err) reject(err);
-                 else resolve({ success: true });
-            });
-        });
-    }
-
-    const sql = `UPDATE files SET fileName = ? WHERE message_id = ? AND user_id = ?`;
-    return new Promise((resolve, reject) => {
-        db.run(sql, [newFileName, messageId, userId], function(err) {
-            if (err) reject(err);
-            else if (this.changes === 0) resolve({ success: false, message: '文件未找到。' });
-            else resolve({ success: true });
-        });
-    });
-}
-
-async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId) {
-    const file = (await getFilesByIds([messageId], userId))[0];
-    if (!file) throw new Error('File not found for rename and move');
-
-    const storage = require('./storage').getStorage();
-    if (storage.type === 'local' || storage.type === 'webdav') {
-        const targetPathParts = await getFolderPath(targetFolderId, userId);
-        const targetRelativePath = path.posix.join(...targetPathParts.slice(1).map(p => p.name));
-        const newRelativePath = path.posix.join(targetRelativePath, newFileName);
-        const oldRelativePath = file.file_id;
-        
-        try {
-            if (storage.type === 'local') {
-                 const oldFullPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath);
-                 const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
-                 await fs.mkdir(path.dirname(newFullPath), { recursive: true });
-                 await fs.rename(oldFullPath, newFullPath);
-            } else if (storage.type === 'webdav') {
-                const client = storage.getClient();
-                await client.moveFile(oldRelativePath, newRelativePath);
-            }
-        } catch(err) {
-            throw new Error(`实体档案移动并重命名失败`);
-        }
-        
-        const sql = `UPDATE files SET fileName = ?, file_id = ?, folder_id = ? WHERE message_id = ? AND user_id = ?`;
-        return new Promise((resolve, reject) => {
-            db.run(sql, [newFileName, newRelativePath, targetFolderId, messageId, userId], (err) => err ? reject(err) : resolve({ success: true }));
-        });
-    }
-
-    const sql = `UPDATE files SET fileName = ?, folder_id = ? WHERE message_id = ? AND user_id = ?`;
-    return new Promise((resolve, reject) => {
-        db.run(sql, [newFileName, targetFolderId, messageId, userId], (err) => err ? reject(err) : resolve({ success: true }));
-    });
-}
-
-
-async function renameFolder(folderId, newFolderName, userId) {
-    const folder = await new Promise((res, rej) => db.get("SELECT * FROM folders WHERE id=?", [folderId], (e,r)=>e?rej(e):res(r)));
-    if (!folder) return { success: false, message: '资料夾未找到。'};
+async function findFolderBySharePath(token, pathSegments) {
+    const FUNC_NAME = 'findFolderBySharePath';
+    log('DEBUG', FUNC_NAME, `正在依分享路径寻找资料夹: ${token} / ${pathSegments.join('/')}`);
     
-    const storage = require('./storage').getStorage();
+    const rootFolder = await getFolderByShareToken(token);
+    if (!rootFolder) return null;
 
-    if (storage.type === 'local' || storage.type === 'webdav') {
-        const oldPathParts = await getFolderPath(folderId, userId);
-        const oldFullPath = path.posix.join(...oldPathParts.slice(1).map(p => p.name));
-        const newFullPath = path.posix.join(path.posix.dirname(oldFullPath), newFolderName);
-
-        try {
-            if (storage.type === 'local') {
-                const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldFullPath);
-                const newAbsPath = path.join(UPLOAD_DIR, String(userId), newFullPath);
-                if (fsSync.existsSync(oldAbsPath)) {
-                    await fs.rename(oldAbsPath, newAbsPath);
+    let currentFolder = rootFolder;
+    for (const segment of pathSegments) {
+        const nextFolder = await new Promise((resolve, reject) => {
+            db.get(
+                "SELECT * FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?",
+                [segment, currentFolder.id, rootFolder.user_id],
+                (err, row) => {
+                    if (err) return reject(err);
+                    resolve(row);
                 }
-            } else if (storage.type === 'webdav') {
-                const client = storage.getClient();
-                await client.moveFile(oldFullPath, newFullPath);
-            }
-
-            const descendantFiles = await getFilesRecursive(folderId, userId);
-            for (const file of descendantFiles) {
-                const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
-                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id], (e) => e ? rej(e) : res()));
-            }
-
-        } catch(e) {
-            if (e.code !== 'ENOENT') {
-                throw new Error("物理资料夹重新命名失败");
-            }
-        }
-    }
-
-    const sql = `UPDATE folders SET name = ? WHERE id = ? AND user_id = ?`;
-    return new Promise((resolve, reject) => {
-        db.run(sql, [newFolderName, folderId, userId], function(err) {
-            if (err) reject(err);
-            else if (this.changes === 0) resolve({ success: false, message: '资料夾未找到。' });
-            else resolve({ success: true });
+            );
         });
-    });
-}
-
-// --- *** 关键修正 开始：新增 renameAndMoveFolder 函数 *** ---
-async function renameAndMoveFolder(folderId, newName, targetFolderId, userId) {
-    const folder = await new Promise((res, rej) => db.get("SELECT * FROM folders WHERE id=? AND user_id=?", [folderId, userId], (e,r)=>e?rej(e):res(r)));
-    if (!folder) throw new Error('Folder not found for rename and move');
-
-    const storage = require('./storage').getStorage();
-    if (storage.type === 'local' || storage.type === 'webdav') {
-        const oldPathParts = await getFolderPath(folderId, userId);
-        const oldFullPath = path.posix.join(...oldPathParts.slice(1).map(p => p.name));
-
-        const targetPathParts = await getFolderPath(targetFolderId, userId);
-        const targetBasePath = path.posix.join(...targetPathParts.slice(1).map(p => p.name));
-        const newFullPath = path.posix.join(targetBasePath, newName);
-
-        try {
-            if (storage.type === 'local') {
-                 const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldFullPath);
-                 const newAbsPath = path.join(UPLOAD_DIR, String(userId), newFullPath);
-                 if (fsSync.existsSync(oldAbsPath)) {
-                    await fs.mkdir(path.dirname(newAbsPath), { recursive: true });
-                    await fs.rename(oldAbsPath, newAbsPath);
-                 }
-            } else if (storage.type === 'webdav') {
-                const client = storage.getClient();
-                await client.moveFile(oldFullPath, newFullPath);
-            }
-
-            // 更新所有子文件的路径
-            const descendantFiles = await getFilesRecursive(folderId, userId);
-            for (const file of descendantFiles) {
-                const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
-                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id], (e) => e ? rej(e) : res()));
-            }
-        } catch(err) {
-            throw new Error(`实体资料夹移动并重命名失败: ${err.message}`);
+        if (!nextFolder) {
+             log('DEBUG', FUNC_NAME, `路径 ${segment} 在 ${currentFolder.id} 中未找到。`);
+             return null; // 路径无效
         }
+        currentFolder = nextFolder;
     }
-
-    // 更新数据库中的名称和父ID
-    const sql = `UPDATE folders SET name = ?, parent_id = ? WHERE id = ? AND user_id = ?`;
-    return new Promise((resolve, reject) => {
-        db.run(sql, [newName, targetFolderId, folderId, userId], (err) => err ? reject(err) : resolve({ success: true }));
-    });
-}
-// --- *** 关键修正 结束 *** ---
-
-function setFolderPassword(folderId, password, userId) {
-    return new Promise((resolve, reject) => {
-        const sql = `UPDATE folders SET password = ? WHERE id = ? AND user_id = ?`;
-        db.run(sql, [password, folderId, userId], function(err) {
-            if (err) return reject(err);
-            if (this.changes === 0) return reject(new Error('Folder not found or permission denied'));
-            resolve({ success: true });
-        });
-    });
+    
+    log('DEBUG', FUNC_NAME, `分享路径寻找成功，找到资料夹 ID: ${currentFolder.id}`);
+    return currentFolder;
 }
 
-async function verifyFolderPassword(folderId, password, userId) {
-    const folder = await getFolderDetails(folderId, userId);
-    if (!folder || !folder.password) {
-        throw new Error('Folder is not locked or does not exist.');
-    }
-    const isMatch = await bcrypt.compare(password, folder.password);
-    return isMatch;
-}
-
-
-
-function createShareLink(itemId, itemType, expiresIn, userId, password = null, customExpiresAt = null) {
-    const token = crypto.randomBytes(16).toString('hex');
-    let expiresAt = null;
-
-    if (expiresIn === 'custom' && customExpiresAt) {
-        expiresAt = parseInt(customExpiresAt, 10);
-    } else {
-        const now = Date.now();
-        const hours = (h) => h * 60 * 60 * 1000;
-        const days = (d) => d * 24 * hours(1);
-        switch (expiresIn) {
-            case '1h': expiresAt = now + hours(1); break;
-            case '3h': expiresAt = now + hours(3); break;
-            case '5h': expiresAt = now + hours(5); break;
-            case '7h': expiresAt = now + hours(7); break;
-            case '24h': expiresAt = now + hours(24); break;
-            case '7d': expiresAt = now + days(7); break;
-            case '0': expiresAt = null; break;
-            default: expiresAt = now + hours(24);
+async function findFileInSharedFolder(fileId, folderToken) {
+    const FUNC_NAME = 'findFileInSharedFolder';
+    log('DEBUG', FUNC_NAME, `正在检查档案 ${fileId} 是否在分享 ${folderToken} 中`);
+    
+    const rootFolder = await getFolderByShareToken(folderToken);
+    if (!rootFolder) return null;
+    
+    const file = (await getFilesByIds([fileId], rootFolder.user_id))[0];
+    if (!file) return null;
+    
+    // 检查档案是否在分享的资料夹或其子资料夹中
+    let currentFolderId = file.folder_id;
+    let checkedCount = 0;
+    while (currentFolderId !== null) {
+        if (checkedCount++ > 50) return null; // 防回圈
+        if (currentFolderId === rootFolder.id) {
+             log('DEBUG', FUNC_NAME, `档案 ${fileId} 验证成功在分享 ${folderToken} 中。`);
+             return file; // 找到了
         }
+        
+        const folder = await getFolderDetails(currentFolderId, rootFolder.user_id);
+        if (!folder) return null; // 路径中断
+        
+        currentFolderId = folder.parent_id;
     }
-
-    const table = itemType === 'folder' ? 'folders' : 'files';
-    const idColumn = itemType === 'folder' ? 'id' : 'message_id';
-
-    return new Promise(async (resolve, reject) => {
-        let hashedPassword = null;
-        if (password && password.length > 0) {
-            const salt = await bcrypt.genSalt(10);
-            hashedPassword = await bcrypt.hash(password, salt);
-        }
-
-        const sql = `UPDATE ${table} SET share_token = ?, share_expires_at = ?, share_password = ? WHERE ${idColumn} = ? AND user_id = ?`;
-        db.run(sql, [token, expiresAt, hashedPassword, itemId, userId], function(err) {
-            if (err) reject(err);
-            else if (this.changes === 0) resolve({ success: false, message: '项目未找到。' });
-            else resolve({ success: true, token });
-        });
-    });
+    
+    log('DEBUG', FUNC_NAME, `档案 ${fileId} 不在分享 ${folderToken} 的层级下。`);
+    return null; // 未找到
 }
 
-function deleteFilesByIds(messageIds, userId) {
-    if (!messageIds || messageIds.length === 0) {
-        return Promise.resolve({ success: true, changes: 0 });
-    }
-    const placeholders = messageIds.map(() => '?').join(',');
-    const sql = `DELETE FROM files WHERE message_id IN (${placeholders}) AND user_id = ?`;
-    return new Promise((resolve, reject) => {
-        db.run(sql, [...messageIds, userId], function(err) {
-            if (err) reject(err);
-            else resolve({ success: true, changes: this.changes });
-        });
-    });
+// --- Auth Token 功能 ---
+
+async function createAuthToken(userId, token, expiresAt) {
+    const FUNC_NAME = 'createAuthToken';
+    log('DEBUG', FUNC_NAME, `正在为使用者 ${userId} 建立 auth token`);
+    return db.run(
+        "INSERT INTO auth_tokens (user_id, token, expires_at) VALUES (?, ?, ?)",
+        [userId, token, expiresAt]
+    );
 }
 
-function getActiveShares(userId) {
-    return new Promise((resolve, reject) => {
-        const now = Date.now();
-        const sqlFiles = `SELECT message_id as id, fileName as name, 'file' as type, share_token, share_expires_at FROM files WHERE share_token IS NOT NULL AND (share_expires_at IS NULL OR share_expires_at > ?) AND user_id = ?`;
-        const sqlFolders = `SELECT id, name, 'folder' as type, share_token, share_expires_at FROM folders WHERE share_token IS NOT NULL AND (share_expires_at IS NULL OR share_expires_at > ?) AND user_id = ?`;
+async function findAuthToken(token) {
+    const FUNC_NAME = 'findAuthToken';
+    log('DEBUG', FUNC_NAME, `正在寻找 auth token (前 8 码: ${token.substring(0, 8)}... )`);
+    return db.get(
+        `SELECT t.user_id, t.expires_at, u.username, u.is_admin 
+         FROM auth_tokens t 
+         JOIN users u ON t.user_id = u.id 
+         WHERE t.token = ?`, 
+        [token]
+    );
+}
 
-        let shares = [];
-        db.all(sqlFiles, [now, userId], (err, files) => {
-            if (err) return reject(err);
-            shares = shares.concat(files);
-            db.all(sqlFolders, [now, userId], (err, folders) => {
+async function deleteAuthToken(token) {
+    const FUNC_NAME = 'deleteAuthToken';
+     log('DEBUG', FUNC_NAME, `正在删除 auth token (前 8 码: ${token.substring(0, 8)}... )`);
+    return db.run("DELETE FROM auth_tokens WHERE token = ?", [token]);
+}
+
+async function deleteExpiredAuthTokens() {
+    const FUNC_NAME = 'deleteExpiredAuthTokens';
+    log('DEBUG', FUNC_NAME, `正在删除所有过期的 auth tokens...`);
+    return db.run("DELETE FROM auth_tokens WHERE expires_at < ?", [Date.now()]);
+}
+
+
+async function resolvePathToFolderId(initialFolderId, pathParts, userId) {
+    const FUNC_NAME = 'resolvePathToFolderId';
+    log('DEBUG', FUNC_NAME, `正在解析路径 ${pathParts.join('/')} from ${initialFolderId}`);
+    
+    let currentFolderId = initialFolderId;
+    
+    for (const part of pathParts) {
+        if (!part) continue; // 忽略空路径
+        
+        // 尝试寻找现有的资料夹
+        const existingFolder = await new Promise((resolve, reject) => {
+            db.get("SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?", 
+                   [part, currentFolderId, userId], (err, row) => {
                 if (err) return reject(err);
-                shares = shares.concat(folders);
-                resolve(shares);
+                resolve(row);
             });
         });
-    });
-}
 
-function cancelShare(itemId, itemType, userId) {
-    const table = itemType === 'folder' ? 'folders' : 'files';
-    const idColumn = itemType === 'folder' ? 'id' : 'message_id';
-    const sql = `UPDATE ${table} SET share_token = NULL, share_expires_at = NULL, share_password = NULL WHERE ${idColumn} = ? AND user_id = ?`;
-
-    return new Promise((resolve, reject) => {
-        db.run(sql, [itemId, userId], function(err) {
-            if (err) reject(err);
-            else if (this.changes === 0) resolve({ success: false, message: '项目未找到或无需取消' });
-            else resolve({ success: true });
-        });
-    });
-}
-
-async function getConflictingItems(itemsToMove, destinationFolderId, userId) {
-    const fileConflicts = new Set();
-    const folderConflicts = new Set();
-
-    const destContents = await getChildrenOfFolder(destinationFolderId, userId);
-    const destMap = new Map(destContents.map(item => [item.name, item.type]));
-
-    for (const item of itemsToMove) {
-        const destType = destMap.get(item.name);
-        if (destType) {
-            if (item.type === 'folder' && destType === 'folder') {
-                folderConflicts.add(item.name);
-            } else {
-                fileConflicts.add(item.name);
+        if (existingFolder) {
+            currentFolderId = existingFolder.id;
+        } else {
+            // 资料夹不存在，建立它
+            log('DEBUG', FUNC_NAME, `路径 ${part} 不存在，正在建立...`);
+            const newFolder = await createFolder(part, currentFolderId, userId);
+            
+            // (仅 Local/WebDAV) 建立实体资料夹
+            const storage = storageManager.getStorage();
+            if (storage.type === 'local' || storage.type === 'webdav') {
+                const newFolderPathParts = await getFolderPath(newFolder.id, userId);
+                const newFullPath = path.posix.join(...newFolderPathParts.slice(1).map(p => p.name));
+                
+                if (storage.type === 'local') {
+                    const newLocalPath = path.join(__dirname, 'data', 'uploads', String(userId), newFullPath);
+                    await fsp.mkdir(newLocalPath, { recursive: true });
+                } else if (storage.type === 'webdav' && storage.createDirectory) {
+                    await storage.createDirectory(newFullPath);
+                }
             }
+            
+            currentFolderId = newFolder.id;
         }
     }
     
-    return {
-        fileConflicts: Array.from(fileConflicts),
-        folderConflicts: Array.from(folderConflicts)
-    };
+    log('DEBUG', FUNC_NAME, `路径解析完成，最终资料夹 ID: ${currentFolderId}`);
+    return currentFolderId;
 }
 
-
-function checkFullConflict(name, folderId, userId) {
-    return new Promise((resolve, reject) => {
-        const sql = `
-            SELECT name FROM (
-                SELECT name FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?
-                UNION ALL
-                SELECT fileName as name FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?
-            ) LIMIT 1
-        `;
-        db.get(sql, [name, folderId, userId, name, folderId, userId], (err, row) => {
-            if (err) return reject(err);
-            resolve(!!row);
-        });
-    });
-}
-
-function findFileInFolder(fileName, folderId, userId) {
-    return new Promise((resolve, reject) => {
-        const sql = `SELECT message_id FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?`;
-        db.get(sql, [fileName, folderId, userId], (err, row) => {
-            if (err) return reject(err);
-            resolve(row);
-        });
-    });
-}
-
-function findItemInFolder(name, folderId, userId) {
-    return new Promise((resolve, reject) => {
-        const sql = `
-            SELECT id, name, 'folder' as type FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?
-            UNION ALL
-            SELECT message_id as id, fileName as name, 'file' as type FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?
-        `;
-        db.get(sql, [name, folderId, userId, name, folderId, userId], (err, row) => {
-            if (err) return reject(err);
-            resolve(row);
-        });
-    });
-}
-
-async function findAvailableName(originalName, folderId, userId, isFolder) {
-    let newName = originalName;
-    let counter = 1;
-    const nameWithoutExt = isFolder ? originalName : path.parse(originalName).name;
-    const ext = isFolder ? '' : path.parse(originalName).ext;
-
-    while (await findItemInFolder(newName, folderId, userId)) {
-        newName = `${nameWithoutExt} (${counter})${ext}`;
-        counter++;
-    }
-    return newName;
-}
-
-
-function findFileByFileId(fileId, userId) {
-    return new Promise((resolve, reject) => {
-        const sql = `SELECT message_id FROM files WHERE file_id = ? AND user_id = ?`;
-        db.get(sql, [fileId, userId], (err, row) => {
-            if (err) return reject(err);
-            resolve(row);
-        });
-    });
-}
-
-
-function getRootFolder(userId) {
-    return new Promise((resolve, reject) => {
-        db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [userId], (err, row) => {
-            if (err) return reject(err);
-            resolve(row);
-        });
-    });
-}
-
-async function findOrCreateFolderByPath(fullPath, userId) {
-    if (!fullPath || fullPath === '/') {
-        const root = await getRootFolder(userId);
-        return root.id;
-    }
-
-    const pathParts = fullPath.split('/').filter(p => p);
-    let parentId = (await getRootFolder(userId)).id;
-
+async function findFolderByPath(initialFolderId, pathParts, userId) {
+    const FUNC_NAME = 'findFolderByPath';
+    log('DEBUG', FUNC_NAME, `正在寻找路径 ${pathParts.join('/')} from ${initialFolderId}`);
+    
+    let currentFolderId = initialFolderId;
+    
     for (const part of pathParts) {
-        let folder = await findFolderByName(part, parentId, userId);
-        if (folder) {
-            parentId = folder.id;
-        } else {
-            const result = await createFolder(part, parentId, userId);
-            parentId = result.id;
-        }
-    }
-    return parentId;
-}
-
-// --- *** 关键修正 开始 *** ---
-// 重构 resolvePathToFolderId 函数以包含锁和原子化数据库操作
-async function resolvePathToFolderId(startFolderId, pathParts, userId) {
-    let currentParentId = startFolderId;
-
-    for (const part of pathParts) {
-        if (!part) continue;
-
-        const lockId = `${userId}-${currentParentId}-${part}`;
-        
-        while (creatingFolders.has(lockId)) {
-            await new Promise(resolve => setTimeout(resolve, 50));
-        }
-
-        creatingFolders.add(lockId);
-        try {
-            const foundId = await new Promise((resolve, reject) => {
-                db.serialize(() => {
-                    const selectSql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
-                    db.get(selectSql, [part, currentParentId, userId], (err, row) => {
-                        if (err) {
-                            return reject(err);
-                        }
-                        if (row) {
-                            return resolve(row.id);
-                        }
-                        
-                        const insertSql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
-                        db.run(insertSql, [part, currentParentId, userId], function(err) {
-                            if (err) {
-                                return reject(err);
-                            }
-                            resolve(this.lastID);
-                        });
-                    });
-                });
+         if (!part) continue;
+         
+         const existingFolder = await new Promise((resolve, reject) => {
+            db.get("SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?", 
+                   [part, currentFolderId, userId], (err, row) => {
+                if (err) return reject(err);
+                resolve(row);
             });
-            currentParentId = foundId;
-        } finally {
-            creatingFolders.delete(lockId);
+        });
+        
+        if (existingFolder) {
+            currentFolderId = existingFolder.id;
+        } else {
+            log('DEBUG', FUNC_NAME, `路径 ${part} 未找到。`);
+            return null; // 路径不存在
         }
     }
-    return currentParentId;
+    log('DEBUG', FUNC_NAME, `寻找路径成功，最终资料夹 ID: ${currentFolderId}`);
+    return currentFolderId;
 }
-// --- *** 关键修正 结束 *** ---
-
-
-// --- 新增：管理 Auth Tokens 的函数 ---
-
-function createAuthToken(userId, token, expiresAt) {
-    return new Promise((resolve, reject) => {
-        const sql = `INSERT INTO auth_tokens (user_id, token, expires_at) VALUES (?, ?, ?)`;
-        db.run(sql, [userId, token, expiresAt], function(err) {
-            if (err) return reject(err);
-            resolve({ id: this.lastID });
-        });
-    });
-}
-
-function findAuthToken(token) {
-    return new Promise((resolve, reject) => {
-        // 直接关联 users 表以获取使用者信息
-        const sql = `SELECT t.id, t.user_id, t.expires_at, u.username, u.is_admin 
-                     FROM auth_tokens t
-                     JOIN users u ON t.user_id = u.id
-                     WHERE t.token = ?`;
-        db.get(sql, [token], (err, row) => {
-            if (err) return reject(err);
-            resolve(row);
-        });
-    });
-}
-
-function deleteAuthToken(token) {
-    return new Promise((resolve, reject) => {
-        const sql = `DELETE FROM auth_tokens WHERE token = ?`;
-        db.run(sql, [token], function(err) {
-            if (err) return reject(err);
-            resolve({ changes: this.changes });
-        });
-    });
-}
-
-// (可选，但推荐) 新增一个函数来清除所有过期的令牌
-function deleteExpiredAuthTokens() {
-    return new Promise((resolve, reject) => {
-        const now = Date.now();
-        const sql = `DELETE FROM auth_tokens WHERE expires_at <= ?`;
-        db.run(sql, [now], function(err) {
-            if (err) {
-                // console.error("清除过期 token 时出错:", err);
-                return reject(err);
-            }
-            resolve({ changes: this.changes });
-        });
-    });
-}
-// --- 新增结束 ---
 
 
 module.exports = {
-    createUser,
     findUserByName,
     findUserById,
-    changeUserPassword,
+    createUser,
     listNormalUsers,
     listAllUsers,
     deleteUser,
-    searchItems,
-    getFolderContents,
-    getFilesRecursive,
-    getFolderPath,
+    changeUserPassword,
     createFolder,
-    findFolderByName,
+    getFolderContents,
+    getFolderDetails,
+    getFolderPath,
     getAllFolders,
-    getAllDescendantFolderIds,
-    executeDeletion,
-    getFolderDeletionData,
-    deleteSingleFolder,
-    addFile,
-    updateFile,
     getFilesByIds,
     getItemsByIds,
-    getChildrenOfFolder,
-    moveItems,
+    getFilesRecursive,
+    addFile,
+    updateFile, // <--- *** 在此处添加 updateFile ***
+    findFileInFolder,
+    findItemInFolder,
+    checkFullConflict,
+    findAvailableName,
+    getConflictingItems,
     moveItem,
-    getFileByShareToken,
-    getFolderByShareToken,
-    findFileInSharedFolder,
-    createShareLink,
-    getActiveShares,
-    cancelShare,
     renameFile,
     renameFolder,
     deleteFilesByIds,
-    findFileInFolder,
-    getConflictingItems,
-    checkFullConflict,
-    resolvePathToFolderId,
-    findFolderByPath,
-    getDescendantFiles,
-    findFileByFileId,
-    findOrCreateFolderByPath,
-    getRootFolder,
     unifiedDelete,
-    findItemInFolder,
-    findAvailableName,
-    renameAndMoveFile,
-    // --- *** 关键修正：导出新函数 *** ---
-    renameAndMoveFolder,
-    getFolderDetails,
+    isFileAccessible,
     setFolderPassword,
     verifyFolderPassword,
-    isFileAccessible,
+    searchItems,
+    createShareLink,
+    cancelShare,
+    getActiveShares,
+    getFileByShareToken,
+    getFolderByShareToken,
     findFolderBySharePath,
-    // --- 新增 exports ---
+    findFileInSharedFolder,
     createAuthToken,
     findAuthToken,
     deleteAuthToken,
     deleteExpiredAuthTokens,
+    resolvePathToFolderId,
+    findFolderByPath
 };
