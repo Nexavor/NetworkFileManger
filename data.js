@@ -1,4 +1,4 @@
-// data.js (最终修正版)
+// data.js (最终修正版 - 修复 BIGINT 读取问题)
 
 const db = require('./database.js');
 const crypto = require('crypto');
@@ -10,6 +10,17 @@ const { encrypt, decrypt } = require('./crypto.js');
 
 const UPLOAD_DIR = path.resolve(__dirname, 'data', 'uploads');
 const creatingFolders = new Set();
+
+// --- (Helper 1: 定义所有文件栏位) ---
+// 避免在每个查询中重复输入 "SELECT *"
+const ALL_FILE_COLUMNS = `
+    fileName, mimetype, file_id, thumb_file_id, date, size, folder_id, user_id, storage_type
+`;
+// --- (Helper 2: 定义读取 message_id 的安全方式) ---
+// 这会强制 SQLite 在 node-sqlite3 驱动程式取得它之前，
+// 就将 BIGINT 转换为 TEXT (字串)。
+const SAFE_SELECT_MESSAGE_ID = `CAST(message_id AS TEXT) AS message_id`;
+const SAFE_SELECT_ID_AS_TEXT = `CAST(message_id AS TEXT) AS id`;
 
 
 function createUser(username, hashedPassword) {
@@ -120,10 +131,11 @@ function searchItems(query, userId) {
         `;
 
         // 查询未被加密路径下的文件
+        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
         const sqlFiles = baseQuery + `
             SELECT 
-                f.*, 
-                f.message_id as id, 
+                ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS},
+                ${SAFE_SELECT_ID_AS_TEXT} as id, 
                 f.fileName as name, 
                 'file' as type
             FROM files f
@@ -153,7 +165,8 @@ function searchItems(query, userId) {
             contents.folders = folders.map(f => ({ ...f, encrypted_id: encrypt(f.id) }));
             db.all(sqlFiles, [userId, userId, searchQuery, userId], (err, files) => {
                 if (err) return reject(err);
-                contents.files = files.map(f => ({ ...f, message_id: f.id }));
+                // --- *** 最终修正：移除不必要的 map *** ---
+                contents.files = files;
                 resolve(contents);
             });
         });
@@ -200,12 +213,14 @@ function getItemsByIds(itemIds, userId) {
     return new Promise((resolve, reject) => {
         if (!itemIds || itemIds.length === 0) return resolve([]);
         const placeholders = itemIds.map(() => '?').join(',');
+        
+        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
         const sql = `
             SELECT id, name, parent_id, 'folder' as type, null as storage_type, null as file_id, password IS NOT NULL as is_locked
             FROM folders 
             WHERE id IN (${placeholders}) AND user_id = ?
             UNION ALL
-            SELECT message_id as id, fileName as name, folder_id as parent_id, 'file' as type, storage_type, file_id, 0 as is_locked
+            SELECT ${SAFE_SELECT_ID_AS_TEXT} as id, fileName as name, folder_id as parent_id, 'file' as type, storage_type, file_id, 0 as is_locked
             FROM files 
             WHERE message_id IN (${placeholders}) AND user_id = ?
         `;
@@ -220,10 +235,11 @@ function getItemsByIds(itemIds, userId) {
 
 function getChildrenOfFolder(folderId, userId) {
     return new Promise((resolve, reject) => {
+        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
         const sql = `
             SELECT id, name, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ?
             UNION ALL
-            SELECT message_id as id, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ?
+            SELECT ${SAFE_SELECT_ID_AS_TEXT} as id, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ?
         `;
         db.all(sql, [folderId, userId, folderId, userId], (err, rows) => {
             if (err) return reject(err);
@@ -271,14 +287,17 @@ function getFolderDetails(folderId, userId) {
 function getFolderContents(folderId, userId) {
     return new Promise((resolve, reject) => {
         const sqlFolders = `SELECT id, name, parent_id, 'folder' as type, password IS NOT NULL as is_locked FROM folders WHERE parent_id = ? AND user_id = ? ORDER BY name ASC`;
-        const sqlFiles = `SELECT *, message_id as id, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? ORDER BY name ASC`;
+        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
+        const sqlFiles = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS}, ${SAFE_SELECT_ID_AS_TEXT} as id, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? ORDER BY name ASC`;
+        
         let contents = { folders: [], files: [] };
         db.all(sqlFolders, [folderId, userId], (err, folders) => {
             if (err) return reject(err);
             contents.folders = folders.map(f => ({ ...f, encrypted_id: encrypt(f.id) }));
             db.all(sqlFiles, [folderId, userId], (err, files) => {
                 if (err) return reject(err);
-                contents.files = files.map(f => ({ ...f, message_id: f.id }));
+                // --- *** 最终修正：移除不必要的 map *** ---
+                contents.files = files;
                 resolve(contents);
             });
         });
@@ -287,7 +306,8 @@ function getFolderContents(folderId, userId) {
 
 async function getFilesRecursive(folderId, userId, currentPath = '') {
     let allFiles = [];
-    const sqlFiles = "SELECT * FROM files WHERE folder_id = ? AND user_id = ?";
+    // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
+    const sqlFiles = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS} FROM files WHERE folder_id = ? AND user_id = ?`;
     const files = await new Promise((res, rej) => db.all(sqlFiles, [folderId, userId], (err, rows) => err ? rej(err) : res(rows)));
     for (const file of files) {
         allFiles.push({ ...file, path: path.join(currentPath, file.fileName) });
@@ -447,7 +467,11 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
         const table = itemType === 'folder' ? 'folders' : 'files';
         const idColumn = itemType === 'folder' ? 'id' : 'message_id';
         const nameColumn = itemType === 'folder' ? 'name' : 'fileName';
-        const sql = `SELECT ${idColumn} as id, ${nameColumn} as name, '${itemType}' as type FROM ${table} WHERE ${idColumn} = ? AND user_id = ?`;
+        
+        // --- *** 最终修正：在 files 表中使用 CAST(message_id AS TEXT) *** ---
+        const selectId = itemType === 'folder' ? 'id' : `${SAFE_SELECT_ID_AS_TEXT} as id`;
+        
+        const sql = `SELECT ${selectId}, ${nameColumn} as name, '${itemType}' as type FROM ${table} WHERE ${idColumn} = ? AND user_id = ?`;
         
         // --- *** 最终修正：将 BigInt 转换为 String *** ---
         // (注意: itemId 在 moveItem 内部调用时可能是 BigInt 或 Int，统一转 string)
@@ -461,8 +485,8 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
     }
     
     // --- *** 最终修正：确保 sourceItem.id 是 BigInt/Int，以便后续比较 *** ---
-    // (还原从数据库读出的 ID，db 驱动会返回 number 或 string)
-    // 为了安全，我们假设它可能是 BigInt 或 Int，统一在查询时转 string
+    // (还原从数据库读出的 ID)
+    // (因为我们 CAST AS TEXT，所以 sourceItem.id 总是 string)
     const sourceItemId = itemType === 'folder' ? parseInt(sourceItem.id, 10) : BigInt(sourceItem.id);
 
 
@@ -471,12 +495,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
     let resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
 
     // --- *** 关键修正 开始：修复深度合并BUG *** ---
-    // 删除这个错误地将深度合并强制转换为覆盖的代码块，以允许用户选择的解决方案在所有层级生效
-    /*
-    if (depth > 0 && itemType === 'folder' && existingItemInTarget && existingItemInTarget.type === 'folder' && resolutionAction === 'merge') {
-        resolutionAction = 'overwrite';
-    }
-    */
+    // (已在上一版修复)
     // --- *** 关键修正 结束 *** ---
 
     // console.log(`[Data] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
@@ -512,6 +531,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
             // console.log(`[Data] moveItem: 覆盖目标项目 "${currentPath}" (ID: ${existingItemInTarget.id}, 类型: ${existingItemInTarget.type})`);
             
             // --- *** 最终修正：确保 existingItemInTarget.id 是正确的类型 *** ---
+            // (findItemInFolder 返回的 id 是 string)
             const targetId = existingItemInTarget.type === 'folder' ? parseInt(existingItemInTarget.id, 10) : BigInt(existingItemInTarget.id);
             await unifiedDelete(targetId, existingItemInTarget.type, userId);
             
@@ -525,14 +545,17 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
                 report.skipped++;
                 return report;
             }
+            
+            // --- *** 最终修正：确保 existingItemInTarget.id 是 Int *** ---
+            const targetFolderIdInt = parseInt(existingItemInTarget.id, 10);
 
-            // console.log(`[Data] moveItem: 合并资料夾 "${currentPath}" 到目标资料夾 ID ${existingItemInTarget.id}`);
+            // console.log(`[Data] moveItem: 合并资料夾 "${currentPath}" 到目标资料夾 ID ${targetFolderIdInt}`);
             const { folders: childFolders, files: childFiles } = await getFolderContents(sourceItemId, userId);
             let allChildrenProcessedSuccessfully = true;
 
             for (const childFolder of childFolders) {
                 // console.log(`[Data] moveItem: 递回移动子资料夹 "${childFolder.name}" (ID: ${childFolder.id})`);
-                const childReport = await moveItem(childFolder.id, 'folder', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath }, depth + 1);
+                const childReport = await moveItem(childFolder.id, 'folder', targetFolderIdInt, userId, { ...options, pathPrefix: currentPath }, depth + 1);
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
                 report.errors += childReport.errors;
@@ -543,8 +566,8 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
             
             for (const childFile of childFiles) {
                 // console.log(`[Data] moveItem: 递回移动子档案 "${childFile.name}" (ID: ${childFile.id})`);
-                // --- *** 最终修正：childFile.id 是 BigInt *** ---
-                const childReport = await moveItem(BigInt(childFile.id), 'file', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath }, depth + 1);
+                // --- *** 最终修正：childFile.id 是 BigInt (string) *** ---
+                const childReport = await moveItem(BigInt(childFile.id), 'file', targetFolderIdInt, userId, { ...options, pathPrefix: currentPath }, depth + 1);
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
                 report.errors += childReport.errors;
@@ -699,7 +722,8 @@ async function getFolderDeletionData(folderId, userId) {
     let foldersToDeleteIds = [folderId];
 
     async function findContentsRecursive(currentFolderId) {
-        const sqlFiles = `SELECT * FROM files WHERE folder_id = ? AND user_id = ?`;
+        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
+        const sqlFiles = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS} FROM files WHERE folder_id = ? AND user_id = ?`;
         const files = await new Promise((res, rej) => db.all(sqlFiles, [currentFolderId, userId], (err, rows) => err ? rej(err) : res(rows)));
         filesToDelete.push(...files);
         
@@ -815,7 +839,9 @@ function getFilesByIds(messageIds, userId) {
     // --- *** 最终修正：将 BigInt 转换为 String *** ---
     const stringMessageIds = messageIds.map(id => id.toString());
     const placeholders = stringMessageIds.map(() => '?').join(',');
-    const sql = `SELECT * FROM files WHERE message_id IN (${placeholders}) AND user_id = ?`;
+    
+    // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
+    const sql = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS} FROM files WHERE message_id IN (${placeholders}) AND user_id = ?`;
     
     return new Promise((resolve, reject) => {
         db.all(sql, [...stringMessageIds, userId], (err, rows) => {
@@ -830,7 +856,8 @@ function getFilesByIds(messageIds, userId) {
 // 重构函数以确保在检查链接状态时，严格执行“只读”操作，绝不修改数据库。
 // 这样可以防止因意外的“清理”逻辑而错误地清除了分享密码。
 async function getFileByShareToken(token) {
-    const getShareSql = "SELECT * FROM files WHERE share_token = ?";
+    // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
+    const getShareSql = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS} FROM files WHERE share_token = ?`;
     
     const row = await new Promise((resolve, reject) => {
         db.get(getShareSql, [token], (err, row) => {
@@ -890,6 +917,7 @@ async function getFolderByShareToken(token) {
 // --- *** 关键修正 开始 *** ---
 async function findFileInSharedFolder(fileId, folderToken) {
     return new Promise((resolve, reject) => {
+        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
         const sql = `
             WITH RECURSIVE shared_folder_tree(id) AS (
                 -- Base case: the root folder with the share token. It must not be locked.
@@ -902,7 +930,7 @@ async function findFileInSharedFolder(fileId, folderToken) {
                 WHERE f.password IS NULL
             )
             -- Final selection: get the file if its folder_id is in our allowed tree.
-            SELECT f.* FROM files f
+            SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS} FROM files f
             WHERE f.message_id = ? AND f.folder_id IN (SELECT id FROM shared_folder_tree);
         `;
 
@@ -1179,7 +1207,8 @@ function deleteFilesByIds(messageIds, userId) {
 function getActiveShares(userId) {
     return new Promise((resolve, reject) => {
         const now = Date.now();
-        const sqlFiles = `SELECT message_id as id, fileName as name, 'file' as type, share_token, share_expires_at FROM files WHERE share_token IS NOT NULL AND (share_expires_at IS NULL OR share_expires_at > ?) AND user_id = ?`;
+        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
+        const sqlFiles = `SELECT ${SAFE_SELECT_ID_AS_TEXT} as id, fileName as name, 'file' as type, share_token, share_expires_at FROM files WHERE share_token IS NOT NULL AND (share_expires_at IS NULL OR share_expires_at > ?) AND user_id = ?`;
         const sqlFolders = `SELECT id, name, 'folder' as type, share_token, share_expires_at FROM folders WHERE share_token IS NOT NULL AND (share_expires_at IS NULL OR share_expires_at > ?) AND user_id = ?`;
 
         let shares = [];
@@ -1254,7 +1283,8 @@ function checkFullConflict(name, folderId, userId) {
 
 function findFileInFolder(fileName, folderId, userId) {
     return new Promise((resolve, reject) => {
-        const sql = `SELECT message_id FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?`;
+        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
+        const sql = `SELECT ${SAFE_SELECT_MESSAGE_ID} FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?`;
         db.get(sql, [fileName, folderId, userId], (err, row) => {
             if (err) return reject(err);
             resolve(row);
@@ -1264,10 +1294,11 @@ function findFileInFolder(fileName, folderId, userId) {
 
 function findItemInFolder(name, folderId, userId) {
     return new Promise((resolve, reject) => {
+        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
         const sql = `
             SELECT id, name, 'folder' as type FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?
             UNION ALL
-            SELECT message_id as id, fileName as name, 'file' as type FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?
+            SELECT ${SAFE_SELECT_ID_AS_TEXT} as id, fileName as name, 'file' as type FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?
         `;
         db.get(sql, [name, folderId, userId, name, folderId, userId], (err, row) => {
             if (err) return reject(err);
@@ -1292,7 +1323,8 @@ async function findAvailableName(originalName, folderId, userId, isFolder) {
 
 function findFileByFileId(fileId, userId) {
     return new Promise((resolve, reject) => {
-        const sql = `SELECT message_id FROM files WHERE file_id = ? AND user_id = ?`;
+        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
+        const sql = `SELECT ${SAFE_SELECT_MESSAGE_ID} FROM files WHERE file_id = ? AND user_id = ?`;
         db.get(sql, [fileId, userId], (err, row) => {
             if (err) return reject(err);
             resolve(row);
