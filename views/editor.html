@@ -193,9 +193,11 @@
                 saveBtn.textContent = '储存中...';
                 saveStatus.textContent = '';
 
-                // --- *** 这是重构后的程式码区块 (V3 修复版) *** ---
+                // --- *** 关键修复：在 try 块外部声明 response *** ---
+                let response = null;
+
                 try {
-                    const response = await axios.post('/api/text-file', {
+                    response = await axios.post('/api/text-file', {
                         mode: mode,
                         fileId: fileId,
                         folderId: folderId,
@@ -253,6 +255,22 @@
                         // 2. 更新内部状态以禁用保存按钮
                         initialFileName = fileName;
                         initialContent = content;
+                        
+                        // --- *** 关键修复：在 catch 块中也更新状态 *** ---
+                        // 即使 postMessage 失败，我们仍然必须更新状态
+                        // 此时 'response' 变量是可用的
+                        if (response && response.data.success && response.data.fileId) {
+                            const newFileId = response.data.fileId;
+                            if (fileId !== newFileId.toString()) { // 同样使用 toString()
+                                fileId = newFileId.toString();
+                                mode = 'edit';
+                                // 此时我们知道 history.pushState 可能会失败，所以不再尝试
+                                // 至少内部状态 (fileId, mode) 更新了
+                            }
+                            fileNameInput.value = fileName;
+                        }
+                        // --- *** 修复结束 *** ---
+
                         checkForChanges(); // <-- 这会使按钮正确禁用
                         
                         // 3. 并且不要显示错误弹窗
@@ -298,6 +316,7 @@
                                     const newFileId = retryResponse.data.fileId;
                                     if (fileId !== newFileId.toString()) { // 同样使用 toString()
                                         fileId = newFileId.toString();
+                                        mode = 'edit'; 
                                         const newUrl = `${window.location.pathname}?mode=edit&fileId=${fileId}`;
                                         try {
                                             history.pushState({}, '', newUrl);
