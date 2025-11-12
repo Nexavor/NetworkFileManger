@@ -413,7 +413,9 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         await fsp.writeFile(tempFilePath, content, 'utf8');
         
         if (mode === 'edit' && fileId) {
-            const filesToUpdate = await data.getFilesByIds([fileId], userId);
+            // --- 修正：将 fileId (string) 转换为 BigInt ---
+            const numericFileId = BigInt(fileId);
+            const filesToUpdate = await data.getFilesByIds([numericFileId], userId);
             if (filesToUpdate.length === 0) {
                 return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
             }
@@ -457,8 +459,9 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                     }
                 }
                 const stats = await fsp.stat(tempFilePath);
-                await data.updateFile(fileId, { fileName, size: stats.size, date: Date.now(), file_id: newRelativePath }, userId);
-                return res.json({ success: true, fileId: fileId });
+                // --- 修正：使用 numericFileId ---
+                await data.updateFile(numericFileId, { fileName, size: stats.size, date: Date.now(), file_id: newRelativePath }, userId);
+                return res.json({ success: true, fileId: fileId }); // 仍然返回字符串 ID 给客户端
             }
         } else if (mode === 'create' && folderId) {
             const conflict = await data.checkFullConflict(fileName, folderId, userId);
@@ -482,7 +485,8 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
 });
 app.get('/api/file-info/:id', requireLogin, async (req, res) => {
     try {
-        const fileId = parseInt(req.params.id, 10);
+        // --- 修正：将 parseInt 改为 BigInt ---
+        const fileId = BigInt(req.params.id);
         const [fileInfo] = await data.getFilesByIds([fileId], req.session.userId);
         if (fileInfo) {
             res.json(fileInfo);
@@ -835,7 +839,8 @@ async function handleFileStream(req, res, fileInfo) {
 
 app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
     try {
-        const messageId = parseInt(req.params.message_id, 10);
+        // --- 修正：将 parseInt 改为 BigInt ---
+        const messageId = BigInt(req.params.message_id);
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) return res.status(403).send('权限不足');
         
@@ -850,7 +855,8 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
 
 app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     try {
-        const messageId = parseInt(req.params.message_id, 10);
+        // --- 修正：将 parseInt 改为 BigInt ---
+        const messageId = BigInt(req.params.message_id);
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) {
             return res.status(403).send('权限不足');
@@ -988,7 +994,8 @@ app.get('/api/locate-item', requireLogin, async (req, res) => {
             }
         } else if (type === 'file') {
             // 对于档案，我们定位到它所在的资料夾
-            const [file] = await data.getFilesByIds([id], userId);
+            // --- 修正：将 parseInt 改为 BigInt ---
+            const [file] = await data.getFilesByIds([BigInt(id)], userId);
             if (!file) {
                 return res.status(404).json({ success: false, message: '找不到档案' });
             }
@@ -1272,7 +1279,8 @@ app.get('/share/thumbnail/:folderToken/:fileId', shareSession, async (req, res) 
         if (!rootFolder || (rootFolder.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[folderToken]))) {
             return res.status(403).send('权限不足');
         }
-        const fileInfo = await data.findFileInSharedFolder(parseInt(fileId, 10), folderToken);
+        // --- 修正：将 parseInt 改为 BigInt ---
+        const fileInfo = await data.findFileInSharedFolder(BigInt(fileId), folderToken);
         if (fileInfo && fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
             const storage = storageManager.getStorage();
             const link = await storage.getUrl(fileInfo.thumb_file_id);
@@ -1296,7 +1304,8 @@ app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) =
         if (rootFolder.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[folderToken])) {
             return res.status(403).send('需要密码才能下载');
         }
-        const fileInfo = await data.findFileInSharedFolder(parseInt(fileId, 10), folderToken);
+        // --- 修正：将 parseInt 改为 BigInt ---
+        const fileInfo = await data.findFileInSharedFolder(BigInt(fileId), folderToken);
         if (!fileInfo) {
              return res.status(404).send('文件信息未找到或权限不足');
         }
