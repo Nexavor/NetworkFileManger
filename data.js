@@ -1,4 +1,4 @@
-// data.js (真正最终修正版 - 修复 SQL 语法错误)
+// data.js (真正最终修正版 - 修复 SQL 语法错误 和 module.exports 语法错误)
 
 const db = require('./database.js');
 const crypto = require('crypto');
@@ -1495,7 +1495,8 @@ module.exports = {
     createShareLink,
     getActiveShares,
     cancelShare,
-D   renameFile,
+    // --- *** 最终修正：移除 "D" *** ---
+    renameFile,
     renameFolder,
     deleteFilesByIds,
     findFileInFolder,
