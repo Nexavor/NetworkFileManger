@@ -1,4 +1,4 @@
-// data.js (最终修正版 - 修复 BIGINT 读取问题)
+// data.js (真正最终修正版 - 修复 SQL 语法错误)
 
 const db = require('./database.js');
 const crypto = require('crypto');
@@ -131,11 +131,11 @@ function searchItems(query, userId) {
         `;
 
         // 查询未被加密路径下的文件
-        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
+        // --- *** 最终修正：移除多余的 "as id" *** ---
         const sqlFiles = baseQuery + `
             SELECT 
                 ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS},
-                ${SAFE_SELECT_ID_AS_TEXT} as id, 
+                ${SAFE_SELECT_ID_AS_TEXT}, 
                 f.fileName as name, 
                 'file' as type
             FROM files f
@@ -214,13 +214,13 @@ function getItemsByIds(itemIds, userId) {
         if (!itemIds || itemIds.length === 0) return resolve([]);
         const placeholders = itemIds.map(() => '?').join(',');
         
-        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
+        // --- *** 最终修正：移除多余的 "as id" *** ---
         const sql = `
             SELECT id, name, parent_id, 'folder' as type, null as storage_type, null as file_id, password IS NOT NULL as is_locked
             FROM folders 
             WHERE id IN (${placeholders}) AND user_id = ?
             UNION ALL
-            SELECT ${SAFE_SELECT_ID_AS_TEXT} as id, fileName as name, folder_id as parent_id, 'file' as type, storage_type, file_id, 0 as is_locked
+            SELECT ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, folder_id as parent_id, 'file' as type, storage_type, file_id, 0 as is_locked
             FROM files 
             WHERE message_id IN (${placeholders}) AND user_id = ?
         `;
@@ -235,11 +235,11 @@ function getItemsByIds(itemIds, userId) {
 
 function getChildrenOfFolder(folderId, userId) {
     return new Promise((resolve, reject) => {
-        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
+        // --- *** 最终修正：移除多余的 "as id" *** ---
         const sql = `
             SELECT id, name, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ?
             UNION ALL
-            SELECT ${SAFE_SELECT_ID_AS_TEXT} as id, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ?
+            SELECT ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ?
         `;
         db.all(sql, [folderId, userId, folderId, userId], (err, rows) => {
             if (err) return reject(err);
@@ -287,8 +287,8 @@ function getFolderDetails(folderId, userId) {
 function getFolderContents(folderId, userId) {
     return new Promise((resolve, reject) => {
         const sqlFolders = `SELECT id, name, parent_id, 'folder' as type, password IS NOT NULL as is_locked FROM folders WHERE parent_id = ? AND user_id = ? ORDER BY name ASC`;
-        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
-        const sqlFiles = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS}, ${SAFE_SELECT_ID_AS_TEXT} as id, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? ORDER BY name ASC`;
+        // --- *** 最终修正：移除多余的 "as id" *** ---
+        const sqlFiles = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS}, ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? ORDER BY name ASC`;
         
         let contents = { folders: [], files: [] };
         db.all(sqlFolders, [folderId, userId], (err, folders) => {
@@ -469,7 +469,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
         const nameColumn = itemType === 'folder' ? 'name' : 'fileName';
         
         // --- *** 最终修正：在 files 表中使用 CAST(message_id AS TEXT) *** ---
-        const selectId = itemType === 'folder' ? 'id' : `${SAFE_SELECT_ID_AS_TEXT} as id`;
+        const selectId = itemType === 'folder' ? 'id' : `${SAFE_SELECT_ID_AS_TEXT}`;
         
         const sql = `SELECT ${selectId}, ${nameColumn} as name, '${itemType}' as type FROM ${table} WHERE ${idColumn} = ? AND user_id = ?`;
         
@@ -857,7 +857,7 @@ function getFilesByIds(messageIds, userId) {
 // 这样可以防止因意外的“清理”逻辑而错误地清除了分享密码。
 async function getFileByShareToken(token) {
     // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
-    const getShareSql = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS} FROM files WHERE share_token = ?`;
+    const getShareSql = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS}, share_password, share_expires_at FROM files WHERE share_token = ?`;
     
     const row = await new Promise((resolve, reject) => {
         db.get(getShareSql, [token], (err, row) => {
@@ -885,7 +885,7 @@ async function getFileByShareToken(token) {
 }
 
 async function getFolderByShareToken(token) {
-    const getShareSql = "SELECT * FROM folders WHERE share_token = ?";
+    const getShareSql = "SELECT *, password as share_password FROM folders WHERE share_token = ?";
 
     const row = await new Promise((resolve, reject) => {
         db.get(getShareSql, [token], (err, row) => {
@@ -1207,8 +1207,8 @@ function deleteFilesByIds(messageIds, userId) {
 function getActiveShares(userId) {
     return new Promise((resolve, reject) => {
         const now = Date.now();
-        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
-        const sqlFiles = `SELECT ${SAFE_SELECT_ID_AS_TEXT} as id, fileName as name, 'file' as type, share_token, share_expires_at FROM files WHERE share_token IS NOT NULL AND (share_expires_at IS NULL OR share_expires_at > ?) AND user_id = ?`;
+        // --- *** 最终修正：移除多余的 "as id" *** ---
+        const sqlFiles = `SELECT ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, 'file' as type, share_token, share_expires_at FROM files WHERE share_token IS NOT NULL AND (share_expires_at IS NULL OR share_expires_at > ?) AND user_id = ?`;
         const sqlFolders = `SELECT id, name, 'folder' as type, share_token, share_expires_at FROM folders WHERE share_token IS NOT NULL AND (share_expires_at IS NULL OR share_expires_at > ?) AND user_id = ?`;
 
         let shares = [];
@@ -1294,11 +1294,11 @@ function findFileInFolder(fileName, folderId, userId) {
 
 function findItemInFolder(name, folderId, userId) {
     return new Promise((resolve, reject) => {
-        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
+        // --- *** 最终修正：移除多余的 "as id" *** ---
         const sql = `
             SELECT id, name, 'folder' as type FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?
             UNION ALL
-            SELECT ${SAFE_SELECT_ID_AS_TEXT} as id, fileName as name, 'file' as type FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?
+            SELECT ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, 'file' as type FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?
         `;
         db.get(sql, [name, folderId, userId, name, folderId, userId], (err, row) => {
             if (err) return reject(err);
@@ -1495,7 +1495,7 @@ module.exports = {
     createShareLink,
     getActiveShares,
     cancelShare,
-    renameFile,
+D   renameFile,
     renameFolder,
     deleteFilesByIds,
     findFileInFolder,
