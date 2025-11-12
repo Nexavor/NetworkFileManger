@@ -1,4 +1,4 @@
-// server.js (最终正式版)
+// server.js (最终修正版 - 修复所有路由中的 BigInt/Int 解析)
 
 require('dotenv').config();
 const express = require('express');
@@ -534,7 +534,11 @@ app.post('/api/check-move-conflict', requireLogin, async (req, res) => {
         if (!itemIds || !Array.isArray(itemIds) || !targetFolderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
+        
+        // --- *** 最终修正：混合的 itemIds (string/int) *** ---
+        // data.getItemsByIds 内部会将所有 ID 转为 string 查询，这是正确的
         const topLevelItems = await data.getItemsByIds(itemIds, userId);
+        
         const { fileConflicts, folderConflicts } = await data.getConflictingItems(topLevelItems, targetFolderId, userId);
         res.json({ success: true, fileConflicts, folderConflicts });
     } catch (error) {
@@ -695,12 +699,15 @@ app.post('/api/move', requireLogin, async (req, res) => {
         const errors = [];
         for (const itemId of itemIds) {
             try {
+                // --- *** 最终修正：itemIds 是混合 (string/int)，data.getItemsByIds 可处理 *** ---
                 const items = await data.getItemsByIds([itemId], userId);
                 if (items.length === 0) {
                     totalSkipped++;
                     continue;
                 }
                 const item = items[0];
+                
+                // --- *** 最终修正：item.id 是 string，但 data.moveItem 内部会正确解析 *** ---
                 const report = await data.moveItem(item.id, item.type, targetFolderId, userId, { resolutions });
                 totalMoved += report.moved;
                 totalSkipped += report.skipped;
@@ -725,18 +732,26 @@ app.post('/api/move', requireLogin, async (req, res) => {
     }
 });
 
+// --- *** 最终修正: /delete-multiple *** ---
 app.post('/delete-multiple', requireLogin, async (req, res) => {
     const { messageIds = [], folderIds = [] } = req.body;
     const userId = req.session.userId;
     try {
-        for(const id of messageIds) { await data.unifiedDelete(id, 'file', userId); }
-        for(const id of folderIds) { await data.unifiedDelete(id, 'folder', userId); }
+        // --- *** 修正：将 file ID (string) 转换为 BigInt *** ---
+        for(const id of messageIds) { 
+            await data.unifiedDelete(BigInt(id), 'file', userId); 
+        }
+        // --- *** 修正：将 folder ID (int) 转换为 Int (保持一致性) *** ---
+        for(const id of folderIds) { 
+            await data.unifiedDelete(parseInt(id, 10), 'folder', userId); 
+        }
         res.json({ success: true, message: '删除成功' });
     } catch (error) {
         res.status(500).json({ success: false, message: '删除失败: ' + error.message });
     }
 });
 
+// --- *** 最终修正: /rename *** ---
 app.post('/rename', requireLogin, async (req, res) => {
     try {
         const { id, newName, type } = req.body;
@@ -746,8 +761,10 @@ app.post('/rename', requireLogin, async (req, res) => {
         }
         let result;
         if (type === 'file') {
-            result = await data.renameFile(parseInt(id, 10), newName, userId);
+            // --- *** 修正：使用 BigInt 解析 file ID *** ---
+            result = await data.renameFile(BigInt(id), newName, userId);
         } else if (type === 'folder') {
+            // --- *** 修正：使用 parseInt 解析 folder ID *** ---
             result = await data.renameFolder(parseInt(id, 10), newName, userId);
         } else {
             return res.status(400).json({ success: false, message: '无效的项目类型。'});
@@ -760,7 +777,9 @@ app.post('/rename', requireLogin, async (req, res) => {
 
 app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     try {
-        const messageId = parseInt(req.params.message_id, 10);
+        // --- 修正：将 parseInt 改为 BigInt ---
+        // (注意: 这里的 parseInt 可能是安全的，因为 TG 的 ID 可能没那么长, 但 BigInt 更安全)
+        const messageId = BigInt(req.params.message_id);
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) {
             return res.status(403).send('权限不足');
@@ -882,6 +901,7 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     }
 });
 
+// --- *** 最终修正: /api/download-archive *** ---
 app.post('/api/download-archive', requireLogin, async (req, res) => {
     try {
         const { messageIds = [], folderIds = [] } = req.body;
@@ -892,7 +912,9 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
         }
         let filesToArchive = [];
         if (messageIds.length > 0) {
-            const directFiles = await data.getFilesByIds(messageIds, userId);
+            // --- *** 修正：将 string ID 数组转换为 BigInt ID 数组 *** ---
+            const fileIdBigInts = messageIds.map(id => BigInt(id));
+            const directFiles = await data.getFilesByIds(fileIdBigInts, userId);
             filesToArchive.push(...directFiles.map(f => ({ ...f, path: f.fileName })));
         }
         for (const folderId of folderIds) {
@@ -925,6 +947,7 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
     }
 });
 
+// --- *** 最终修正: /share *** ---
 app.post('/share', requireLogin, async (req, res) => {
     try {
         const { itemId, itemType, expiresIn, password, customExpiresAt } = req.body;
@@ -937,7 +960,11 @@ app.post('/share', requireLogin, async (req, res) => {
                 return res.status(400).json({ success: false, message: '无效的自订到期时间。' });
             }
         }
-        const result = await data.createShareLink(parseInt(itemId, 10), itemType, expiresIn, req.session.userId, password, customExpiresAt);
+        
+        // --- *** 修正：根据类型转换 ID *** ---
+        const idToShare = itemType === 'file' ? BigInt(itemId) : parseInt(itemId, 10);
+        
+        const result = await data.createShareLink(idToShare, itemType, expiresIn, req.session.userId, password, customExpiresAt);
         if (result.success) {
             const shareUrl = `${req.protocol}://${req.get('host')}/share/view/${itemType}/${result.token}`;
             res.json({ success: true, url: shareUrl });
@@ -960,11 +987,16 @@ app.get('/api/shares', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: '获取分享列表失败' }); }
 });
 
+// --- *** 最终修正: /api/cancel-share *** ---
 app.post('/api/cancel-share', requireLogin, async (req, res) => {
     try {
         const { itemId, itemType } = req.body;
         if (!itemId || !itemType) return res.status(400).json({ success: false, message: '缺少必要参数' });
-        const result = await data.cancelShare(parseInt(itemId, 10), itemType, req.session.userId);
+        
+        // --- *** 修正：根据类型转换 ID *** ---
+        const idToCancel = itemType === 'file' ? BigInt(itemId) : parseInt(itemId, 10);
+        
+        const result = await data.cancelShare(idToCancel, itemType, req.session.userId);
         res.json(result);
     } catch (error) { res.status(500).json({ success: false, message: '取消分享失败' }); }
 });
@@ -1246,7 +1278,7 @@ app.get('/share/view/folder/:token/:path(*)?', shareSession, async (req, res) =>
                 });
                 res.render('share-folder-view', { folder: folderInfo, contents, breadcrumb: shareBreadcrumb, token: token });
             } else {
-                 res.status(404).render('share-error', { message: '路径不正确。' });
+                 res.status(44).render('share-error', { message: '路径不正确。' });
             }
         } else {
             res.status(404).render('share-error', { message: '此分享连结无效或已过期。' });
