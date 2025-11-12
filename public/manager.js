@@ -1,3 +1,5 @@
+// public/manager.js (最终修正版 - 移除所有对文件ID的 parseInt)
+
 document.addEventListener('DOMContentLoaded', () => {
     // --- *** 关键修正：新增 Axios 全局拦截器 *** ---
     // 此拦截器会捕获所有 axios 请求的错误
@@ -1424,7 +1426,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const messageIds = [];
             const folderIds = [];
             selectedItems.forEach((item, id) => {
-                if (item.type === 'file') messageIds.push(parseInt(id));
+                // --- *** 最终修正：移除 parseInt *** ---
+                if (item.type === 'file') messageIds.push(id);
                 else folderIds.push(parseInt(id));
             });
             if (messageIds.length === 0 && folderIds.length === 0) return;
@@ -1455,7 +1458,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!confirm(`确定要删除这 ${selectedItems.size} 个项目吗？\n注意：删除资料夾将会一并删除其所有内容！`)) return;
             const filesToDelete = [], foldersToDelete = [];
             selectedItems.forEach((item, id) => {
-                if (item.type === 'file') filesToDelete.push(parseInt(id));
+                // --- *** 最终修正：移除 parseInt *** ---
+                if (item.type === 'file') filesToDelete.push(id);
                 else foldersToDelete.push(parseInt(id));
             });
             try {
@@ -1555,7 +1559,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (isAborted) return;
     
                 const conflictCheckRes = await axios.post('/api/check-move-conflict', {
-                    itemIds: itemsToMove.map(item => item.id),
+                    itemIds: itemsToMove.map(item => item.id), // item.id 是 string 或 int
                     targetFolderId: currentTargetFolderId
                 });
                 const { fileConflicts, folderConflicts } = conflictCheckRes.data;
@@ -1621,8 +1625,9 @@ document.addEventListener('DOMContentLoaded', () => {
     
             try {
                 // 修正：从 selectedItems 中提取所有必要数据，包括加密ID
+                // --- *** 最终修正：移除 parseInt *** ---
                 const topLevelItems = Array.from(selectedItems.entries()).map(([id, item]) => ({
-                    id: parseInt(id),
+                    id: item.type === 'file' ? id : parseInt(id, 10), // 档案ID是string, 资料夹ID是int
                     type: item.type,
                     name: item.name,
                     encrypted_id: item.encrypted_id
