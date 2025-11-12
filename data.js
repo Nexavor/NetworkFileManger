@@ -1,3 +1,5 @@
+// data.js (最终修正版)
+
 const db = require('./database.js');
 const crypto = require('crypto');
 const path = require('path');
@@ -160,6 +162,7 @@ function searchItems(query, userId) {
 
 // 新增 isFileAccessible 函数用于在直接存取文件前进行权限验证
 async function isFileAccessible(fileId, userId, unlockedFolders = []) {
+    // --- *** 最终修正：此处 fileId 是 BigInt，getFilesByIds 必须能处理 *** ---
     const file = (await getFilesByIds([fileId], userId))[0];
     if (!file) {
         return false; // 找不到档案或档案不属于该使用者
@@ -206,7 +209,9 @@ function getItemsByIds(itemIds, userId) {
             FROM files 
             WHERE message_id IN (${placeholders}) AND user_id = ?
         `;
-        db.all(sql, [...itemIds, userId, ...itemIds, userId], (err, rows) => {
+        // --- *** 最终修正：将 BigInt 转换为 String *** ---
+        const stringItemIds = itemIds.map(id => id.toString());
+        db.all(sql, [...stringItemIds, userId, ...stringItemIds, userId], (err, rows) => {
             if (err) return reject(err);
             resolve(rows);
         });
@@ -434,7 +439,7 @@ function getAllFolders(userId) {
 
 
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, depth = 0) {
-    // console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夹 ID ${targetFolderId}, 深度: ${depth}`);
+    // console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夾 ID ${targetFolderId}, 深度: ${depth}`);
     const { resolutions = {}, pathPrefix = '' } = options;
     const report = { moved: 0, skipped: 0, errors: 0 };
 
@@ -443,7 +448,10 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
         const idColumn = itemType === 'folder' ? 'id' : 'message_id';
         const nameColumn = itemType === 'folder' ? 'name' : 'fileName';
         const sql = `SELECT ${idColumn} as id, ${nameColumn} as name, '${itemType}' as type FROM ${table} WHERE ${idColumn} = ? AND user_id = ?`;
-        db.get(sql, [itemId, userId], (err, row) => err ? reject(err) : resolve(row));
+        
+        // --- *** 最终修正：将 BigInt 转换为 String *** ---
+        // (注意: itemId 在 moveItem 内部调用时可能是 BigInt 或 Int，统一转 string)
+        db.get(sql, [itemId.toString(), userId], (err, row) => err ? reject(err) : resolve(row));
     });
 
     if (!sourceItem) {
@@ -451,6 +459,12 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
         // console.error(`[Data] moveItem: 找不到来源项目 ID ${itemId} (类型: ${itemType})`);
         return report;
     }
+    
+    // --- *** 最终修正：确保 sourceItem.id 是 BigInt/Int，以便后续比较 *** ---
+    // (还原从数据库读出的 ID，db 驱动会返回 number 或 string)
+    // 为了安全，我们假设它可能是 BigInt 或 Int，统一在查询时转 string
+    const sourceItemId = itemType === 'folder' ? parseInt(sourceItem.id, 10) : BigInt(sourceItem.id);
+
 
     const currentPath = path.posix.join(pathPrefix, sourceItem.name);
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
@@ -481,9 +495,9 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
             // console.log(`[Data] moveItem: 找到可用新名称 "${newName}"`);
             if (itemType === 'folder') {
                 // 使用专用的 renameAndMoveFolder 函数，确保操作的原子性和正确性
-                await renameAndMoveFolder(itemId, newName, targetFolderId, userId);
+                await renameAndMoveFolder(sourceItemId, newName, targetFolderId, userId);
             } else {
-                await renameAndMoveFile(itemId, newName, targetFolderId, userId);
+                await renameAndMoveFile(sourceItemId, newName, targetFolderId, userId);
             }
             report.moved++;
             return report;
@@ -496,8 +510,12 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
                 return report;
             }
             // console.log(`[Data] moveItem: 覆盖目标项目 "${currentPath}" (ID: ${existingItemInTarget.id}, 类型: ${existingItemInTarget.type})`);
-            await unifiedDelete(existingItemInTarget.id, existingItemInTarget.type, userId);
-            await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
+            
+            // --- *** 最终修正：确保 existingItemInTarget.id 是正确的类型 *** ---
+            const targetId = existingItemInTarget.type === 'folder' ? parseInt(existingItemInTarget.id, 10) : BigInt(existingItemInTarget.id);
+            await unifiedDelete(targetId, existingItemInTarget.type, userId);
+            
+            await moveItems(itemType === 'file' ? [sourceItemId] : [], itemType === 'folder' ? [sourceItemId] : [], targetFolderId, userId);
             report.moved++;
             return report;
 
@@ -509,7 +527,7 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
             }
 
             // console.log(`[Data] moveItem: 合并资料夾 "${currentPath}" 到目标资料夾 ID ${existingItemInTarget.id}`);
-            const { folders: childFolders, files: childFiles } = await getFolderContents(itemId, userId);
+            const { folders: childFolders, files: childFiles } = await getFolderContents(sourceItemId, userId);
             let allChildrenProcessedSuccessfully = true;
 
             for (const childFolder of childFolders) {
@@ -525,7 +543,8 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
             
             for (const childFile of childFiles) {
                 // console.log(`[Data] moveItem: 递回移动子档案 "${childFile.name}" (ID: ${childFile.id})`);
-                const childReport = await moveItem(childFile.id, 'file', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath }, depth + 1);
+                // --- *** 最终修正：childFile.id 是 BigInt *** ---
+                const childReport = await moveItem(BigInt(childFile.id), 'file', existingItemInTarget.id, userId, { ...options, pathPrefix: currentPath }, depth + 1);
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
                 report.errors += childReport.errors;
@@ -535,17 +554,17 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
             }
             
             if (allChildrenProcessedSuccessfully) {
-                // console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夾 ID ${itemId}`);
-                await unifiedDelete(itemId, 'folder', userId);
+                // console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夾 ID ${sourceItemId}`);
+                await unifiedDelete(sourceItemId, 'folder', userId);
             } else {
-                 // console.warn(`[Data] moveItem: 部分子项目未能成功合并，保留原始资料夾 ID ${itemId}`);
+                 // console.warn(`[Data] moveItem: 部分子项目未能成功合并，保留原始资料夾 ID ${sourceItemId}`);
             }
             
             return report;
 
         default: // 'move'
             // console.log(`[Data] moveItem: 直接移动项目 "${currentPath}"`);
-            await moveItems(itemType === 'file' ? [itemId] : [], itemType === 'folder' ? [itemId] : [], targetFolderId, userId);
+            await moveItems(itemType === 'file' ? [sourceItemId] : [], itemType === 'folder' ? [sourceItemId] : [], targetFolderId, userId);
             report.moved++;
             return report;
     }
@@ -562,6 +581,7 @@ async function unifiedDelete(itemId, itemType, userId) {
         filesForStorage.push(...deletionData.files);
         foldersForStorage.push(...deletionData.folders);
     } else {
+        // --- *** 最终修正：itemId 是 BigInt *** ---
         const directFiles = await getFilesByIds([itemId], userId);
         filesForStorage.push(...directFiles);
     }
@@ -572,7 +592,11 @@ async function unifiedDelete(itemId, itemType, userId) {
         throw new Error("实体档案删除失败，操作已中止。");
     }
     
-    await executeDeletion(filesForStorage.map(f => f.message_id), foldersForStorage.map(f => f.id), userId);
+    // --- *** 最终修正：itemId 是 BigInt *** ---
+    const fileIds = filesForStorage.map(f => BigInt(f.message_id));
+    const folderIds = foldersForStorage.map(f => f.id);
+    
+    await executeDeletion(fileIds, folderIds, userId);
 }
 
 async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
@@ -584,6 +608,7 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         const targetPathParts = await getFolderPath(targetFolderId, userId);
         const targetFullPath = path.posix.join(...targetPathParts.slice(1).map(p => p.name));
 
+        // --- *** 最终修正：fileIds 是 BigInt 数组 *** ---
         const filesToMove = await getFilesByIds(fileIds, userId);
         for (const file of filesToMove) {
             const oldRelativePath = file.file_id;
@@ -599,7 +624,8 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
                     await client.moveFile(oldRelativePath, newRelativePath);
                 }
                 
-                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [newRelativePath, file.message_id], (e) => e ? rej(e) : res()));
+                // --- *** 最终修正：将 BigInt 转换为 String *** ---
+                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [newRelativePath, file.message_id.toString()], (e) => e ? rej(e) : res()));
 
             } catch (err) {
                 throw new Error(`物理移动文件 ${file.fileName} 失败`);
@@ -626,7 +652,8 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
                 const descendantFiles = await getFilesRecursive(folder.id, userId);
                 for (const file of descendantFiles) {
                     const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
-                    await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id], (e) => e ? rej(e) : res()));
+                    // --- *** 最终修正：将 BigInt 转换为 String *** ---
+                    await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id.toString()], (e) => e ? rej(e) : res()));
                 }
             } catch (err) {
                 throw new Error(`物理移动文件夹 ${folder.name} 失败`);
@@ -641,7 +668,8 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
 
             if (fileIds.length > 0) {
                 const place = fileIds.map(() => '?').join(',');
-                promises.push(new Promise((res, rej) => db.run(`UPDATE files SET folder_id = ? WHERE message_id IN (${place}) AND user_id = ?`, [targetFolderId, ...fileIds, userId], (e) => e ? rej(e) : res())));
+                // --- *** 最终修正：将 BigInt 转换为 String *** ---
+                promises.push(new Promise((res, rej) => db.run(`UPDATE files SET folder_id = ? WHERE message_id IN (${place}) AND user_id = ?`, [targetFolderId, ...fileIds.map(id => id.toString()), userId], (e) => e ? rej(e) : res())));
             }
 
             if (folderIds.length > 0) {
@@ -717,8 +745,10 @@ function executeDeletion(fileIds, folderIds, userId) {
             const promises = [];
             
             if (fileIds.length > 0) {
-                const place = Array.from(new Set(fileIds)).map(() => '?').join(',');
-                promises.push(new Promise((res, rej) => db.run(`DELETE FROM files WHERE message_id IN (${place}) AND user_id = ?`, [...new Set(fileIds), userId], (e) => e ? rej(e) : res())));
+                // --- *** 最终修正：将 BigInt 转换为 String *** ---
+                const stringFileIds = Array.from(new Set(fileIds)).map(id => id.toString());
+                const place = stringFileIds.map(() => '?').join(',');
+                promises.push(new Promise((res, rej) => db.run(`DELETE FROM files WHERE message_id IN (${place}) AND user_id = ?`, [...stringFileIds, userId], (e) => e ? rej(e) : res())));
             }
             if (folderIds.length > 0) {
                 const place = Array.from(new Set(folderIds)).map(() => '?').join(',');
@@ -738,7 +768,8 @@ function addFile(fileData, folderId = 1, userId, storageType) {
     const sql = `INSERT INTO files (message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folder_id, user_id, storage_type)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     return new Promise((resolve, reject) => {
-        db.run(sql, [message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
+        // --- *** 最终修正：将 BigInt 转换为 String *** ---
+        db.run(sql, [message_id.toString(), fileName, mimetype, file_id, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
             if (err) reject(err);
             else resolve({ success: true, id: this.lastID, fileId: message_id });
         });
@@ -754,7 +785,8 @@ function updateFile(fileId, updates, userId) {
         for (const key in updates) {
             if (Object.hasOwnProperty.call(updates, key) && validKeys.includes(key)) {
                 fields.push(`${key} = ?`);
-                values.push(updates[key]);
+                // --- *** 最终修正：如果更新 message_id，也转 String *** ---
+                values.push(key === 'message_id' ? updates[key].toString() : updates[key]);
             }
         }
 
@@ -762,7 +794,8 @@ function updateFile(fileId, updates, userId) {
             return resolve({ success: true, changes: 0 });
         }
         
-        values.push(fileId, userId);
+        // --- *** 最终修正：将 BigInt 转换为 String *** ---
+        values.push(fileId.toString(), userId);
         const sql = `UPDATE files SET ${fields.join(', ')} WHERE message_id = ? AND user_id = ?`;
         
         db.run(sql, values, function(err) {
@@ -779,10 +812,13 @@ function getFilesByIds(messageIds, userId) {
     if (!messageIds || messageIds.length === 0) {
         return Promise.resolve([]);
     }
-    const placeholders = messageIds.map(() => '?').join(',');
+    // --- *** 最终修正：将 BigInt 转换为 String *** ---
+    const stringMessageIds = messageIds.map(id => id.toString());
+    const placeholders = stringMessageIds.map(() => '?').join(',');
     const sql = `SELECT * FROM files WHERE message_id IN (${placeholders}) AND user_id = ?`;
+    
     return new Promise((resolve, reject) => {
-        db.all(sql, [...messageIds, userId], (err, rows) => {
+        db.all(sql, [...stringMessageIds, userId], (err, rows) => {
             if (err) reject(err);
             else resolve(rows);
         });
@@ -870,7 +906,8 @@ async function findFileInSharedFolder(fileId, folderToken) {
             WHERE f.message_id = ? AND f.folder_id IN (SELECT id FROM shared_folder_tree);
         `;
 
-        db.get(sql, [folderToken, fileId], (err, row) => {
+        // --- *** 最终修正：将 BigInt 转换为 String *** ---
+        db.get(sql, [folderToken, fileId.toString()], (err, row) => {
             if (err) return reject(err);
             resolve(row); // row will be the file object or null if not found/not allowed
         });
@@ -879,6 +916,7 @@ async function findFileInSharedFolder(fileId, folderToken) {
 // --- *** 关键修正 结束 *** ---
 
 async function renameFile(messageId, newFileName, userId) {
+    // --- *** 最终修正：messageId 是 BigInt *** ---
     const file = (await getFilesByIds([messageId], userId))[0];
     if (!file) return { success: false, message: '文件未找到。' };
 
@@ -903,7 +941,8 @@ async function renameFile(messageId, newFileName, userId) {
         
         const sql = `UPDATE files SET fileName = ?, file_id = ? WHERE message_id = ? AND user_id = ?`;
         return new Promise((resolve, reject) => {
-            db.run(sql, [newFileName, newRelativePath, messageId, userId], function(err) {
+            // --- *** 最终修正：将 BigInt 转换为 String *** ---
+            db.run(sql, [newFileName, newRelativePath, messageId.toString(), userId], function(err) {
                  if (err) reject(err);
                  else resolve({ success: true });
             });
@@ -912,7 +951,8 @@ async function renameFile(messageId, newFileName, userId) {
 
     const sql = `UPDATE files SET fileName = ? WHERE message_id = ? AND user_id = ?`;
     return new Promise((resolve, reject) => {
-        db.run(sql, [newFileName, messageId, userId], function(err) {
+        // --- *** 最终修正：将 BigInt 转换为 String *** ---
+        db.run(sql, [newFileName, messageId.toString(), userId], function(err) {
             if (err) reject(err);
             else if (this.changes === 0) resolve({ success: false, message: '文件未找到。' });
             else resolve({ success: true });
@@ -921,6 +961,7 @@ async function renameFile(messageId, newFileName, userId) {
 }
 
 async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId) {
+    // --- *** 最终修正：messageId 是 BigInt *** ---
     const file = (await getFilesByIds([messageId], userId))[0];
     if (!file) throw new Error('File not found for rename and move');
 
@@ -947,13 +988,15 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
         
         const sql = `UPDATE files SET fileName = ?, file_id = ?, folder_id = ? WHERE message_id = ? AND user_id = ?`;
         return new Promise((resolve, reject) => {
-            db.run(sql, [newFileName, newRelativePath, targetFolderId, messageId, userId], (err) => err ? reject(err) : resolve({ success: true }));
+            // --- *** 最终修正：将 BigInt 转换为 String *** ---
+            db.run(sql, [newFileName, newRelativePath, targetFolderId, messageId.toString(), userId], (err) => err ? reject(err) : resolve({ success: true }));
         });
     }
 
     const sql = `UPDATE files SET fileName = ?, folder_id = ? WHERE message_id = ? AND user_id = ?`;
     return new Promise((resolve, reject) => {
-        db.run(sql, [newFileName, targetFolderId, messageId, userId], (err) => err ? reject(err) : resolve({ success: true }));
+        // --- *** 最终修正：将 BigInt 转换为 String *** ---
+        db.run(sql, [newFileName, targetFolderId, messageId.toString(), userId], (err) => err ? reject(err) : resolve({ success: true }));
     });
 }
 
@@ -984,7 +1027,8 @@ async function renameFolder(folderId, newFolderName, userId) {
             const descendantFiles = await getFilesRecursive(folderId, userId);
             for (const file of descendantFiles) {
                 const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
-                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id], (e) => e ? rej(e) : res()));
+                // --- *** 最终修正：将 BigInt 转换为 String *** ---
+                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id.toString()], (e) => e ? rej(e) : res()));
             }
 
         } catch(e) {
@@ -1035,7 +1079,8 @@ async function renameAndMoveFolder(folderId, newName, targetFolderId, userId) {
             const descendantFiles = await getFilesRecursive(folderId, userId);
             for (const file of descendantFiles) {
                 const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
-                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id], (e) => e ? rej(e) : res()));
+                // --- *** 最终修正：将 BigInt 转换为 String *** ---
+                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id.toString()], (e) => e ? rej(e) : res()));
             }
         } catch(err) {
             throw new Error(`实体资料夹移动并重命名失败: ${err.message}`);
@@ -1105,7 +1150,9 @@ function createShareLink(itemId, itemType, expiresIn, userId, password = null, c
         }
 
         const sql = `UPDATE ${table} SET share_token = ?, share_expires_at = ?, share_password = ? WHERE ${idColumn} = ? AND user_id = ?`;
-        db.run(sql, [token, expiresAt, hashedPassword, itemId, userId], function(err) {
+        // --- *** 最终修正：将 BigInt 转换为 String (如果 itemType 是 file) *** ---
+        const stringItemId = itemType === 'folder' ? itemId : itemId.toString();
+        db.run(sql, [token, expiresAt, hashedPassword, stringItemId, userId], function(err) {
             if (err) reject(err);
             else if (this.changes === 0) resolve({ success: false, message: '项目未找到。' });
             else resolve({ success: true, token });
@@ -1117,10 +1164,12 @@ function deleteFilesByIds(messageIds, userId) {
     if (!messageIds || messageIds.length === 0) {
         return Promise.resolve({ success: true, changes: 0 });
     }
-    const placeholders = messageIds.map(() => '?').join(',');
+    // --- *** 最终修正：将 BigInt 转换为 String *** ---
+    const stringMessageIds = messageIds.map(id => id.toString());
+    const placeholders = stringMessageIds.map(() => '?').join(',');
     const sql = `DELETE FROM files WHERE message_id IN (${placeholders}) AND user_id = ?`;
     return new Promise((resolve, reject) => {
-        db.run(sql, [...messageIds, userId], function(err) {
+        db.run(sql, [...stringMessageIds, userId], function(err) {
             if (err) reject(err);
             else resolve({ success: true, changes: this.changes });
         });
@@ -1152,7 +1201,9 @@ function cancelShare(itemId, itemType, userId) {
     const sql = `UPDATE ${table} SET share_token = NULL, share_expires_at = NULL, share_password = NULL WHERE ${idColumn} = ? AND user_id = ?`;
 
     return new Promise((resolve, reject) => {
-        db.run(sql, [itemId, userId], function(err) {
+        // --- *** 最终修正：将 BigInt 转换为 String (如果 itemType 是 file) *** ---
+        const stringItemId = itemType === 'folder' ? itemId : itemId.toString();
+        db.run(sql, [stringItemId, userId], function(err) {
             if (err) reject(err);
             else if (this.changes === 0) resolve({ success: false, message: '项目未找到或无需取消' });
             else resolve({ success: true });
