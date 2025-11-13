@@ -926,26 +926,85 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
         if (filesToArchive.length === 0) {
             return res.status(404).send('找不到任何可下载的档案');
         }
+        
         const archive = archiver('zip', { zlib: { level: 9 } });
         res.attachment('download.zip');
+
+        // --- *** 关键修正：添加健壮的错误处理 *** ---
+        // 1. 监听 archive 本身的错误 (例如 zip 失败)
+        archive.on('error', function(err) {
+            console.error('Archiver error:', err);
+            if (!res.headersSent) {
+                res.status(500).send({ error: `压缩失败: ${err.message}` });
+            } else {
+                // 如果标头已发送，我们无能为力，只能异常关闭连接
+                res.end();
+            }
+        });
+
+        // 2. 监听响应 (客户端) 的关闭事件
+        res.on('close', function() {
+            console.log(`[Archiver] 客户端在 ${archive.pointer()} 字节处提前关闭了下载连接。`);
+            // 终止压缩过程
+            archive.abort();
+            archive.finalize();
+        });
+
+        // 3. 将压缩流管输到响应中
         archive.pipe(res);
+
+        // --- *** 关键修正：序列化档案处理以避免 503 错误 *** ---
+        // 使用 for...of 循环来确保 await 生效，一次只处理一个档案
         for (const file of filesToArchive) {
-             if (file.storage_type === 'local' || file.storage_type === 'webdav') {
-                const stream = await storage.stream(file.file_id, userId);
-                archive.append(stream, { name: file.path });
-             } else if (file.storage_type === 'telegram') {
-                const link = await storage.getUrl(file.file_id);
-                if (link) {
-                    const response = await axios({ url: link, method: 'GET', responseType: 'stream' });
-                    archive.append(response.data, { name: file.path });
+            try {
+                if (file.storage_type === 'local' || file.storage_type === 'webdav') {
+                    // 获取流 (对于 WebDAV，这会建立连接)
+                    const stream = await storage.stream(file.file_id, userId);
+                    
+                    // 包装在一个 Promise 中，等待 archiver 完成此文件的读取
+                    await new Promise((resolve, reject) => {
+                        stream.on('end', resolve); // 当文件流读取完毕时
+                        stream.on('error', (err) => reject(new Error(`(Storage Stream) ${err.message}`))); // 捕获流错误
+                        archive.append(stream, { name: file.path });
+                    });
+
+                } else if (file.storage_type === 'telegram') {
+                    const link = await storage.getUrl(file.file_id);
+                    if (link) {
+                        // 获取 Telegram 的下载流
+                        const response = await axios({ url: link, method: 'GET', responseType: 'stream' });
+                        
+                        // 包装在一个 Promise 中，等待 stream 完成
+                        await new Promise((resolve, reject) => {
+                            response.data.on('end', resolve); // 当文件流读取完毕时
+                            response.data.on('error', (err) => reject(new Error(`(Telegram Stream) ${err.message}`))); // 捕获流错误
+                            archive.append(response.data, { name: file.path });
+                        });
+                    } else {
+                         // 如果 getUrl 失败，添加一个错误文件
+                         archive.append(`错误：无法获取档案 ${file.path} 的下载连结。`, { name: `${file.path} (错误).txt` });
+                    }
                 }
+            } catch (err) {
+                // 如果单个文件流失败 (例如 503)，记录它并继续
+                console.error(`[Archiver] 无法附加档案 "${file.path}": ${err.message}`);
+                // 在 zip 中添加一个错误文件，而不是中断整个下载
+                archive.append(`错误：无法附加档案 "${file.path}"。\n错误讯息: ${err.message}`, { name: `${file.path} (错误).txt` });
             }
         }
+        
+        // 所有文件都已加入队列，现在可以完成压缩
         await archive.finalize();
+        
     } catch (error) {
-        res.status(500).send('压缩档案时发生错误');
+        // 这是循环开始前或 finalize() 期间的错误
+        console.error('压缩档案时发生严重错误:', error);
+        if (!res.headersSent) {
+            res.status(500).send('压缩档案时发生错误: ' + error.message);
+        }
     }
 });
+
 
 // --- *** 最终修正: /share *** ---
 app.post('/share', requireLogin, async (req, res) => {
