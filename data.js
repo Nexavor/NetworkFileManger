@@ -1111,7 +1111,7 @@ async function renameAndMoveFolder(folderId, newName, targetFolderId, userId) {
                 await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id.toString()], (e) => e ? rej(e) : res()));
             }
         } catch(err) {
-            throw new Error(`实体资料夹移动并重命名失败: ${err.message}`);
+            throw new Error(`实体资料夾移动并重命名失败: ${err.message}`);
         }
     }
 
@@ -1144,9 +1144,13 @@ async function verifyFolderPassword(folderId, password, userId) {
 }
 
 
-
+// --- *** 这是您要求修改的函数 *** ---
 function createShareLink(itemId, itemType, expiresIn, userId, password = null, customExpiresAt = null) {
-    const token = crypto.randomBytes(16).toString('hex');
+    // 使用 3 字节的随机数据，并转换为 base64url 编码
+    // 这会产生 4 个字符 [A-Za-z0-9_-]
+    // 熵为 24 bits，比 5 位 hex (20 bits) 更高且更短
+    const token = crypto.randomBytes(3).toString('base64url');
+    
     let expiresAt = null;
 
     if (expiresIn === 'custom' && customExpiresAt) {
@@ -1187,6 +1191,7 @@ function createShareLink(itemId, itemType, expiresIn, userId, password = null, c
         });
     });
 }
+// --- *** 修改结束 *** ---
 
 function deleteFilesByIds(messageIds, userId) {
     if (!messageIds || messageIds.length === 0) {
