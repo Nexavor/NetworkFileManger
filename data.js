@@ -1146,10 +1146,9 @@ async function verifyFolderPassword(folderId, password, userId) {
 
 // --- *** 这是您要求修改的函数 *** ---
 function createShareLink(itemId, itemType, expiresIn, userId, password = null, customExpiresAt = null) {
-    // 使用 3 字节的随机数据，并转换为 base64url 编码
-    // 这会产生 4 个字符 [A-Za-z0-9_-]
-    // 熵为 24 bits，比 5 位 hex (20 bits) 更高且更短
-    const token = crypto.randomBytes(3).toString('base64url');
+    // 方案：使用 4 字节随机数，转换为 6 位 base64url 字符串。
+    // 这提供了 64^6 (约 687 亿) 种组合，碰撞概率极低，兼顾安全与短链接。
+    const token = crypto.randomBytes(4).toString('base64url');
     
     let expiresAt = null;
 
