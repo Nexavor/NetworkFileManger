@@ -1,3 +1,4 @@
+// [nexavor/networkfilemanger/NetworkFileManger-62bb5341e558464e13e458591cd25cd6794cd996/server.js]
 // server.js (最终修正版 - 修复所有路由中的 BigInt/Int 解析)
 
 require('dotenv').config();
@@ -562,7 +563,7 @@ app.get('/api/folder/:encryptedId', requireLogin, async (req, res) => {
     try {
         const folderIdStr = decrypt(req.params.encryptedId);
         if (!folderIdStr) {
-            return res.status(400).json({ success: false, message: '无效的资料夹 ID' });
+            return res.status(400).json({ success: false, message: '无效的资料夾 ID' });
         }
         const folderId = parseInt(folderIdStr, 10);
         const userId = req.session.userId;
@@ -953,9 +954,14 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
         // 3. 将压缩流管输到响应中
         archive.pipe(res);
 
-        // --- *** 关键修正：序列化档案处理以避免 503 错误 *** ---
-        // 使用 for...of 循环来确保 await 生效，一次只处理一个档案
-        for (const file of filesToArchive) {
+        // --- *** 关键修正：并发下载与压缩，限制并发数为 10 *** ---
+        const CONCURRENCY_LIMIT = 10;
+        const tasks = [...filesToArchive]; // 复制任务列表
+        let activeTasks = 0;
+        const errors = []; // 用于收集错误讯息
+
+        // 定义处理单个文件的 "worker" 函数
+        const processFile = async (file) => {
             try {
                 if (file.storage_type === 'local' || file.storage_type === 'webdav') {
                     // 获取流 (对于 WebDAV，这会建立连接)
@@ -981,17 +987,47 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
                             archive.append(response.data, { name: file.path });
                         });
                     } else {
-                         // 如果 getUrl 失败，添加一个错误文件
-                         archive.append(`错误：无法获取档案 ${file.path} 的下载连结。`, { name: `${file.path} (错误).txt` });
+                         throw new Error(`无法获取档案 ${file.path} 的下载连结。`);
                     }
                 }
             } catch (err) {
                 // 如果单个文件流失败 (例如 503)，记录它并继续
                 console.error(`[Archiver] 无法附加档案 "${file.path}": ${err.message}`);
+                errors.push(err.message); // 收集错误
                 // 在 zip 中添加一个错误文件，而不是中断整个下载
                 archive.append(`错误：无法附加档案 "${file.path}"。\n错误讯息: ${err.message}`, { name: `${file.path} (错误).txt` });
             }
-        }
+        };
+
+        // 并发执行器
+        await new Promise((resolveAll) => {
+            const runTask = () => {
+                // 基本情况：没有更多任务，并且没有正在运行的任务
+                if (tasks.length === 0 && activeTasks === 0) {
+                    return resolveAll();
+                }
+
+                // 只要还有任务并且并发数未满，就启动新任务
+                while (activeTasks < CONCURRENCY_LIMIT && tasks.length > 0) {
+                    activeTasks++;
+                    const file = tasks.shift(); // 取出一个任务
+
+                    processFile(file)
+                        .catch(err => {
+                            // processFile 内部已经处理了错误，这里只是为了记录意外
+                            console.error("并发处理文件时发生未捕获的错误: ", err);
+                        })
+                        .finally(() => {
+                            activeTasks--;
+                            runTask(); // 递归调用，尝试运行下一个任务或检查是否完成
+                        });
+                }
+                // 如果任务已满或没有任务了，函数自然结束，等待 finally 中的递归调用
+            };
+            
+            // 启动第一批任务 (最多 CONCURRENCY_LIMIT 个)
+            runTask(); 
+        });
         
         // 所有文件都已加入队列，现在可以完成压缩
         await archive.finalize();
@@ -1337,7 +1373,7 @@ app.get('/share/view/folder/:token/:path(*)?', shareSession, async (req, res) =>
                 });
                 res.render('share-folder-view', { folder: folderInfo, contents, breadcrumb: shareBreadcrumb, token: token });
             } else {
-                 res.status(44).render('share-error', { message: '路径不正确。' });
+                 res.status(404).render('share-error', { message: '路径不正确。' });
             }
         } else {
             res.status(404).render('share-error', { message: '此分享连结无效或已过期。' });
