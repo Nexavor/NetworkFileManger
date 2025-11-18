@@ -1,4 +1,4 @@
-// server.js (支持半流式传输)
+// server.js (修复上传0字节问题)
 
 require('dotenv').config();
 const express = require('express');
@@ -260,7 +260,7 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- 上传路由 ---
+// --- 上传路由 (整合流式与半流式) ---
 app.post('/upload', requireLogin, (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
@@ -280,6 +280,10 @@ app.post('/upload', requireLogin, (req, res) => {
         const uploadPromises = [];
 
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
+            // --- *** 关键修正：立即暂停流，防止在异步等待期间数据丢失 *** ---
+            fileStream.pause();
+            // --- 修正结束 ---
+
             const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
             
             const fileUploadPromise = (async () => {
@@ -300,6 +304,7 @@ app.post('/upload', requireLogin, (req, res) => {
                 }
 
                 const folderPathParts = pathParts;
+                // 在此异步调用期间，流处于暂停状态，数据保存在缓冲区中
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                 
                 let existingItem = null;
@@ -325,6 +330,7 @@ app.post('/upload', requireLogin, (req, res) => {
                     try {
                         await new Promise((resolve, reject) => {
                             const writeStream = fs.createWriteStream(tempFilePath);
+                            // 管道会自动恢复流
                             fileStream.pipe(writeStream);
                             
                             fileStream.on('error', reject);
@@ -339,12 +345,14 @@ app.post('/upload', requireLogin, (req, res) => {
                     }
                 } else {
                     // 纯流式：直接管道传输
+                    // 恢复流 (storage.upload 内部使用 pipe 也会自动恢复，但这里先让它准备好)
+                    // fileStream.resume(); // pipe 会自动处理，这里其实可以不调用，但为了保险起见交给 storage.upload 处理
                     await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
                 }
                 
                 return { skipped: false };
             })().catch(err => {
-                fileStream.resume();
+                fileStream.resume(); // 确保出错时流被消耗
                 throw err;
             });
             uploadPromises.push(fileUploadPromise);
