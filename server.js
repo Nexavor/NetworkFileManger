@@ -1,4 +1,4 @@
-// server.js (修复上传中断问题：确保流被完全消耗)
+// server.js (带详细调试日志版)
 
 require('dotenv').config();
 const express = require('express');
@@ -231,7 +231,7 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- 上传路由 (修复上传中断 + 0字节问题) ---
+// --- 上传路由 (带调试日志) ---
 app.post('/upload', requireLogin, (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
@@ -239,6 +239,8 @@ app.post('/upload', requireLogin, (req, res) => {
     const config = storageManager.readConfig(); 
     const transferMode = config.transferMode || 'stream';
     const MAX_FILENAME_BYTES = 255; 
+
+    console.log(`[Upload Debug] Request received. Mode: ${transferMode}`);
 
     try {
         if (!folderId) throw new Error('folderId is missing from query parameters');
@@ -253,41 +255,61 @@ app.post('/upload', requireLogin, (req, res) => {
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
             const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
             const { mimeType } = fileInfo;
+            console.log(`[Upload Debug] Processing file: ${relativePath} (${mimeType})`);
             
-            // 1. 档名检查
             const pathParts = relativePath.split('/').filter(p => p);
             let finalFilename = pathParts.pop() || relativePath;
 
             if (Buffer.byteLength(finalFilename, 'utf8') > MAX_FILENAME_BYTES) {
+                console.error(`[Upload Debug] Filename too long: ${finalFilename}`);
                 fileStream.resume(); 
-                uploadPromises.push(Promise.reject(new Error(`档名 "${finalFilename.substring(0, 30)}..." 过长。`)));
+                uploadPromises.push(Promise.reject(new Error(`档名过长`)));
                 return;
             }
 
-            // 2. 检查是否跳过
             const action = resolutions[relativePath] || 'upload';
             if (action === 'skip') {
+                console.log(`[Upload Debug] Action is SKIP for ${relativePath}`);
                 fileStream.resume(); 
                 uploadPromises.push(Promise.resolve({ skipped: true }));
                 return;
             }
 
             if (transferMode === 'semi') {
-                // === 半流式模式 (稳健版) ===
+                // === 半流式模式 (调试版) ===
                 const tempFileName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.tmp`;
                 const tempFilePath = path.join(TMP_DIR, tempFileName);
+                console.log(`[Upload Debug] Temp file path: ${tempFilePath}`);
+                
                 const writeStream = fs.createWriteStream(tempFilePath);
                 
-                // 任务 A: 必须完整接收文件流，无论后续逻辑如何
-                const writeTask = new Promise((resolve, reject) => {
-                    fileStream.pipe(writeStream);
-                    fileStream.on('error', (err) => reject(err));
-                    writeStream.on('error', (err) => reject(err));
-                    writeStream.on('finish', resolve);
+                // 调试：统计接收到的流字节数
+                let receivedBytes = 0;
+                fileStream.on('data', (chunk) => {
+                    receivedBytes += chunk.length;
                 });
 
-                // 任务 B: 数据库检查 (并行开始)
+                const writeTask = new Promise((resolve, reject) => {
+                    writeStream.on('open', () => console.log(`[Upload Debug] WriteStream opened`));
+                    
+                    fileStream.pipe(writeStream);
+                    
+                    fileStream.on('error', (err) => {
+                        console.error(`[Upload Debug] FileStream Error: ${err.message}`);
+                        reject(err);
+                    });
+                    writeStream.on('error', (err) => {
+                        console.error(`[Upload Debug] WriteStream Error: ${err.message}`);
+                        reject(err);
+                    });
+                    writeStream.on('finish', () => {
+                        console.log(`[Upload Debug] WriteStream finished. Received bytes from stream: ${receivedBytes}`);
+                        resolve();
+                    });
+                });
+
                 const dbTask = (async () => {
+                    console.log(`[Upload Debug] Starting DB check...`);
                     const folderPathParts = pathParts;
                     const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                     
@@ -300,49 +322,61 @@ app.post('/upload', requireLogin, (req, res) => {
                         effectiveFilename = await data.findAvailableName(effectiveFilename, targetFolderId, userId, false);
                     } else {
                         const conflict = await data.findItemInFolder(effectiveFilename, targetFolderId, userId);
-                        if (conflict) return { skipped: true };
+                        if (conflict) {
+                            console.log(`[Upload Debug] DB Conflict found.`);
+                            return { skipped: true };
+                        }
                     }
+                    console.log(`[Upload Debug] DB check complete. Upload target: ${effectiveFilename}`);
                     return { skipped: false, targetFolderId, effectiveFilename, existingItem };
                 })();
 
-                // 组合任务: 确保文件先接收完
                 const combinedTask = (async () => {
                     let dbResult, dbError;
-                    
-                    // 1. 先尝试执行数据库任务，如果有错先存起来，不打断文件接收
                     try {
                         dbResult = await dbTask;
-                    } catch (e) {
-                        dbError = e;
-                    }
+                    } catch (e) { dbError = e; }
 
-                    // 2. 等待文件全部写完 (如果这里出错，那确实是传输失败)
                     try {
                         await writeTask;
                     } catch (writeErr) {
+                        console.error(`[Upload Debug] Write failed completely.`);
                         await fsp.unlink(tempFilePath).catch(() => {});
-                        // 如果此时也有 DB 错误，优先报 DB 错误信息，但本质是传输失败
-                        if (dbError) throw new Error(`DB错误: ${dbError.message}, 且写入中断: ${writeErr.message}`);
+                        if (dbError) throw new Error(`DB & Write Error: ${dbError.message} / ${writeErr.message}`);
                         throw writeErr;
                     }
 
-                    // 3. 文件已安全落地。现在处理之前的 DB 错误
-                    if (dbError) {
-                        await fsp.unlink(tempFilePath).catch(() => {});
-                        throw dbError; // 现在抛出，不会导致上传中断，只会返回上传失败
+                    // 调试：检查磁盘文件大小
+                    try {
+                        const stats = await fsp.stat(tempFilePath);
+                        console.log(`[Upload Debug] Disk file size check: ${stats.size} bytes`);
+                        if (stats.size === 0 && receivedBytes > 0) {
+                            console.error(`[Upload Debug] CRITICAL ERROR: Stream had data but file is empty!`);
+                        }
+                    } catch (statErr) {
+                        console.error(`[Upload Debug] Failed to stat temp file: ${statErr.message}`);
                     }
 
-                    // 4. 逻辑判断是否跳过
+                    if (dbError) {
+                        await fsp.unlink(tempFilePath).catch(() => {});
+                        throw dbError; 
+                    }
+
                     if (dbResult.skipped) {
+                         console.log(`[Upload Debug] Skipping upload logic based on DB result.`);
                          await fsp.unlink(tempFilePath).catch(() => {});
                          return { skipped: true };
                     }
 
-                    // 5. 上传到最终存储
                     try {
+                        console.log(`[Upload Debug] Starting upload to backend storage...`);
                         const tempReadStream = fs.createReadStream(tempFilePath);
                         await storage.upload(tempReadStream, dbResult.effectiveFilename, mimeType, userId, dbResult.targetFolderId, caption || '', dbResult.existingItem);
+                        console.log(`[Upload Debug] Upload to backend storage success.`);
                         return { skipped: false };
+                    } catch(err) {
+                        console.error(`[Upload Debug] Backend storage upload failed: ${err.message}`);
+                        throw err;
                     } finally {
                         await fsp.unlink(tempFilePath).catch(() => {});
                     }
@@ -352,7 +386,8 @@ app.post('/upload', requireLogin, (req, res) => {
 
             } else {
                 // === 纯流式模式 ===
-                fileStream.pause(); // 暂停流，等待 DB 检查
+                console.log(`[Upload Debug] Using STREAM mode.`);
+                fileStream.pause(); 
                 const streamTask = (async () => {
                     const folderPathParts = pathParts;
                     const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
@@ -366,7 +401,7 @@ app.post('/upload', requireLogin, (req, res) => {
                     } else {
                         const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                         if (conflict) {
-                            fileStream.resume(); // 消耗流
+                            fileStream.resume(); 
                             return { skipped: true };
                         }
                     }
@@ -374,7 +409,7 @@ app.post('/upload', requireLogin, (req, res) => {
                     await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
                     return { skipped: false };
                 })().catch(err => {
-                    fileStream.resume(); // 确保错误时消耗流
+                    fileStream.resume(); 
                     throw err;
                 });
                 
@@ -383,6 +418,7 @@ app.post('/upload', requireLogin, (req, res) => {
         });
 
         busboy.on('finish', async () => {
+            console.log(`[Upload Debug] Busboy finished parsing.`);
             try {
                 const results = await Promise.all(uploadPromises);
                 const allSkipped = results.length > 0 && results.every(r => r && r.skipped);
@@ -393,6 +429,7 @@ app.post('/upload', requireLogin, (req, res) => {
                      res.json({ success: true, message: '上传完成' });
                 }
             } catch (error) {
+                console.error(`[Upload Debug] Final Error: ${error.message}`);
                 if (!res.headersSent) {
                     res.status(500).json({ success: false, message: `上传任务执行失败: ${error.message}` });
                 }
@@ -400,6 +437,7 @@ app.post('/upload', requireLogin, (req, res) => {
         });
 
         busboy.on('error', (err) => {
+            console.error(`[Upload Debug] Busboy Error: ${err.message}`);
             req.unpipe(busboy);
             if (!res.headersSent) {
                 res.status(500).json({ success: false, message: '上传解析失败' });
@@ -409,6 +447,7 @@ app.post('/upload', requireLogin, (req, res) => {
         req.pipe(busboy);
 
     } catch (err) {
+        console.error(`[Upload Debug] Setup Error: ${err.message}`);
         res.status(400).json({ success: false, message: `请求预处理失败: ${err.message}` });
     }
 });
