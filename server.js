@@ -1,4 +1,4 @@
-// server.js (修复上传0字节问题)
+// server.js (修复半流式上传 0 字节问题)
 
 require('dotenv').config();
 const express = require('express');
@@ -29,11 +29,6 @@ app.set('json replacer', jsonReplacer);
 
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
-// const log = (level, file, func, message, ...args) => {
-//     // const timestamp = new Date().toISOString();
-//     // console.log(`[${timestamp}] [${level}] [${file}:${func}] - ${message}`, ...args);
-// };
-
 async function cleanupTempDir() {
     try {
         if (!fs.existsSync(TMP_DIR)) {
@@ -56,15 +51,14 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'your-strong-random-secret-here-please-change',
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 } // 注意：此处的 maxAge 将被 /login 路由中的逻辑覆盖
+  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }
 }));
 
-// --- 会话级 cookie，用于分享链接 ---
 const shareSession = session({
   secret: process.env.SESSION_SECRET + '-share',
   resave: false,
   saveUninitialized: true,
-  cookie: { /* maxAge 已被移除 */ }
+  cookie: { }
 });
 
 app.set('trust proxy', 1);
@@ -77,39 +71,30 @@ app.use(express.json({ limit: '50mb' }));
 
 app.use(cookieParser());
 
-// --- 自动登入中间件 ---
 async function checkRememberMeCookie(req, res, next) {
     if (req.session.loggedIn) {
         return next();
     }
-    
     const rememberToken = req.cookies.remember_me;
-    
     if (rememberToken) {
         try {
             const tokenData = await data.findAuthToken(rememberToken);
-            
             if (tokenData && tokenData.expires_at > Date.now()) {
                 const user = { id: tokenData.user_id, username: tokenData.username, is_admin: tokenData.is_admin };
-                
                 req.session.loggedIn = true;
                 req.session.userId = user.id;
                 req.session.isAdmin = !!user.is_admin;
                 req.session.unlockedFolders = [];
-                
                 await data.deleteAuthToken(rememberToken);
-                
                 const newRememberToken = crypto.randomBytes(64).toString('hex');
-                const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000; // 30 天
+                const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000; 
                 await data.createAuthToken(user.id, newRememberToken, expiresAt);
-                
                 res.cookie('remember_me', newRememberToken, {
                     path: '/',
                     httpOnly: true,
                     secure: req.protocol === 'https',
                     maxAge: 30 * 24 * 60 * 60 * 1000
                 });
-                
             } else if (tokenData) {
                 await data.deleteAuthToken(rememberToken);
                 res.clearCookie('remember_me', { path: '/' });
@@ -128,19 +113,14 @@ app.use(checkRememberMeCookie);
 
 setInterval(async () => {
     try {
-        const result = await data.deleteExpiredAuthTokens();
-        if (result && result.changes > 0) {
-             // console.log(`[Scheduler] 清理了 ${result.changes} 个过期的登入令牌。`);
-        }
+        await data.deleteExpiredAuthTokens();
     } catch (e) {
         console.error("定时清除过期 token 失败:", e);
     }
 }, 1000 * 60 * 60 * 24);
 
-// --- 权限验证中间件 ---
 function requireLogin(req, res, next) {
   if (req.session.loggedIn) return next();
-  
   if (req.xhr || (req.headers.accept && req.headers.accept.includes('json'))) {
     return res.status(401).json({ success: false, message: '会话已过期，请重新登入。' });
   } else {
@@ -159,7 +139,6 @@ function requireAdmin(req, res, next) {
     }
 }
 
-// --- 页面路由 ---
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views/login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views/register.html')));
 app.get('/editor', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/editor.html')));
@@ -172,25 +151,19 @@ app.post('/login', async (req, res) => {
             req.session.userId = user.id;
             req.session.isAdmin = !!user.is_admin;
             req.session.unlockedFolders = [];
-
             if (req.body.remember) {
                 const rememberToken = crypto.randomBytes(64).toString('hex');
-                const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000; // 30 天
-                
+                const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
                 try {
                     await data.createAuthToken(user.id, rememberToken, expiresAt);
-                    
                     res.cookie('remember_me', rememberToken, {
                         path: '/',
                         httpOnly: true,
                         secure: req.protocol === 'https',
                         maxAge: 30 * 24 * 60 * 60 * 1000 
                     });
-                    
                     req.session.cookie.maxAge = 30 * 24 * 60 * 60 * 1000;
-                    
                 } catch (tokenError) {
-                    console.error("建立 auth token 失败:", tokenError);
                     req.session.cookie.expires = false;
                     req.session.cookie.maxAge = null;
                 }
@@ -198,7 +171,6 @@ app.post('/login', async (req, res) => {
                 req.session.cookie.expires = false;
                 req.session.cookie.maxAge = null;
             }
-
             res.redirect('/');
         } else {
             res.status(401).send('帐号或密码错误');
@@ -228,16 +200,11 @@ app.post('/register', async (req, res) => {
 app.get('/logout', (req, res) => {
     const rememberToken = req.cookies.remember_me;
     if (rememberToken) {
-        data.deleteAuthToken(rememberToken).catch(err => {
-            console.error("删除 auth token 失败:", err);
-        });
+        data.deleteAuthToken(rememberToken).catch(err => console.error("删除 auth token 失败:", err));
     }
     res.clearCookie('remember_me', { path: '/' });
-
     req.session.destroy(err => {
-        if (err) {
-            return res.redirect('/');
-        }
+        if (err) return res.redirect('/');
         res.clearCookie('connect.sid');
         res.redirect('/login');
     });
@@ -260,7 +227,7 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- 上传路由 (整合流式与半流式) ---
+// --- 上传路由 (修复 0 字节问题) ---
 app.post('/upload', requireLogin, (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
@@ -280,88 +247,129 @@ app.post('/upload', requireLogin, (req, res) => {
         const uploadPromises = [];
 
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
-            // --- *** 关键修正：立即暂停流，防止在异步等待期间数据丢失 *** ---
-            fileStream.pause();
-            // --- 修正结束 ---
-
             const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
+            const { mimeType } = fileInfo;
             
-            const fileUploadPromise = (async () => {
-                const { mimeType } = fileInfo;
-                const pathParts = relativePath.split('/').filter(p => p);
-                let finalFilename = pathParts.pop() || relativePath;
+            // 1. 预处理：档名检查 (同步执行)
+            const pathParts = relativePath.split('/').filter(p => p);
+            let finalFilename = pathParts.pop() || relativePath;
 
-                if (Buffer.byteLength(finalFilename, 'utf8') > MAX_FILENAME_BYTES) {
-                    fileStream.resume(); 
-                    throw new Error(`档名 "${finalFilename.substring(0, 30)}..." 过长 (超过 ${MAX_FILENAME_BYTES} 字节)。`);
-                }
+            if (Buffer.byteLength(finalFilename, 'utf8') > MAX_FILENAME_BYTES) {
+                fileStream.resume(); // 丢弃流
+                uploadPromises.push(Promise.reject(new Error(`档名 "${finalFilename.substring(0, 30)}..." 过长。`)));
+                return;
+            }
 
-                const action = resolutions[relativePath] || 'upload';
+            // 2. 预处理：检查是否需要跳过 (同步执行)
+            const action = resolutions[relativePath] || 'upload';
+            if (action === 'skip') {
+                fileStream.resume(); // 丢弃流
+                uploadPromises.push(Promise.resolve({ skipped: true }));
+                return;
+            }
 
-                if (action === 'skip') {
-                    fileStream.resume();
-                    return { skipped: true };
-                }
-
-                const folderPathParts = pathParts;
-                // 在此异步调用期间，流处于暂停状态，数据保存在缓冲区中
-                const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
+            // --- 分支处理 ---
+            if (transferMode === 'semi') {
+                // === 半流式模式：并行写入与检查 ===
+                // 关键：立即建立管道写入文件，防止数据在 await 期间丢失
+                const tempFileName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.tmp`;
+                const tempFilePath = path.join(TMP_DIR, tempFileName);
                 
-                let existingItem = null;
-
-                if (action === 'overwrite') {
-                    existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId); 
-                } else if (action === 'rename') {
-                    finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
-                } else {
-                    const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
-                    if (conflict) {
-                        fileStream.resume();
-                        return { skipped: true };
-                    }
-                }
+                const writeStream = fs.createWriteStream(tempFilePath);
                 
-                // --- 传输模式分支 ---
-                if (transferMode === 'semi') {
-                    // 半流式：先存本地临时文件，再上传
-                    const tempFileName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.tmp`;
-                    const tempFilePath = path.join(TMP_DIR, tempFileName);
+                // 任务 A: 写入临时文件 (同步开始，异步完成)
+                const writeTask = new Promise((resolve, reject) => {
+                    fileStream.pipe(writeStream);
+                    fileStream.on('error', reject);
+                    writeStream.on('error', reject);
+                    writeStream.on('finish', resolve);
+                });
+
+                // 任务 B: 数据库逻辑 (异步)
+                const dbTask = (async () => {
+                    const folderPathParts = pathParts;
+                    const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                     
-                    try {
-                        await new Promise((resolve, reject) => {
-                            const writeStream = fs.createWriteStream(tempFilePath);
-                            // 管道会自动恢复流
-                            fileStream.pipe(writeStream);
-                            
-                            fileStream.on('error', reject);
-                            writeStream.on('error', reject);
-                            writeStream.on('finish', resolve);
-                        });
+                    let existingItem = null;
+                    let effectiveFilename = finalFilename;
 
-                        const tempReadStream = fs.createReadStream(tempFilePath);
-                        await storage.upload(tempReadStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
-                    } finally {
-                        fs.unlink(tempFilePath, (err) => { if(err) console.error("清理临时上传文件失败:", err); });
+                    if (action === 'overwrite') {
+                        existingItem = await data.findItemInFolder(effectiveFilename, targetFolderId, userId); 
+                    } else if (action === 'rename') {
+                        effectiveFilename = await data.findAvailableName(effectiveFilename, targetFolderId, userId, false);
+                    } else {
+                        const conflict = await data.findItemInFolder(effectiveFilename, targetFolderId, userId);
+                        if (conflict) return { skipped: true };
                     }
-                } else {
-                    // 纯流式：直接管道传输
-                    // 恢复流 (storage.upload 内部使用 pipe 也会自动恢复，但这里先让它准备好)
-                    // fileStream.resume(); // pipe 会自动处理，这里其实可以不调用，但为了保险起见交给 storage.upload 处理
+                    return { skipped: false, targetFolderId, effectiveFilename, existingItem };
+                })();
+
+                // 等待两者都完成
+                const combinedTask = Promise.all([writeTask, dbTask])
+                    .then(async ([_, dbResult]) => {
+                        if (dbResult.skipped) {
+                            // 如果逻辑决定跳过，删除已下载的临时文件
+                            await fsp.unlink(tempFilePath).catch(() => {});
+                            return { skipped: true };
+                        }
+                        
+                        // 逻辑通过，从临时文件上传到目标存储
+                        try {
+                            const tempReadStream = fs.createReadStream(tempFilePath);
+                            await storage.upload(tempReadStream, dbResult.effectiveFilename, mimeType, userId, dbResult.targetFolderId, caption || '', dbResult.existingItem);
+                            return { skipped: false };
+                        } finally {
+                            // 清理临时文件
+                            await fsp.unlink(tempFilePath).catch(() => {});
+                        }
+                    })
+                    .catch(async (err) => {
+                        // 发生任何错误，清理临时文件
+                        await fsp.unlink(tempFilePath).catch(() => {});
+                        throw err;
+                    });
+
+                uploadPromises.push(combinedTask);
+
+            } else {
+                // === 纯流式模式 ===
+                // 必须暂停流，因为我们还没准备好管道
+                fileStream.pause();
+
+                const streamTask = (async () => {
+                    const folderPathParts = pathParts;
+                    const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
+                    
+                    let existingItem = null;
+                    
+                    if (action === 'overwrite') {
+                        existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId); 
+                    } else if (action === 'rename') {
+                        finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
+                    } else {
+                        const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
+                        if (conflict) {
+                            fileStream.resume();
+                            return { skipped: true };
+                        }
+                    }
+                    
+                    // storage.upload 内部通常会 pipe，这会自动 resume 流
                     await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
-                }
+                    return { skipped: false };
+                })().catch(err => {
+                    fileStream.resume(); // 确保错误时流也能结束
+                    throw err;
+                });
                 
-                return { skipped: false };
-            })().catch(err => {
-                fileStream.resume(); // 确保出错时流被消耗
-                throw err;
-            });
-            uploadPromises.push(fileUploadPromise);
+                uploadPromises.push(streamTask);
+            }
         });
 
         busboy.on('finish', async () => {
             try {
                 const results = await Promise.all(uploadPromises);
-                const allSkipped = results.length > 0 && results.every(r => r.skipped);
+                const allSkipped = results.length > 0 && results.every(r => r && r.skipped);
 
                 if (allSkipped) {
                      res.json({ success: true, skippedAll: true, message: '所有文件都因冲突而被跳过' });
@@ -388,8 +396,6 @@ app.post('/upload', requireLogin, (req, res) => {
         res.status(400).json({ success: false, message: `请求预处理失败: ${err.message}` });
     }
 });
-
-// --- API 路由 ---
 
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
@@ -485,11 +491,9 @@ app.post('/api/check-existence', requireLogin, async (req, res) => {
     try {
         const { files: filesToCheck, folderId: initialFolderId } = req.body;
         const userId = req.session.userId;
-
         if (!filesToCheck || !Array.isArray(filesToCheck) || !initialFolderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
-
         const existenceChecks = await Promise.all(
             filesToCheck.map(async (fileInfo) => {
                 const { relativePath } = fileInfo;
@@ -517,9 +521,7 @@ app.post('/api/check-move-conflict', requireLogin, async (req, res) => {
         if (!itemIds || !Array.isArray(itemIds) || !targetFolderId) {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
-        
         const topLevelItems = await data.getItemsByIds(itemIds, userId);
-        
         const { fileConflicts, folderConflicts } = await data.getConflictingItems(topLevelItems, targetFolderId, userId);
         res.json({ success: true, fileConflicts, folderConflicts });
     } catch (error) {
@@ -542,15 +544,11 @@ app.get('/api/search', requireLogin, async (req, res) => {
 app.get('/api/folder/:encryptedId', requireLogin, async (req, res) => {
     try {
         const folderIdStr = decrypt(req.params.encryptedId);
-        if (!folderIdStr) {
-            return res.status(400).json({ success: false, message: '无效的资料夾 ID' });
-        }
+        if (!folderIdStr) return res.status(400).json({ success: false, message: '无效的资料夾 ID' });
         const folderId = parseInt(folderIdStr, 10);
         const userId = req.session.userId;
         const folderDetails = await data.getFolderDetails(folderId, userId);
-        if (!folderDetails) {
-            return res.status(404).json({ success: false, message: '找不到资料夾' });
-        }
+        if (!folderDetails) return res.status(404).json({ success: false, message: '找不到资料夾' });
         if (folderDetails.is_locked && !req.session.unlockedFolders.includes(folderId)) {
             const folderPath = await data.getFolderPath(folderId, userId);
             return res.json({ locked: true, path: folderPath.map(p => ({ ...p, encrypted_id: encrypt(p.id) })) });
@@ -566,14 +564,10 @@ app.get('/api/folder/:encryptedId', requireLogin, async (req, res) => {
 app.post('/api/folder', requireLogin, async (req, res) => {
     const { name, parentId } = req.body;
     const userId = req.session.userId;
-    if (!name || !parentId) {
-        return res.status(400).json({ success: false, message: '缺少资料夾名称或父 ID。' });
-    }
+    if (!name || !parentId) return res.status(400).json({ success: false, message: '缺少资料夾名称或父 ID。' });
     try {
         const conflict = await data.checkFullConflict(name, parentId, userId);
-        if (conflict) {
-            return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
-        }
+        if (conflict) return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
         const result = await data.createFolder(name, parentId, userId);
         const storage = storageManager.getStorage();
         if (storage.type === 'local' || storage.type === 'webdav') {
@@ -597,21 +591,13 @@ app.post('/api/folder/:id/lock', requireLogin, async (req, res) => {
         const { id } = req.params;
         const { password, oldPassword } = req.body;
         const userId = req.session.userId;
-        if (!password || password.length < 4) {
-            return res.status(400).json({ success: false, message: '密码长度至少需要 4 个字元。' });
-        }
+        if (!password || password.length < 4) return res.status(400).json({ success: false, message: '密码长度至少需要 4 个字元。' });
         const folder = await data.getFolderDetails(id, userId);
-        if (!folder) {
-            return res.status(404).json({ success: false, message: '找不到资料夹。' });
-        }
+        if (!folder) return res.status(404).json({ success: false, message: '找不到资料夹。' });
         if (folder.is_locked) {
-            if (!oldPassword) {
-                return res.status(400).json({ success: false, message: '需要提供旧密码才能修改。' });
-            }
+            if (!oldPassword) return res.status(400).json({ success: false, message: '需要提供旧密码才能修改。' });
             const isMatch = await bcrypt.compare(oldPassword, folder.password);
-            if (!isMatch) {
-                return res.status(401).json({ success: false, message: '旧密码不正确。' });
-            }
+            if (!isMatch) return res.status(401).json({ success: false, message: '旧密码不正确。' });
         }
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
@@ -627,13 +613,9 @@ app.post('/api/folder/:id/unlock', requireLogin, async (req, res) => {
         const { id } = req.params;
         const { password } = req.body;
         const userId = req.session.userId;
-        if (!password) {
-            return res.status(400).json({ success: false, message: '需要提供密码才能解锁。' });
-        }
+        if (!password) return res.status(400).json({ success: false, message: '需要提供密码才能解锁。' });
         const isMatch = await data.verifyFolderPassword(id, password, userId);
-        if (!isMatch) {
-            return res.status(401).json({ success: false, message: '密码不正确。' });
-        }
+        if (!isMatch) return res.status(401).json({ success: false, message: '密码不正确。' });
         await data.setFolderPassword(id, null, userId);
         if (req.session.unlockedFolders) {
             req.session.unlockedFolders = req.session.unlockedFolders.filter(folderId => folderId !== parseInt(id));
@@ -651,9 +633,7 @@ app.post('/api/folder/:id/verify', requireLogin, async (req, res) => {
         const userId = req.session.userId;
         const isMatch = await data.verifyFolderPassword(id, password, userId);
         if (isMatch) {
-            if (!req.session.unlockedFolders) {
-                req.session.unlockedFolders = [];
-            }
+            if (!req.session.unlockedFolders) req.session.unlockedFolders = [];
             req.session.unlockedFolders.push(parseInt(id));
             res.json({ success: true });
         } else {
@@ -681,12 +661,8 @@ app.post('/api/move', requireLogin, async (req, res) => {
         for (const itemId of itemIds) {
             try {
                 const items = await data.getItemsByIds([itemId], userId);
-                if (items.length === 0) {
-                    totalSkipped++;
-                    continue;
-                }
+                if (items.length === 0) { totalSkipped++; continue; }
                 const item = items[0];
-                
                 const report = await data.moveItem(item.id, item.type, targetFolderId, userId, { resolutions });
                 totalMoved += report.moved;
                 totalSkipped += report.skipped;
@@ -696,15 +672,10 @@ app.post('/api/move', requireLogin, async (req, res) => {
             }
         }
         let message = "操作完成。";
-        if (errors.length > 0) {
-            message = `操作完成，但出现错误: ${errors.join(', ')}`;
-        } else if (totalMoved > 0 && totalSkipped > 0) {
-            message = `操作完成，${totalMoved} 个项目已移动，${totalSkipped} 个项目被跳过。`;
-        } else if (totalMoved === 0 && totalSkipped > 0) {
-            message = "所有选定项目均被跳过。";
-        } else if (totalMoved > 0) {
-            message = `${totalMoved} 个项目移动成功。`;
-        }
+        if (errors.length > 0) message = `操作完成，但出现错误: ${errors.join(', ')}`;
+        else if (totalMoved > 0 && totalSkipped > 0) message = `操作完成，${totalMoved} 个项目已移动，${totalSkipped} 个项目被跳过。`;
+        else if (totalMoved === 0 && totalSkipped > 0) message = "所有选定项目均被跳过。";
+        else if (totalMoved > 0) message = `${totalMoved} 个项目移动成功。`;
         res.json({ success: errors.length === 0, message: message });
     } catch (error) {
         res.status(500).json({ success: false, message: '移动失败：' + error.message });
@@ -715,12 +686,8 @@ app.post('/delete-multiple', requireLogin, async (req, res) => {
     const { messageIds = [], folderIds = [] } = req.body;
     const userId = req.session.userId;
     try {
-        for(const id of messageIds) { 
-            await data.unifiedDelete(BigInt(id), 'file', userId); 
-        }
-        for(const id of folderIds) { 
-            await data.unifiedDelete(parseInt(id, 10), 'folder', userId); 
-        }
+        for(const id of messageIds) await data.unifiedDelete(BigInt(id), 'file', userId); 
+        for(const id of folderIds) await data.unifiedDelete(parseInt(id, 10), 'folder', userId); 
         res.json({ success: true, message: '删除成功' });
     } catch (error) {
         res.status(500).json({ success: false, message: '删除失败: ' + error.message });
@@ -731,17 +698,11 @@ app.post('/rename', requireLogin, async (req, res) => {
     try {
         const { id, newName, type } = req.body;
         const userId = req.session.userId;
-        if (!id || !newName || !type) {
-            return res.status(400).json({ success: false, message: '缺少必要参数。'});
-        }
+        if (!id || !newName || !type) return res.status(400).json({ success: false, message: '缺少必要参数。'});
         let result;
-        if (type === 'file') {
-            result = await data.renameFile(BigInt(id), newName, userId);
-        } else if (type === 'folder') {
-            result = await data.renameFolder(parseInt(id, 10), newName, userId);
-        } else {
-            return res.status(400).json({ success: false, message: '无效的项目类型。'});
-        }
+        if (type === 'file') result = await data.renameFile(BigInt(id), newName, userId);
+        else if (type === 'folder') result = await data.renameFolder(parseInt(id, 10), newName, userId);
+        else return res.status(400).json({ success: false, message: '无效的项目类型。'});
         res.json(result);
     } catch (error) {
         res.status(500).json({ success: false, message: '重命名失败: ' + error.message });
@@ -752,9 +713,7 @@ app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = BigInt(req.params.message_id);
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
-        if (!accessible) {
-            return res.status(403).send('权限不足');
-        }
+        if (!accessible) return res.status(403).send('权限不足');
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
         if (fileInfo && fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
             const storage = storageManager.getStorage();
@@ -771,7 +730,6 @@ async function handleFileStream(req, res, fileInfo) {
     const storage = storageManager.getStorage();
     const range = req.headers.range;
     const totalSize = fileInfo.size;
-
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Content-Type', fileInfo.mimetype || 'application/octet-stream');
     
@@ -779,15 +737,12 @@ async function handleFileStream(req, res, fileInfo) {
         const parts = range.replace(/bytes=/, "").split("-");
         const start = parseInt(parts[0], 10);
         const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
-        
         if (start >= totalSize) {
             res.status(416).send('Requested range not satisfiable\n' + start + ' >= ' + totalSize);
             return;
         }
-
         const chunksize = (end - start) + 1;
         res.writeHead(206, { 'Content-Range': `bytes ${start}-${end}/${totalSize}`, 'Content-Length': chunksize });
-
         if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
             const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id, { start, end });
             stream.pipe(res);
@@ -803,7 +758,6 @@ async function handleFileStream(req, res, fileInfo) {
     } else {
         res.setHeader('Content-Length', totalSize || -1);
         res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
-
         if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
             const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
             stream.pipe(res);
@@ -824,10 +778,8 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
         const messageId = BigInt(req.params.message_id);
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) return res.status(403).send('权限不足');
-        
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
         if (!fileInfo) return res.status(404).send('文件信息未找到');
-
         await handleFileStream(req, res, fileInfo);
     } catch (error) {
         if (!res.headersSent) res.status(500).send('下载代理失败: ' + error.message);
@@ -838,13 +790,9 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     try {
         const messageId = BigInt(req.params.message_id);
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
-        if (!accessible) {
-            return res.status(403).send('权限不足');
-        }
+        if (!accessible) return res.status(403).send('权限不足');
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
-        if (!fileInfo || !fileInfo.file_id) {
-            return res.status(404).send('文件信息未找到');
-        }
+        if (!fileInfo || !fileInfo.file_id) return res.status(404).send('文件信息未找到');
         const storage = storageManager.getStorage();
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
@@ -867,9 +815,7 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
         const { messageIds = [], folderIds = [] } = req.body;
         const userId = req.session.userId;
         const storage = storageManager.getStorage();
-        if (messageIds.length === 0 && folderIds.length === 0) {
-            return res.status(400).send('未提供任何项目 ID');
-        }
+        if (messageIds.length === 0 && folderIds.length === 0) return res.status(400).send('未提供任何项目 ID');
         let filesToArchive = [];
         if (messageIds.length > 0) {
             const fileIdBigInts = messageIds.map(id => BigInt(id));
@@ -882,51 +828,36 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
             const nestedFiles = await data.getFilesRecursive(folderId, userId, folderName);
             filesToArchive.push(...nestedFiles);
         }
-        if (filesToArchive.length === 0) {
-            return res.status(404).send('找不到任何可下载的档案');
-        }
-        
+        if (filesToArchive.length === 0) return res.status(404).send('找不到任何可下载的档案');
         const archive = archiver('zip', { zlib: { level: 9 } });
         res.attachment('download.zip');
-
         archive.on('error', function(err) {
             console.error('Archiver error:', err);
-            if (!res.headersSent) {
-                res.status(500).send({ error: `压缩失败: ${err.message}` });
-            } else {
-                res.end();
-            }
+            if (!res.headersSent) res.status(500).send({ error: `压缩失败: ${err.message}` });
+            else res.end();
         });
-
         res.on('close', function() {
             console.log(`[Archiver] 客户端在 ${archive.pointer()} 字节处提前关闭了下载连接。`);
             archive.abort();
             archive.finalize();
         });
-
         archive.pipe(res);
-
         const CONCURRENCY_LIMIT = 10;
         const tasks = [...filesToArchive]; 
         let activeTasks = 0;
-        const errors = []; 
-
         const processFile = async (file) => {
             try {
                 if (file.storage_type === 'local' || file.storage_type === 'webdav') {
                     const stream = await storage.stream(file.file_id, userId);
-                    
                     await new Promise((resolve, reject) => {
                         stream.on('end', resolve); 
                         stream.on('error', (err) => reject(new Error(`(Storage Stream) ${err.message}`))); 
                         archive.append(stream, { name: file.path });
                     });
-
                 } else if (file.storage_type === 'telegram') {
                     const link = await storage.getUrl(file.file_id);
                     if (link) {
                         const response = await axios({ url: link, method: 'GET', responseType: 'stream' });
-                        
                         await new Promise((resolve, reject) => {
                             response.data.on('end', resolve); 
                             response.data.on('error', (err) => reject(new Error(`(Telegram Stream) ${err.message}`))); 
@@ -938,60 +869,41 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
                 }
             } catch (err) {
                 console.error(`[Archiver] 无法附加档案 "${file.path}": ${err.message}`);
-                errors.push(err.message); 
                 archive.append(`错误：无法附加档案 "${file.path}"。\n错误讯息: ${err.message}`, { name: `${file.path} (错误).txt` });
             }
         };
-
         await new Promise((resolveAll) => {
             const runTask = () => {
-                if (tasks.length === 0 && activeTasks === 0) {
-                    return resolveAll();
-                }
-
+                if (tasks.length === 0 && activeTasks === 0) return resolveAll();
                 while (activeTasks < CONCURRENCY_LIMIT && tasks.length > 0) {
                     activeTasks++;
                     const file = tasks.shift(); 
-
                     processFile(file)
-                        .catch(err => {
-                            console.error("并发处理文件时发生未捕获的错误: ", err);
-                        })
+                        .catch(err => console.error("并发处理文件时发生未捕获的错误: ", err))
                         .finally(() => {
                             activeTasks--;
                             runTask(); 
                         });
                 }
             };
-            
             runTask(); 
         });
-        
         await archive.finalize();
-        
     } catch (error) {
         console.error('压缩档案时发生严重错误:', error);
-        if (!res.headersSent) {
-            res.status(500).send('压缩档案时发生错误: ' + error.message);
-        }
+        if (!res.headersSent) res.status(500).send('压缩档案时发生错误: ' + error.message);
     }
 });
 
 app.post('/share', requireLogin, async (req, res) => {
     try {
         const { itemId, itemType, expiresIn, password, customExpiresAt } = req.body;
-        if (!itemId || !itemType || !expiresIn) {
-            return res.status(400).json({ success: false, message: '缺少必要参数。' });
-        }
+        if (!itemId || !itemType || !expiresIn) return res.status(400).json({ success: false, message: '缺少必要参数。' });
         if (expiresIn === 'custom') {
             const customTimestamp = parseInt(customExpiresAt, 10);
-            if (isNaN(customTimestamp) || customTimestamp <= Date.now()) {
-                return res.status(400).json({ success: false, message: '无效的自订到期时间。' });
-            }
+            if (isNaN(customTimestamp) || customTimestamp <= Date.now()) return res.status(400).json({ success: false, message: '无效的自订到期时间。' });
         }
-        
         const idToShare = itemType === 'file' ? BigInt(itemId) : parseInt(itemId, 10);
-        
         const result = await data.createShareLink(idToShare, itemType, expiresIn, req.session.userId, password, customExpiresAt);
         if (result.success) {
             const shareUrl = `${req.protocol}://${req.get('host')}/share/view/${itemType}/${result.token}`;
@@ -1019,9 +931,7 @@ app.post('/api/cancel-share', requireLogin, async (req, res) => {
     try {
         const { itemId, itemType } = req.body;
         if (!itemId || !itemType) return res.status(400).json({ success: false, message: '缺少必要参数' });
-        
         const idToCancel = itemType === 'file' ? BigInt(itemId) : parseInt(itemId, 10);
-        
         const result = await data.cancelShare(idToCancel, itemType, req.session.userId);
         res.json(result);
     } catch (error) { res.status(500).json({ success: false, message: '取消分享失败' }); }
@@ -1031,34 +941,21 @@ app.get('/api/locate-item', requireLogin, async (req, res) => {
     try {
         const { id, type } = req.query;
         const userId = req.session.userId;
-
-        if (!id || !type) {
-            return res.status(400).json({ success: false, message: '缺少项目 ID 或类型' });
-        }
-
+        if (!id || !type) return res.status(400).json({ success: false, message: '缺少项目 ID 或类型' });
         let folderId;
         if (type === 'folder') {
             const folder = await data.getFolderDetails(id, userId);
-            if (!folder) {
-                 return res.status(404).json({ success: false, message: '找不到资料夹' });
-            }
-            if (folder.parent_id === null) {
-                folderId = folder.id;
-            } else {
-                folderId = folder.parent_id;
-            }
+            if (!folder) return res.status(404).json({ success: false, message: '找不到资料夹' });
+            if (folder.parent_id === null) folderId = folder.id;
+            else folderId = folder.parent_id;
         } else if (type === 'file') {
             const [file] = await data.getFilesByIds([BigInt(id)], userId);
-            if (!file) {
-                return res.status(404).json({ success: false, message: '找不到档案' });
-            }
+            if (!file) return res.status(404).json({ success: false, message: '找不到档案' });
             folderId = file.folder_id;
         } else {
             return res.status(400).json({ success: false, message: '无效的项目类型' });
         }
-        
         res.json({ success: true, encryptedFolderId: encrypt(folderId) });
-
     } catch (error) {
         res.status(500).json({ success: false, message: '定位失败：' + error.message });
     }
@@ -1066,18 +963,12 @@ app.get('/api/locate-item', requireLogin, async (req, res) => {
 
 app.post('/api/user/change-password', requireLogin, async (req, res) => {
     const { oldPassword, newPassword } = req.body;
-    if (!oldPassword || !newPassword || newPassword.length < 4) {
-        return res.status(400).json({ success: false, message: '请提供旧密码和新密码，且新密码长度至少 4 个字符。' });
-    }
+    if (!oldPassword || !newPassword || newPassword.length < 4) return res.status(400).json({ success: false, message: '请提供旧密码和新密码，且新密码长度至少 4 个字符。' });
     try {
         const user = await data.findUserById(req.session.userId);
-        if (!user) {
-            return res.status(404).json({ success: false, message: '找不到使用者。' });
-        }
+        if (!user) return res.status(404).json({ success: false, message: '找不到使用者。' });
         const isMatch = await bcrypt.compare(oldPassword, user.password);
-        if (!isMatch) {
-            return res.status(401).json({ success: false, message: '旧密码不正确。' });
-        }
+        if (!isMatch) return res.status(401).json({ success: false, message: '旧密码不正确。' });
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(newPassword, salt);
         await data.changeUserPassword(req.session.userId, hashedPassword);
@@ -1093,26 +984,18 @@ app.get('/api/admin/storage-mode', requireAdmin, (req, res) => {
 
 app.post('/api/admin/storage-mode', requireAdmin, (req, res) => {
     const { mode } = req.body;
-    if (storageManager.setStorageMode(mode)) {
-        res.json({ success: true, message: '设定已储存。' });
-    } else {
-        res.status(400).json({ success: false, message: '无效的模式' });
-    }
+    if (storageManager.setStorageMode(mode)) res.json({ success: true, message: '设定已储存。' });
+    else res.status(400).json({ success: false, message: '无效的模式' });
 });
 
-// --- 新增：获取传输模式 ---
 app.get('/api/admin/transfer-mode', requireAdmin, (req, res) => {
     res.json({ mode: storageManager.readConfig().transferMode || 'stream' });
 });
 
-// --- 新增：设定传输模式 ---
 app.post('/api/admin/transfer-mode', requireAdmin, (req, res) => {
     const { mode } = req.body;
-    if (storageManager.setTransferMode(mode)) {
-        res.json({ success: true, message: '传输模式设定已储存。' });
-    } else {
-        res.status(400).json({ success: false, message: '无效的模式' });
-    }
+    if (storageManager.setTransferMode(mode)) res.json({ success: true, message: '传输模式设定已储存。' });
+    else res.status(400).json({ success: false, message: '无效的模式' });
 });
 
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
@@ -1135,9 +1018,7 @@ app.get('/api/admin/all-users', requireAdmin, async (req, res) => {
 
 app.post('/api/admin/add-user', requireAdmin, async (req, res) => {
     const { username, password } = req.body;
-    if (!username || !password || password.length < 4) {
-        return res.status(400).json({ success: false, message: '使用者名称和密码为必填项，且密码长度至少 4 个字符。' });
-    }
+    if (!username || !password || password.length < 4) return res.status(400).json({ success: false, message: '使用者名称和密码为必填项，且密码长度至少 4 个字符。' });
     try {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
@@ -1152,9 +1033,7 @@ app.post('/api/admin/add-user', requireAdmin, async (req, res) => {
 
 app.post('/api/admin/change-password', requireAdmin, async (req, res) => {
     const { userId, newPassword } = req.body;
-    if (!userId || !newPassword || newPassword.length < 4) {
-        return res.status(400).json({ success: false, message: '使用者 ID 和新密码为必填项，且密码长度至少 4 个字符。' });
-    }
+    if (!userId || !newPassword || newPassword.length < 4) return res.status(400).json({ success: false, message: '使用者 ID 和新密码为必填项，且密码长度至少 4 个字符。' });
     try {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(newPassword, salt);
@@ -1167,9 +1046,7 @@ app.post('/api/admin/change-password', requireAdmin, async (req, res) => {
 
 app.post('/api/admin/delete-user', requireAdmin, async (req, res) => {
     const { userId } = req.body;
-    if (!userId) {
-        return res.status(400).json({ success: false, message: '缺少使用者 ID。' });
-    }
+    if (!userId) return res.status(400).json({ success: false, message: '缺少使用者 ID。' });
     try {
         await data.deleteUser(userId);
         res.json({ success: true, message: '使用者已删除。' });
@@ -1186,29 +1063,19 @@ app.get('/api/admin/webdav', requireAdmin, (req, res) => {
 
 app.post('/api/admin/webdav', requireAdmin, (req, res) => {
     const { url, username, password } = req.body;
-    if (!url || !username) {
-        return res.status(400).json({ success: false, message: '缺少必要参数' });
-    }
+    if (!url || !username) return res.status(400).json({ success: false, message: '缺少必要参数' });
     const config = storageManager.readConfig();
     config.webdav = { url, username };
-    if (password) {
-        config.webdav.password = password;
-    }
-    if (storageManager.writeConfig(config)) {
-        res.json({ success: true, message: 'WebDAV 设定已储存' });
-    } else {
-        res.status(500).json({ success: false, message: '写入设定失败' });
-    }
+    if (password) config.webdav.password = password;
+    if (storageManager.writeConfig(config)) res.json({ success: true, message: 'WebDAV 设定已储存' });
+    else res.status(500).json({ success: false, message: '写入设定失败' });
 });
 
 app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
     const config = storageManager.readConfig();
     config.webdav = {};
-    if (storageManager.writeConfig(config)) {
-        res.json({ success: true, message: 'WebDAV 设定已删除' });
-    } else {
-        res.status(500).json({ success: false, message: '删除设定失败' });
-    }
+    if (storageManager.writeConfig(config)) res.json({ success: true, message: 'WebDAV 设定已删除' });
+    else res.status(500).json({ success: false, message: '删除设定失败' });
 });
 
 app.get('/share/auth/:itemType/:token', shareSession, (req, res) => {
@@ -1242,7 +1109,6 @@ app.get('/share/view/file/:token', shareSession, async (req, res) => {
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
-        
         const token = req.params.token;
         const fileInfo = await data.getFileByShareToken(token);
         if (fileInfo) {
@@ -1286,7 +1152,6 @@ app.get('/share/view/folder/:token/:path(*)?', shareSession, async (req, res) =>
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
-
         const { token, path: requestedPath } = req.params;
         const pathSegments = requestedPath ? requestedPath.split('/').filter(p => p) : [];
         const rootFolder = await data.getFolderByShareToken(token);
@@ -1319,9 +1184,7 @@ app.get('/share/download/file/:token', shareSession, async (req, res) => {
     try {
         const token = req.params.token;
         const fileInfo = await data.getFileByShareToken(token);
-        if (!fileInfo) {
-             return res.status(404).send('文件信息未找到或分享链接已过期');
-        }
+        if (!fileInfo) return res.status(404).send('文件信息未找到或分享链接已过期');
         if (fileInfo.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[token])) {
             return res.status(403).send('需要密码才能下载');
         }
@@ -1356,16 +1219,12 @@ app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) =
     try {
         const { folderToken, fileId } = req.params;
         const rootFolder = await data.getFolderByShareToken(folderToken);
-        if (!rootFolder) {
-            return res.status(404).send('分享链接无效或已过期');
-        }
+        if (!rootFolder) return res.status(404).send('分享链接无效或已过期');
         if (rootFolder.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[folderToken])) {
             return res.status(403).send('需要密码才能下载');
         }
         const fileInfo = await data.findFileInSharedFolder(BigInt(fileId), folderToken);
-        if (!fileInfo) {
-             return res.status(404).send('文件信息未找到或权限不足');
-        }
+        if (!fileInfo) return res.status(404).send('文件信息未找到或权限不足');
         await handleFileStream(req, res, fileInfo);
     } catch (error) {
         if (!res.headersSent) res.status(500).send('下载失败: ' + error.message);
