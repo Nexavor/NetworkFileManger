@@ -1,15 +1,15 @@
-// server.js (最终修正版 - 修复所有路由中的 BigInt/Int 解析)
+// server.js
 
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
-const cookieParser = require('cookie-parser'); // <--- 引入 cookie-parser
+const cookieParser = require('cookie-parser');
 const Busboy = require('busboy');
 const path = require('path');
 const axios = require('axios');
 const archiver = require('archiver');
 const bcrypt = require('bcrypt');
-const fs = require('fs'); // <--- fs 在这里定义
+const fs = require('fs');
 const fsp = require('fs').promises;
 const crypto = require('crypto');
 const db = require('./database.js');
@@ -19,6 +19,7 @@ const { encrypt, decrypt } = require('./crypto.js');
 
 const app = express();
 
+// 处理 JSON 中的 BigInt 序列化
 const jsonReplacer = (key, value) => {
     if (typeof value === 'bigint') {
         return value.toString();
@@ -29,11 +30,13 @@ app.set('json replacer', jsonReplacer);
 
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
-// const log = (level, file, func, message, ...args) => {
-//     // const timestamp = new Date().toISOString();
-//     // console.log(`[${timestamp}] [${level}] [${file}:${func}] - ${message}`, ...args);
-// };
+// --- 调试日志工具 ---
+const log = (tag, message) => {
+    const time = new Date().toISOString();
+    console.log(`[${time}] [${tag}] ${message}`);
+};
 
+// 清理临时目录
 async function cleanupTempDir() {
     try {
         if (!fs.existsSync(TMP_DIR)) {
@@ -56,125 +59,86 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'your-strong-random-secret-here-please-change',
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 } // 注意：此处的 maxAge 将被 /login 路由中的逻辑覆盖
+  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 } 
 }));
 
-// --- *** 关键修正 1: 修复会话持久化问题 *** ---
-// 将分享链接的 session cookie 改为会话级 cookie
-// 移除了 cookie.maxAge 属性，这样浏览器会在无痕窗口完全关闭后可靠地删除它
+// 分享链接的专用 Session
 const shareSession = session({
   secret: process.env.SESSION_SECRET + '-share',
   resave: false,
   saveUninitialized: true,
-  cookie: { /* maxAge 已被移除 */ }
+  cookie: { /* maxAge 已移除，浏览器关闭即失效 */ }
 });
 
 app.set('trust proxy', 1);
-
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
-app.use(express.urlencoded({ extended: true, limit: '50mb' })); // <--- 修改：增加请求体大小限制
-app.use(express.json({ limit: '50mb' })); // <--- 修改：增加请求体大小限制
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(cookieParser()); 
 
-app.use(cookieParser()); // <--- 使用 cookie-parser
-
-// --- 新增：自动登入中间件 ---
+// --- 自动登入中间件 ---
 async function checkRememberMeCookie(req, res, next) {
-    // 1. 如果使用者已经透过 session 登入了，则无需执行任何操作
     if (req.session.loggedIn) {
         return next();
     }
-    
-    // 2. 取得 "remember_me" cookie
     const rememberToken = req.cookies.remember_me;
-    
     if (rememberToken) {
         try {
-            // 3. 尝试从数据库中寻找这个 token
             const tokenData = await data.findAuthToken(rememberToken);
-            
-            // 4. 验证 Token 是否存在且未过期
             if (tokenData && tokenData.expires_at > Date.now()) {
                 const user = { id: tokenData.user_id, username: tokenData.username, is_admin: tokenData.is_admin };
-                
-                // 5. 验证通过，为使用者建立新会话
                 req.session.loggedIn = true;
                 req.session.userId = user.id;
                 req.session.isAdmin = !!user.is_admin;
                 req.session.unlockedFolders = [];
                 
-                // 6. (安全强化) 移除旧 Token
+                // 滚动 Token 机制
                 await data.deleteAuthToken(rememberToken);
-                
-                // 7. (安全强化) 产生一个新 Token (滚动令牌机制)
                 const newRememberToken = crypto.randomBytes(64).toString('hex');
-                const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000; // 30 天
+                const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
                 await data.createAuthToken(user.id, newRememberToken, expiresAt);
                 
-                // 8. 设定新的 "remember_me" cookie
                 res.cookie('remember_me', newRememberToken, {
                     path: '/',
-                    httpOnly: true, // 仅伺服器可存取
-                    secure: req.protocol === 'https', // 仅在 HTTPS 下传输
-                    maxAge: 30 * 24 * 60 * 60 * 1000 // Cookie 效期 30 天
+                    httpOnly: true,
+                    secure: req.protocol === 'https',
+                    maxAge: 30 * 24 * 60 * 60 * 1000 
                 });
-                
             } else if (tokenData) {
-                // 9. Token 存在但已过期，将其从数据库删除
                 await data.deleteAuthToken(rememberToken);
                 res.clearCookie('remember_me', { path: '/' });
             } else {
-                // 10. Token 无效 (在数据库中找不到)，清除 cookie
                 res.clearCookie('remember_me', { path: '/' });
             }
         } catch (err) {
-            // 11. 处理查询数据库等错误
-            console.error('检查 "remember_me" cookie 时出错:', err);
+            console.error('Check remember token error:', err);
             res.clearCookie('remember_me', { path: '/' });
         }
     }
-    
-    // 12. 无论如何都继续下一个中间件
     return next();
 }
+app.use(checkRememberMeCookie); 
 
-app.use(checkRememberMeCookie); // <--- 在所有路由之前应用此中间件
-
-// (推荐) 定时清理过期的 Token, 每天一次
+// 定时清理过期 Token
 setInterval(async () => {
-    try {
-        const result = await data.deleteExpiredAuthTokens();
-        if (result && result.changes > 0) {
-             // console.log(`[Scheduler] 清理了 ${result.changes} 个过期的登入令牌。`);
-        }
-    } catch (e) {
-        console.error("定时清除过期 token 失败:", e);
-    }
-}, 1000 * 60 * 60 * 24); // 每天执行一次
-// --- 中间件结束 ---
+    try { await data.deleteExpiredAuthTokens(); } catch (e) {}
+}, 1000 * 60 * 60 * 24);
 
-
-// --- *** 关键修正：处理 API 请求的会话过期 *** ---
 function requireLogin(req, res, next) {
   if (req.session.loggedIn) return next();
-  
-  // 检查是否为 XHR (API) 请求
   if (req.xhr || (req.headers.accept && req.headers.accept.includes('json'))) {
-    // 对 API 请求发送 401 状态码
     return res.status(401).json({ success: false, message: '会话已过期，请重新登入。' });
   } else {
-    // 对非 API 的页面请求重定向到登入页
     res.redirect('/login');
   }
 }
-// --- *** 修正结束 *** ---
 
 function requireAdmin(req, res, next) {
     if (req.session.loggedIn && req.session.isAdmin) {
         return next();
     }
-    // --- *** 关键修正：处理 API 请求的会话过期 (管理员) *** ---
     if (req.xhr || (req.headers.accept && req.headers.accept.includes('json'))) {
         return res.status(403).json({ success: false, message: '权限不足。' });
     } else {
@@ -182,11 +146,11 @@ function requireAdmin(req, res, next) {
     }
 }
 
+// --- 页面路由 ---
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views/login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views/register.html')));
 app.get('/editor', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/editor.html')));
 
-// --- *** 伺服器端修改：/login 路由 *** ---
 app.post('/login', async (req, res) => {
     try {
         const user = await data.findUserByName(req.body.username);
@@ -196,41 +160,26 @@ app.post('/login', async (req, res) => {
             req.session.isAdmin = !!user.is_admin;
             req.session.unlockedFolders = [];
 
-            // --- 新增：保持登陆逻辑 ---
             if (req.body.remember) {
-                // --- 关键修改：设定持久化 Token ---
                 const rememberToken = crypto.randomBytes(64).toString('hex');
-                const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000; // 30 天
-                
+                const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
                 try {
-                    // 1. 将 Token 存入数据库
                     await data.createAuthToken(user.id, rememberToken, expiresAt);
-                    
-                    // 2. 设定 "remember_me" cookie
                     res.cookie('remember_me', rememberToken, {
                         path: '/',
                         httpOnly: true,
-                        secure: req.protocol === 'https', // 在生产环境中应为 true
-                        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 天
+                        secure: req.protocol === 'https',
+                        maxAge: 30 * 24 * 60 * 60 * 1000
                     });
-                    
-                    // 3. 设定会话 cookie 的 maxAge (与原逻辑保持一致)
                     req.session.cookie.maxAge = 30 * 24 * 60 * 60 * 1000;
-                    
                 } catch (tokenError) {
-                    console.error("建立 auth token 失败:", tokenError);
-                    // 即使 token 失败，也继续登入（但不保持）
                     req.session.cookie.expires = false;
                     req.session.cookie.maxAge = null;
                 }
-                // --- 修改结束 ---
             } else {
-                // 未勾选，使用预设的会话 cookie (浏览器关闭时失效)
                 req.session.cookie.expires = false;
                 req.session.cookie.maxAge = null;
             }
-            // --- 逻辑结束 ---
-
             res.redirect('/');
         } else {
             res.status(401).send('帐号或密码错误');
@@ -239,13 +188,10 @@ app.post('/login', async (req, res) => {
         res.status(500).send('登入时发生错误');
     }
 });
-// --- *** 修改结束 *** ---
 
 app.post('/register', async (req, res) => {
     const { username, password } = req.body;
-    if (!username || !password) {
-        return res.status(400).send('请提供使用者名称和密码');
-    }
+    if (!username || !password) return res.status(400).send('请提供使用者名称和密码');
     try {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
@@ -259,21 +205,12 @@ app.post('/register', async (req, res) => {
 });
 
 app.get('/logout', (req, res) => {
-    // --- 新增：登出时清除 remember_me token ---
     const rememberToken = req.cookies.remember_me;
     if (rememberToken) {
-        // 异步删除，无需等待
-        data.deleteAuthToken(rememberToken).catch(err => {
-            console.error("删除 auth token 失败:", err);
-        });
+        data.deleteAuthToken(rememberToken).catch(() => {});
     }
     res.clearCookie('remember_me', { path: '/' });
-    // --- 新增结束 ---
-
     req.session.destroy(err => {
-        if (err) {
-            return res.redirect('/');
-        }
         res.clearCookie('connect.sid');
         res.redirect('/login');
     });
@@ -296,19 +233,21 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- 关键修改：/upload 路由，支援非流式上传 ---
+// --- 核心修改：/upload 路由 (含日志与缓冲模式) ---
 app.post('/upload', requireLogin, (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
     const config = storageManager.readConfig();
-    const uploadMode = config.uploadMode || 'stream'; // 读取上传模式，默认为流式
+    const uploadMode = config.uploadMode || 'stream'; // 默认为流式
     const MAX_FILENAME_BYTES = 255; 
 
+    log('UPLOAD_START', `User: ${userId}, Mode: ${uploadMode}, Folder: ${folderId}`);
+
     try {
-        if (!folderId) throw new Error('folderId is missing from query parameters');
+        if (!folderId) throw new Error('缺少 folderId');
         const initialFolderId = parseInt(folderId, 10);
-        if (isNaN(initialFolderId)) throw new Error('Invalid folderId');
+        if (isNaN(initialFolderId)) throw new Error('无效的 folderId');
         
         const resolutions = JSON.parse(resolutionsJSON || '{}');
         
@@ -317,22 +256,21 @@ app.post('/upload', requireLogin, (req, res) => {
 
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
             const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
+            log('BUSBOY_FILE', `开始接收文件: ${relativePath}, Encoding: ${fileInfo.encoding}, Mime: ${fileInfo.mimeType}`);
             
             const fileUploadPromise = (async () => {
                 const { mimeType } = fileInfo;
                 const pathParts = relativePath.split('/').filter(p => p);
                 let finalFilename = pathParts.pop() || relativePath;
 
-                // --- *** 关键修正：改用字节长度进行验证 *** ---
                 if (Buffer.byteLength(finalFilename, 'utf8') > MAX_FILENAME_BYTES) {
                     fileStream.resume(); 
-                    throw new Error(`档名 "${finalFilename.substring(0, 30)}..." 过长 (超过 ${MAX_FILENAME_BYTES} 字节)。`);
+                    throw new Error(`档名过长: ${finalFilename}`);
                 }
-                // --- 修正结束 ---
 
                 const action = resolutions[relativePath] || 'upload';
-
                 if (action === 'skip') {
+                    log('UPLOAD_SKIP', `跳过文件: ${finalFilename}`);
                     fileStream.resume();
                     return { skipped: true };
                 }
@@ -341,7 +279,6 @@ app.post('/upload', requireLogin, (req, res) => {
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                 
                 let existingItem = null;
-
                 if (action === 'overwrite') {
                     existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                 } else if (action === 'rename') {
@@ -354,57 +291,87 @@ app.post('/upload', requireLogin, (req, res) => {
                     }
                 }
                 
-                // --- 分支逻辑：流式 vs 缓冲式 ---
                 if (uploadMode === 'buffer') {
-                    // 缓冲模式：先写入临时文件
-                    const tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}-${path.basename(finalFilename)}`);
+                    // --- 缓冲模式：先写入本地临时文件 ---
+                    const tempFileName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}-${path.basename(finalFilename)}`;
+                    const tempFilePath = path.join(TMP_DIR, tempFileName);
+                    log('BUFFER_MODE', `缓冲写入临时文件: ${tempFilePath}`);
+
                     try {
-                        // 1. 将输入流写入临时文件
+                        // 1. 写入临时文件
                         const writeStream = fs.createWriteStream(tempFilePath);
-                        await new Promise((resolve, reject) => {
-                            fileStream.pipe(writeStream);
-                            fileStream.on('error', reject);
-                            writeStream.on('error', reject);
-                            writeStream.on('finish', resolve);
-                        });
+                        let receivedBytes = 0;
                         
-                        // 2. 创建从临时文件读取的流，并上传
+                        await new Promise((resolve, reject) => {
+                            fileStream.on('data', chunk => receivedBytes += chunk.length);
+                            fileStream.pipe(writeStream);
+                            
+                            fileStream.on('error', err => {
+                                log('BUFFER_ERR', `输入流错误 ${finalFilename}: ${err.message}`);
+                                reject(err);
+                            });
+                            writeStream.on('error', err => {
+                                log('BUFFER_ERR', `写入临时流错误 ${finalFilename}: ${err.message}`);
+                                reject(err);
+                            });
+                            writeStream.on('finish', () => {
+                                log('BUFFER_FINISH', `临时文件写入完成: ${finalFilename}, Size: ${receivedBytes} bytes`);
+                                resolve();
+                            });
+                        });
+
+                        // 2. 检查临时文件大小
+                        const stats = await fsp.stat(tempFilePath);
+                        if (stats.size === 0) {
+                             throw new Error("接收到的文件大小为 0 字节，上传中止。");
+                        }
+
+                        // 3. 上传到最终存储
+                        log('BUFFER_UPLOAD', `开始将临时文件上传到后端 (${storage.type}): ${finalFilename}`);
                         const readStream = fs.createReadStream(tempFilePath);
                         await storage.upload(readStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
+                        log('BUFFER_SUCCESS', `后端上传成功: ${finalFilename}`);
+
                     } finally {
-                        // 3. 清理临时文件
+                        // 4. 清理
                         if (fs.existsSync(tempFilePath)) {
-                            await fsp.unlink(tempFilePath).catch(() => {});
+                            await fsp.unlink(tempFilePath).catch(e => log('CLEANUP_ERR', e.message));
                         }
                     }
                 } else {
-                    // 流式模式 (默认)：直接传递 busboy 的流
+                    // --- 流式模式 (原模式) ---
+                    // 添加流监控
+                    let streamSize = 0;
+                    fileStream.on('data', chunk => streamSize += chunk.length);
+                    fileStream.on('end', () => log('STREAM_END', `Busboy 流结束: ${finalFilename}, 累计大小: ${streamSize}`));
+                    
                     await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
                 }
 
                 return { skipped: false };
             })().catch(err => {
-                fileStream.resume();
-                // --- *** 关键修正：防止未捕获的 Promise Rejection *** ---
-                // 不再 throw err，而是返回包含错误的对象
+                log('UPLOAD_ERR', `处理文件失败 ${relativePath}: ${err.message}`);
+                fileStream.resume(); // 确保消费掉流
                 return { success: false, error: err };
             });
+            
             uploadPromises.push(fileUploadPromise);
         });
 
         busboy.on('finish', async () => {
+            log('BUSBOY_FINISH', 'Busboy 解析完成，等待所有上传任务结束...');
             try {
                 const results = await Promise.all(uploadPromises);
                 
-                // 检查是否有上传错误
+                // 检查是否有错误
                 const errors = results.filter(r => r && r.error);
                 if (errors.length > 0) {
-                     // 抛出第一个错误，让外层 catch 处理
+                     log('UPLOAD_FAIL', `总任务中有 ${errors.length} 个错误。第一个错误: ${errors[0].error.message}`);
+                     // 抛出第一个错误给前端
                      throw errors[0].error;
                 }
 
                 const allSkipped = results.length > 0 && results.every(r => r.skipped);
-
                 if (allSkipped) {
                      res.json({ success: true, skippedAll: true, message: '所有文件都因冲突而被跳过' });
                 } else {
@@ -412,76 +379,59 @@ app.post('/upload', requireLogin, (req, res) => {
                 }
             } catch (error) {
                 if (!res.headersSent) {
-                    res.status(500).json({ success: false, message: `上传任务执行失败: ${error.message}` });
+                    res.status(500).json({ success: false, message: `上传失败: ${error.message}` });
                 }
             }
         });
 
         busboy.on('error', (err) => {
+            log('BUSBOY_ERR', `Busboy 错误: ${err.message}`);
             req.unpipe(busboy);
-            if (!res.headersSent) {
-                res.status(500).json({ success: false, message: '上传解析失败' });
-            }
+            if (!res.headersSent) res.status(500).json({ success: false, message: '上传解析失败' });
         });
 
         req.pipe(busboy);
 
     } catch (err) {
-        res.status(400).json({ success: false, message: `请求预处理失败: ${err.message}` });
+        log('PRE_UPLOAD_ERR', err.message);
+        res.status(400).json({ success: false, message: `请求失败: ${err.message}` });
     }
 });
-// --- 路由修改结束 ---
 
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
 
-    if (!fileName) {
-        return res.status(400).json({ success: false, message: '档名无效' });
-    }
-
+    if (!fileName) return res.status(400).json({ success: false, message: '档名无效' });
     const tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.txt`);
 
     try {
         await fsp.writeFile(tempFilePath, content, 'utf8');
         
         if (mode === 'edit' && fileId) {
-            // --- 修正：将 fileId (string) 转换为 BigInt ---
             const numericFileId = BigInt(fileId);
             const filesToUpdate = await data.getFilesByIds([numericFileId], userId);
-            if (filesToUpdate.length === 0) {
-                return res.status(404).json({ success: false, message: '找不到要编辑的原始档案' });
-            }
+            if (filesToUpdate.length === 0) return res.status(404).json({ success: false, message: '找不到原始档案' });
             const originalFile = filesToUpdate[0];
 
             if (fileName !== originalFile.fileName) {
                 const conflict = await data.checkFullConflict(fileName, originalFile.folder_id, userId);
-                if (conflict) {
-                    return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
-                }
+                if (conflict) return res.status(409).json({ success: false, message: '同名冲突' });
             }
 
             if (originalFile.storage_type === 'telegram') {
                 const fileStream = fs.createReadStream(tempFilePath);
-                // --- BUG 1 修复逻辑：先上传，再删除旧的 ---
-                // 注意：storage.upload(..., existingItem) 逻辑是为了处理 busboy
-                // 这里的 /api/text-file 逻辑需要手动实现原子替换
                 const result = await storage.upload(fileStream, fileName, 'text/plain', userId, originalFile.folder_id);
-                // 成功上传新文件后，安全删除旧文件
                 await data.unifiedDelete(originalFile.message_id, 'file', userId);
                 return res.json({ success: true, fileId: result.fileId });
             } else {
-                // 对于 local 和 webdav，覆盖是原子性的或由 storage.upload 处理
                 const newRelativePath = path.posix.join(path.posix.dirname(originalFile.file_id), fileName);
-                const fileStream = fs.createReadStream(tempFilePath); // 为 webdav 创建流
-
+                const fileStream = fs.createReadStream(tempFilePath); 
                 if (originalFile.storage_type === 'local') {
                     const newFullPath = path.join(__dirname, 'data', 'uploads', String(userId), newRelativePath);
                     await fsp.mkdir(path.dirname(newFullPath), { recursive: true });
-                    // BUG 1 修复：使用 copyFile (或 rename) 保证原子性覆盖
                     await fsp.copyFile(tempFilePath, newFullPath); 
-                    // --- *** 崩溃修复：fsSync.existsSync 改为 fs.existsSync *** ---
                     if (originalFile.file_id !== newRelativePath && fs.existsSync(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id))) {
                          await fsp.unlink(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id));
                     }
@@ -493,33 +443,27 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
                     }
                 }
                 const stats = await fsp.stat(tempFilePath);
-                // --- 修正：使用 numericFileId ---
                 await data.updateFile(numericFileId, { fileName, size: stats.size, date: Date.now(), file_id: newRelativePath }, userId);
-                return res.json({ success: true, fileId: fileId }); // 仍然返回字符串 ID 给客户端
+                return res.json({ success: true, fileId: fileId });
             }
         } else if (mode === 'create' && folderId) {
             const conflict = await data.checkFullConflict(fileName, folderId, userId);
-            if (conflict) {
-                return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
-            }
+            if (conflict) return res.status(409).json({ success: false, message: '同名冲突' });
             const fileStream = fs.createReadStream(tempFilePath);
             const result = await storage.upload(fileStream, fileName, 'text/plain', userId, folderId);
             res.json({ success: true, fileId: result.fileId });
         } else {
-            return res.status(400).json({ success: false, message: '请求参数无效' });
+            return res.status(400).json({ success: false, message: '参数无效' });
         }
     } catch (error) {
-        res.status(500).json({ success: false, message: '伺服器内部错误: ' + error.message });
+        res.status(500).json({ success: false, message: '错误: ' + error.message });
     } finally {
-        // --- *** 崩溃修复：fsSync.existsSync 改为 fs.existsSync *** ---
-        if (fs.existsSync(tempFilePath)) {
-            await fsp.unlink(tempFilePath).catch(err => {});
-        }
+        if (fs.existsSync(tempFilePath)) await fsp.unlink(tempFilePath).catch(()=>{});
     }
 });
+
 app.get('/api/file-info/:id', requireLogin, async (req, res) => {
     try {
-        // --- 修正：将 parseInt 改为 BigInt ---
         const fileId = BigInt(req.params.id);
         const [fileInfo] = await data.getFilesByIds([fileId], req.session.userId);
         if (fileInfo) {
@@ -569,10 +513,7 @@ app.post('/api/check-move-conflict', requireLogin, async (req, res) => {
             return res.status(400).json({ success: false, message: '无效的请求参数。' });
         }
         
-        // --- *** 最终修正：混合的 itemIds (string/int) *** ---
-        // data.getItemsByIds 内部会将所有 ID 转为 string 查询，这是正确的
         const topLevelItems = await data.getItemsByIds(itemIds, userId);
-        
         const { fileConflicts, folderConflicts } = await data.getConflictingItems(topLevelItems, targetFolderId, userId);
         res.json({ success: true, fileConflicts, folderConflicts });
     } catch (error) {
@@ -733,7 +674,6 @@ app.post('/api/move', requireLogin, async (req, res) => {
         const errors = [];
         for (const itemId of itemIds) {
             try {
-                // --- *** 最终修正：itemIds 是混合 (string/int)，data.getItemsByIds 可处理 *** ---
                 const items = await data.getItemsByIds([itemId], userId);
                 if (items.length === 0) {
                     totalSkipped++;
@@ -741,7 +681,6 @@ app.post('/api/move', requireLogin, async (req, res) => {
                 }
                 const item = items[0];
                 
-                // --- *** 最终修正：item.id 是 string，但 data.moveItem 内部会正确解析 *** ---
                 const report = await data.moveItem(item.id, item.type, targetFolderId, userId, { resolutions });
                 totalMoved += report.moved;
                 totalSkipped += report.skipped;
@@ -766,16 +705,13 @@ app.post('/api/move', requireLogin, async (req, res) => {
     }
 });
 
-// --- *** 最终修正: /delete-multiple *** ---
 app.post('/delete-multiple', requireLogin, async (req, res) => {
     const { messageIds = [], folderIds = [] } = req.body;
     const userId = req.session.userId;
     try {
-        // --- *** 修正：将 file ID (string) 转换为 BigInt *** ---
         for(const id of messageIds) { 
             await data.unifiedDelete(BigInt(id), 'file', userId); 
         }
-        // --- *** 修正：将 folder ID (int) 转换为 Int (保持一致性) *** ---
         for(const id of folderIds) { 
             await data.unifiedDelete(parseInt(id, 10), 'folder', userId); 
         }
@@ -785,7 +721,6 @@ app.post('/delete-multiple', requireLogin, async (req, res) => {
     }
 });
 
-// --- *** 最终修正: /rename *** ---
 app.post('/rename', requireLogin, async (req, res) => {
     try {
         const { id, newName, type } = req.body;
@@ -795,10 +730,8 @@ app.post('/rename', requireLogin, async (req, res) => {
         }
         let result;
         if (type === 'file') {
-            // --- *** 修正：使用 BigInt 解析 file ID *** ---
             result = await data.renameFile(BigInt(id), newName, userId);
         } else if (type === 'folder') {
-            // --- *** 修正：使用 parseInt 解析 folder ID *** ---
             result = await data.renameFolder(parseInt(id, 10), newName, userId);
         } else {
             return res.status(400).json({ success: false, message: '无效的项目类型。'});
@@ -811,8 +744,6 @@ app.post('/rename', requireLogin, async (req, res) => {
 
 app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
     try {
-        // --- 修正：将 parseInt 改为 BigInt ---
-        // (注意: 这里的 parseInt 可能是安全的，因为 TG 的 ID 可能没那么长, 但 BigInt 更安全)
         const messageId = BigInt(req.params.message_id);
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) {
@@ -865,15 +796,7 @@ async function handleFileStream(req, res, fileInfo) {
         }
     } else {
         res.setHeader('Content-Length', totalSize || -1);
-        
-        // --- *** 关键修正：将预设改为 'attachment' 以强制下载 *** ---
-        // 原始设定为 'inline'，导致浏览器尝试开启文字档案而非下载。
         res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
-        
-        // 原始的 ?download=true 检查逻辑已不再必要
-        // if (req.query.download) {
-        //     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
-        // }
 
         if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
             const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
@@ -892,7 +815,6 @@ async function handleFileStream(req, res, fileInfo) {
 
 app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
     try {
-        // --- 修正：将 parseInt 改为 BigInt ---
         const messageId = BigInt(req.params.message_id);
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) return res.status(403).send('权限不足');
@@ -908,7 +830,6 @@ app.get('/download/proxy/:message_id', requireLogin, async (req, res) => {
 
 app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     try {
-        // --- 修正：将 parseInt 改为 BigInt ---
         const messageId = BigInt(req.params.message_id);
         const accessible = await data.isFileAccessible(messageId, req.session.userId, req.session.unlockedFolders);
         if (!accessible) {
@@ -935,7 +856,6 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     }
 });
 
-// --- *** 最终修正: /api/download-archive *** ---
 app.post('/api/download-archive', requireLogin, async (req, res) => {
     try {
         const { messageIds = [], folderIds = [] } = req.body;
@@ -946,7 +866,6 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
         }
         let filesToArchive = [];
         if (messageIds.length > 0) {
-            // --- *** 修正：将 string ID 数组转换为 BigInt ID 数组 *** ---
             const fileIdBigInts = messageIds.map(id => BigInt(id));
             const directFiles = await data.getFilesByIds(fileIdBigInts, userId);
             filesToArchive.push(...directFiles.map(f => ({ ...f, path: f.fileName })));
@@ -964,59 +883,44 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
         const archive = archiver('zip', { zlib: { level: 9 } });
         res.attachment('download.zip');
 
-        // --- *** 关键修正：添加健壮的错误处理 *** ---
-        // 1. 监听 archive 本身的错误 (例如 zip 失败)
         archive.on('error', function(err) {
             console.error('Archiver error:', err);
             if (!res.headersSent) {
                 res.status(500).send({ error: `压缩失败: ${err.message}` });
             } else {
-                // 如果标头已发送，我们无能为力，只能异常关闭连接
                 res.end();
             }
         });
 
-        // 2. 监听响应 (客户端) 的关闭事件
         res.on('close', function() {
-            console.log(`[Archiver] 客户端在 ${archive.pointer()} 字节处提前关闭了下载连接。`);
-            // 终止压缩过程
             archive.abort();
             archive.finalize();
         });
 
-        // 3. 将压缩流管输到响应中
         archive.pipe(res);
 
-        // --- *** 关键修正：并发下载与压缩，限制并发数为 10 *** ---
         const CONCURRENCY_LIMIT = 10;
-        const tasks = [...filesToArchive]; // 复制任务列表
+        const tasks = [...filesToArchive];
         let activeTasks = 0;
-        const errors = []; // 用于收集错误讯息
+        const errors = [];
 
-        // 定义处理单个文件的 "worker" 函数
         const processFile = async (file) => {
             try {
                 if (file.storage_type === 'local' || file.storage_type === 'webdav') {
-                    // 获取流 (对于 WebDAV，这会建立连接)
                     const stream = await storage.stream(file.file_id, userId);
-                    
-                    // 包装在一个 Promise 中，等待 archiver 完成此文件的读取
                     await new Promise((resolve, reject) => {
-                        stream.on('end', resolve); // 当文件流读取完毕时
-                        stream.on('error', (err) => reject(new Error(`(Storage Stream) ${err.message}`))); // 捕获流错误
+                        stream.on('end', resolve);
+                        stream.on('error', (err) => reject(new Error(`(Storage Stream) ${err.message}`)));
                         archive.append(stream, { name: file.path });
                     });
 
                 } else if (file.storage_type === 'telegram') {
                     const link = await storage.getUrl(file.file_id);
                     if (link) {
-                        // 获取 Telegram 的下载流
                         const response = await axios({ url: link, method: 'GET', responseType: 'stream' });
-                        
-                        // 包装在一个 Promise 中，等待 stream 完成
                         await new Promise((resolve, reject) => {
-                            response.data.on('end', resolve); // 当文件流读取完毕时
-                            response.data.on('error', (err) => reject(new Error(`(Telegram Stream) ${err.message}`))); // 捕获流错误
+                            response.data.on('end', resolve);
+                            response.data.on('error', (err) => reject(new Error(`(Telegram Stream) ${err.message}`)));
                             archive.append(response.data, { name: file.path });
                         });
                     } else {
@@ -1024,49 +928,37 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
                     }
                 }
             } catch (err) {
-                // 如果单个文件流失败 (例如 503)，记录它并继续
                 console.error(`[Archiver] 无法附加档案 "${file.path}": ${err.message}`);
-                errors.push(err.message); // 收集错误
-                // 在 zip 中添加一个错误文件，而不是中断整个下载
+                errors.push(err.message);
                 archive.append(`错误：无法附加档案 "${file.path}"。\n错误讯息: ${err.message}`, { name: `${file.path} (错误).txt` });
             }
         };
 
-        // 并发执行器
         await new Promise((resolveAll) => {
             const runTask = () => {
-                // 基本情况：没有更多任务，并且没有正在运行的任务
                 if (tasks.length === 0 && activeTasks === 0) {
                     return resolveAll();
                 }
-
-                // 只要还有任务并且并发数未满，就启动新任务
                 while (activeTasks < CONCURRENCY_LIMIT && tasks.length > 0) {
                     activeTasks++;
-                    const file = tasks.shift(); // 取出一个任务
+                    const file = tasks.shift(); 
 
                     processFile(file)
                         .catch(err => {
-                            // processFile 内部已经处理了错误，这里只是为了记录意外
                             console.error("并发处理文件时发生未捕获的错误: ", err);
                         })
                         .finally(() => {
                             activeTasks--;
-                            runTask(); // 递归调用，尝试运行下一个任务或检查是否完成
+                            runTask();
                         });
                 }
-                // 如果任务已满或没有任务了，函数自然结束，等待 finally 中的递归调用
             };
-            
-            // 启动第一批任务 (最多 CONCURRENCY_LIMIT 个)
             runTask(); 
         });
         
-        // 所有文件都已加入队列，现在可以完成压缩
         await archive.finalize();
         
     } catch (error) {
-        // 这是循环开始前或 finalize() 期间的错误
         console.error('压缩档案时发生严重错误:', error);
         if (!res.headersSent) {
             res.status(500).send('压缩档案时发生错误: ' + error.message);
@@ -1074,8 +966,6 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
     }
 });
 
-
-// --- *** 最终修正: /share *** ---
 app.post('/share', requireLogin, async (req, res) => {
     try {
         const { itemId, itemType, expiresIn, password, customExpiresAt } = req.body;
@@ -1089,7 +979,6 @@ app.post('/share', requireLogin, async (req, res) => {
             }
         }
         
-        // --- *** 修正：根据类型转换 ID *** ---
         const idToShare = itemType === 'file' ? BigInt(itemId) : parseInt(itemId, 10);
         
         const result = await data.createShareLink(idToShare, itemType, expiresIn, req.session.userId, password, customExpiresAt);
@@ -1115,13 +1004,11 @@ app.get('/api/shares', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: '获取分享列表失败' }); }
 });
 
-// --- *** 最终修正: /api/cancel-share *** ---
 app.post('/api/cancel-share', requireLogin, async (req, res) => {
     try {
         const { itemId, itemType } = req.body;
         if (!itemId || !itemType) return res.status(400).json({ success: false, message: '缺少必要参数' });
         
-        // --- *** 修正：根据类型转换 ID *** ---
         const idToCancel = itemType === 'file' ? BigInt(itemId) : parseInt(itemId, 10);
         
         const result = await data.cancelShare(idToCancel, itemType, req.session.userId);
@@ -1129,7 +1016,6 @@ app.post('/api/cancel-share', requireLogin, async (req, res) => {
     } catch (error) { res.status(500).json({ success: false, message: '取消分享失败' }); }
 });
 
-// --- 新增： “定位文件” 的 API 路由 ---
 app.get('/api/locate-item', requireLogin, async (req, res) => {
     try {
         const { id, type } = req.query;
@@ -1141,20 +1027,16 @@ app.get('/api/locate-item', requireLogin, async (req, res) => {
 
         let folderId;
         if (type === 'folder') {
-            // 对于资料夹，我们想定位到它的 *父* 资料夹
             const folder = await data.getFolderDetails(id, userId);
             if (!folder) {
                  return res.status(404).json({ success: false, message: '找不到资料夹' });
             }
             if (folder.parent_id === null) {
-                // 已经是根目录，就定位到它自己
                 folderId = folder.id;
             } else {
                 folderId = folder.parent_id;
             }
         } else if (type === 'file') {
-            // 对于档案，我们定位到它所在的资料夾
-            // --- 修正：将 parseInt 改为 BigInt ---
             const [file] = await data.getFilesByIds([BigInt(id)], userId);
             if (!file) {
                 return res.status(404).json({ success: false, message: '找不到档案' });
@@ -1170,7 +1052,6 @@ app.get('/api/locate-item', requireLogin, async (req, res) => {
         res.status(500).json({ success: false, message: '定位失败：' + error.message });
     }
 });
-// --- 新增路由结束 ---
 
 app.post('/api/user/change-password', requireLogin, async (req, res) => {
     const { oldPassword, newPassword } = req.body;
@@ -1196,7 +1077,6 @@ app.post('/api/user/change-password', requireLogin, async (req, res) => {
 });
 
 app.get('/api/admin/storage-mode', requireAdmin, (req, res) => {
-    // 修正：同时返回 uploadMode
     const config = storageManager.readConfig();
     res.json({ 
         storageMode: config.storageMode,
@@ -1213,7 +1093,6 @@ app.post('/api/admin/storage-mode', requireAdmin, (req, res) => {
     }
 });
 
-// --- 新增：设定上传模式的 API ---
 app.post('/api/admin/upload-mode', requireAdmin, (req, res) => {
     const { mode } = req.body;
     if (storageManager.setUploadMode(mode)) {
@@ -1319,9 +1198,6 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
     }
 });
 
-// ... (省略 /share/auth, /share/view/file, /share/view/folder, /share/download 等路由) ...
-// (此处省略的代码与您提供的 `server.js` 档案中从 818 行到 1032 行的代码相同)
-
 app.get('/share/auth/:itemType/:token', shareSession, (req, res) => {
     const { itemType, token } = req.params;
     res.render('share-password', { itemType, token, error: req.query.error || null });
@@ -1350,9 +1226,6 @@ app.post('/share/auth/:itemType/:token', shareSession, async (req, res) => {
 
 app.get('/share/view/file/:token', shareSession, async (req, res) => {
     try {
-        // --- *** 关键修正 2: 修复代理缓存问题 *** ---
-        // 强制设置 HTTP 响应头，禁止任何代理或浏览器缓存此页面
-        // 这是为了防止已解锁的分享页面被缓存，导致其他用户无需密码即可访问
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
@@ -1397,9 +1270,6 @@ app.get('/share/view/file/:token', shareSession, async (req, res) => {
 
 app.get('/share/view/folder/:token/:path(*)?', shareSession, async (req, res) => {
     try {
-        // --- *** 关键修正 2: 修复代理缓存问题 *** ---
-        // 强制设置 HTTP 响应头，禁止任何代理或浏览器缓存此页面
-        // 强制设置 HTTP 响应头，禁止任何代理或浏览器缓存此页面
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
@@ -1455,7 +1325,6 @@ app.get('/share/thumbnail/:folderToken/:fileId', shareSession, async (req, res) 
         if (!rootFolder || (rootFolder.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[folderToken]))) {
             return res.status(403).send('权限不足');
         }
-        // --- 修正：将 parseInt 改为 BigInt ---
         const fileInfo = await data.findFileInSharedFolder(BigInt(fileId), folderToken);
         if (fileInfo && fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
             const storage = storageManager.getStorage();
@@ -1480,7 +1349,6 @@ app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) =
         if (rootFolder.share_password && (!req.session.unlockedShares || !req.session.unlockedShares[folderToken])) {
             return res.status(403).send('需要密码才能下载');
         }
-        // --- 修正：将 parseInt 改为 BigInt ---
         const fileInfo = await data.findFileInSharedFolder(BigInt(fileId), folderToken);
         if (!fileInfo) {
              return res.status(404).send('文件信息未找到或权限不足');
