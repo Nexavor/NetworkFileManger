@@ -19,7 +19,6 @@ const { encrypt, decrypt } = require('./crypto.js');
 
 const app = express();
 
-// 处理 JSON 中的 BigInt 序列化
 const jsonReplacer = (key, value) => {
     if (typeof value === 'bigint') {
         return value.toString();
@@ -36,7 +35,6 @@ const log = (tag, message) => {
     console.log(`[${time}] [${tag}] ${message}`);
 };
 
-// 清理临时目录
 async function cleanupTempDir() {
     try {
         if (!fs.existsSync(TMP_DIR)) {
@@ -62,12 +60,11 @@ app.use(session({
   cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 } 
 }));
 
-// 分享链接的专用 Session
 const shareSession = session({
   secret: process.env.SESSION_SECRET + '-share',
   resave: false,
   saveUninitialized: true,
-  cookie: { /* maxAge 已移除，浏览器关闭即失效 */ }
+  cookie: { }
 });
 
 app.set('trust proxy', 1);
@@ -94,7 +91,6 @@ async function checkRememberMeCookie(req, res, next) {
                 req.session.isAdmin = !!user.is_admin;
                 req.session.unlockedFolders = [];
                 
-                // 滚动 Token 机制
                 await data.deleteAuthToken(rememberToken);
                 const newRememberToken = crypto.randomBytes(64).toString('hex');
                 const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
@@ -121,7 +117,6 @@ async function checkRememberMeCookie(req, res, next) {
 }
 app.use(checkRememberMeCookie); 
 
-// 定时清理过期 Token
 setInterval(async () => {
     try { await data.deleteExpiredAuthTokens(); } catch (e) {}
 }, 1000 * 60 * 60 * 24);
@@ -146,7 +141,6 @@ function requireAdmin(req, res, next) {
     }
 }
 
-// --- 页面路由 ---
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views/login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views/register.html')));
 app.get('/editor', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/editor.html')));
@@ -233,13 +227,13 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- 核心修改：/upload 路由 (含日志与缓冲模式) ---
+// --- 核心修改：/upload 路由 (含日志与增强缓冲模式) ---
 app.post('/upload', requireLogin, (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
     const config = storageManager.readConfig();
-    const uploadMode = config.uploadMode || 'stream'; // 默认为流式
+    const uploadMode = config.uploadMode || 'stream'; 
     const MAX_FILENAME_BYTES = 255; 
 
     log('UPLOAD_START', `User: ${userId}, Mode: ${uploadMode}, Folder: ${folderId}`);
@@ -306,52 +300,53 @@ app.post('/upload', requireLogin, (req, res) => {
                             fileStream.on('data', chunk => receivedBytes += chunk.length);
                             fileStream.pipe(writeStream);
                             
-                            fileStream.on('error', err => {
-                                log('BUFFER_ERR', `输入流错误 ${finalFilename}: ${err.message}`);
-                                reject(err);
-                            });
-                            writeStream.on('error', err => {
-                                log('BUFFER_ERR', `写入临时流错误 ${finalFilename}: ${err.message}`);
-                                reject(err);
-                            });
+                            fileStream.on('error', err => reject(err));
+                            writeStream.on('error', err => reject(err));
                             writeStream.on('finish', () => {
                                 log('BUFFER_FINISH', `临时文件写入完成: ${finalFilename}, Size: ${receivedBytes} bytes`);
                                 resolve();
                             });
                         });
 
-                        // 2. 检查临时文件大小
                         const stats = await fsp.stat(tempFilePath);
                         if (stats.size === 0) {
                              throw new Error("接收到的文件大小为 0 字节，上传中止。");
                         }
 
-                        // 3. 上传到最终存储
+                        // 3. 上传到最终存储 (策略优化：小文件用 Buffer，大文件用流)
                         log('BUFFER_UPLOAD', `开始将临时文件上传到后端 (${storage.type}): ${finalFilename}`);
-                        const readStream = fs.createReadStream(tempFilePath);
-                        await storage.upload(readStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
+                        
+                        let uploadData;
+                        // 阈值设为 50MB。WebDAV 上传 Buffer 最稳，彻底解决 0KB 问题。
+                        if (stats.size < 50 * 1024 * 1024) { 
+                            log('BUFFER_STRATEGY', `文件较小 (${stats.size})，使用 Buffer 上传以确保稳定`);
+                            uploadData = await fsp.readFile(tempFilePath);
+                        } else {
+                            log('BUFFER_STRATEGY', `文件较大 (${stats.size})，使用 Stream 上传`);
+                            uploadData = fs.createReadStream(tempFilePath);
+                            // 这里的流有 path 属性，storage/webdav.js 会检测并设置 Content-Length
+                        }
+
+                        await storage.upload(uploadData, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
                         log('BUFFER_SUCCESS', `后端上传成功: ${finalFilename}`);
 
                     } finally {
-                        // 4. 清理
                         if (fs.existsSync(tempFilePath)) {
                             await fsp.unlink(tempFilePath).catch(e => log('CLEANUP_ERR', e.message));
                         }
                     }
                 } else {
-                    // --- 流式模式 (原模式) ---
-                    // 添加流监控
+                    // --- 流式模式 ---
                     let streamSize = 0;
                     fileStream.on('data', chunk => streamSize += chunk.length);
                     fileStream.on('end', () => log('STREAM_END', `Busboy 流结束: ${finalFilename}, 累计大小: ${streamSize}`));
-                    
                     await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
                 }
 
                 return { skipped: false };
             })().catch(err => {
                 log('UPLOAD_ERR', `处理文件失败 ${relativePath}: ${err.message}`);
-                fileStream.resume(); // 确保消费掉流
+                fileStream.resume(); 
                 return { success: false, error: err };
             });
             
@@ -362,15 +357,11 @@ app.post('/upload', requireLogin, (req, res) => {
             log('BUSBOY_FINISH', 'Busboy 解析完成，等待所有上传任务结束...');
             try {
                 const results = await Promise.all(uploadPromises);
-                
-                // 检查是否有错误
                 const errors = results.filter(r => r && r.error);
                 if (errors.length > 0) {
                      log('UPLOAD_FAIL', `总任务中有 ${errors.length} 个错误。第一个错误: ${errors[0].error.message}`);
-                     // 抛出第一个错误给前端
                      throw errors[0].error;
                 }
-
                 const allSkipped = results.length > 0 && results.every(r => r.skipped);
                 if (allSkipped) {
                      res.json({ success: true, skippedAll: true, message: '所有文件都因冲突而被跳过' });
@@ -398,6 +389,7 @@ app.post('/upload', requireLogin, (req, res) => {
     }
 });
 
+// ... (其余路由保持原样，包含 BigInt 修复) ...
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
     const userId = req.session.userId;
