@@ -1,4 +1,4 @@
-// server.js (修复半流式上传 0 字节问题)
+// server.js (修复上传中断问题：确保流被完全消耗)
 
 require('dotenv').config();
 const express = require('express');
@@ -29,6 +29,7 @@ app.set('json replacer', jsonReplacer);
 
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
+// 清理临时目录
 async function cleanupTempDir() {
     try {
         if (!fs.existsSync(TMP_DIR)) {
@@ -48,29 +49,28 @@ cleanupTempDir();
 const PORT = process.env.PORT || 8100;
 
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'your-strong-random-secret-here-please-change',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }
+    secret: process.env.SESSION_SECRET || 'your-strong-random-secret-here-please-change',
+    resave: false,
+    saveUninitialized: false,
+    cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }
 }));
 
 const shareSession = session({
-  secret: process.env.SESSION_SECRET + '-share',
-  resave: false,
-  saveUninitialized: true,
-  cookie: { }
+    secret: process.env.SESSION_SECRET + '-share',
+    resave: false,
+    saveUninitialized: true,
+    cookie: { }
 });
 
 app.set('trust proxy', 1);
-
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(express.json({ limit: '50mb' }));
-
 app.use(cookieParser());
 
+// --- 自动登入中间件 ---
 async function checkRememberMeCookie(req, res, next) {
     if (req.session.loggedIn) {
         return next();
@@ -85,10 +85,13 @@ async function checkRememberMeCookie(req, res, next) {
                 req.session.userId = user.id;
                 req.session.isAdmin = !!user.is_admin;
                 req.session.unlockedFolders = [];
+                
                 await data.deleteAuthToken(rememberToken);
+                
                 const newRememberToken = crypto.randomBytes(64).toString('hex');
                 const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000; 
                 await data.createAuthToken(user.id, newRememberToken, expiresAt);
+                
                 res.cookie('remember_me', newRememberToken, {
                     path: '/',
                     httpOnly: true,
@@ -108,9 +111,9 @@ async function checkRememberMeCookie(req, res, next) {
     }
     return next();
 }
-
 app.use(checkRememberMeCookie);
 
+// 定时清理过期 Token
 setInterval(async () => {
     try {
         await data.deleteExpiredAuthTokens();
@@ -120,12 +123,12 @@ setInterval(async () => {
 }, 1000 * 60 * 60 * 24);
 
 function requireLogin(req, res, next) {
-  if (req.session.loggedIn) return next();
-  if (req.xhr || (req.headers.accept && req.headers.accept.includes('json'))) {
-    return res.status(401).json({ success: false, message: '会话已过期，请重新登入。' });
-  } else {
-    res.redirect('/login');
-  }
+    if (req.session.loggedIn) return next();
+    if (req.xhr || (req.headers.accept && req.headers.accept.includes('json'))) {
+        return res.status(401).json({ success: false, message: '会话已过期，请重新登入。' });
+    } else {
+        res.redirect('/login');
+    }
 }
 
 function requireAdmin(req, res, next) {
@@ -139,6 +142,7 @@ function requireAdmin(req, res, next) {
     }
 }
 
+// --- 页面路由 ---
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views/login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views/register.html')));
 app.get('/editor', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/editor.html')));
@@ -227,7 +231,7 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- 上传路由 (修复 0 字节问题) ---
+// --- 上传路由 (修复上传中断 + 0字节问题) ---
 app.post('/upload', requireLogin, (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
@@ -250,42 +254,39 @@ app.post('/upload', requireLogin, (req, res) => {
             const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
             const { mimeType } = fileInfo;
             
-            // 1. 预处理：档名检查 (同步执行)
+            // 1. 档名检查
             const pathParts = relativePath.split('/').filter(p => p);
             let finalFilename = pathParts.pop() || relativePath;
 
             if (Buffer.byteLength(finalFilename, 'utf8') > MAX_FILENAME_BYTES) {
-                fileStream.resume(); // 丢弃流
+                fileStream.resume(); 
                 uploadPromises.push(Promise.reject(new Error(`档名 "${finalFilename.substring(0, 30)}..." 过长。`)));
                 return;
             }
 
-            // 2. 预处理：检查是否需要跳过 (同步执行)
+            // 2. 检查是否跳过
             const action = resolutions[relativePath] || 'upload';
             if (action === 'skip') {
-                fileStream.resume(); // 丢弃流
+                fileStream.resume(); 
                 uploadPromises.push(Promise.resolve({ skipped: true }));
                 return;
             }
 
-            // --- 分支处理 ---
             if (transferMode === 'semi') {
-                // === 半流式模式：并行写入与检查 ===
-                // 关键：立即建立管道写入文件，防止数据在 await 期间丢失
+                // === 半流式模式 (稳健版) ===
                 const tempFileName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.tmp`;
                 const tempFilePath = path.join(TMP_DIR, tempFileName);
-                
                 const writeStream = fs.createWriteStream(tempFilePath);
                 
-                // 任务 A: 写入临时文件 (同步开始，异步完成)
+                // 任务 A: 必须完整接收文件流，无论后续逻辑如何
                 const writeTask = new Promise((resolve, reject) => {
                     fileStream.pipe(writeStream);
-                    fileStream.on('error', reject);
-                    writeStream.on('error', reject);
+                    fileStream.on('error', (err) => reject(err));
+                    writeStream.on('error', (err) => reject(err));
                     writeStream.on('finish', resolve);
                 });
 
-                // 任务 B: 数据库逻辑 (异步)
+                // 任务 B: 数据库检查 (并行开始)
                 const dbTask = (async () => {
                     const folderPathParts = pathParts;
                     const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
@@ -304,38 +305,54 @@ app.post('/upload', requireLogin, (req, res) => {
                     return { skipped: false, targetFolderId, effectiveFilename, existingItem };
                 })();
 
-                // 等待两者都完成
-                const combinedTask = Promise.all([writeTask, dbTask])
-                    .then(async ([_, dbResult]) => {
-                        if (dbResult.skipped) {
-                            // 如果逻辑决定跳过，删除已下载的临时文件
-                            await fsp.unlink(tempFilePath).catch(() => {});
-                            return { skipped: true };
-                        }
-                        
-                        // 逻辑通过，从临时文件上传到目标存储
-                        try {
-                            const tempReadStream = fs.createReadStream(tempFilePath);
-                            await storage.upload(tempReadStream, dbResult.effectiveFilename, mimeType, userId, dbResult.targetFolderId, caption || '', dbResult.existingItem);
-                            return { skipped: false };
-                        } finally {
-                            // 清理临时文件
-                            await fsp.unlink(tempFilePath).catch(() => {});
-                        }
-                    })
-                    .catch(async (err) => {
-                        // 发生任何错误，清理临时文件
+                // 组合任务: 确保文件先接收完
+                const combinedTask = (async () => {
+                    let dbResult, dbError;
+                    
+                    // 1. 先尝试执行数据库任务，如果有错先存起来，不打断文件接收
+                    try {
+                        dbResult = await dbTask;
+                    } catch (e) {
+                        dbError = e;
+                    }
+
+                    // 2. 等待文件全部写完 (如果这里出错，那确实是传输失败)
+                    try {
+                        await writeTask;
+                    } catch (writeErr) {
                         await fsp.unlink(tempFilePath).catch(() => {});
-                        throw err;
-                    });
+                        // 如果此时也有 DB 错误，优先报 DB 错误信息，但本质是传输失败
+                        if (dbError) throw new Error(`DB错误: ${dbError.message}, 且写入中断: ${writeErr.message}`);
+                        throw writeErr;
+                    }
+
+                    // 3. 文件已安全落地。现在处理之前的 DB 错误
+                    if (dbError) {
+                        await fsp.unlink(tempFilePath).catch(() => {});
+                        throw dbError; // 现在抛出，不会导致上传中断，只会返回上传失败
+                    }
+
+                    // 4. 逻辑判断是否跳过
+                    if (dbResult.skipped) {
+                         await fsp.unlink(tempFilePath).catch(() => {});
+                         return { skipped: true };
+                    }
+
+                    // 5. 上传到最终存储
+                    try {
+                        const tempReadStream = fs.createReadStream(tempFilePath);
+                        await storage.upload(tempReadStream, dbResult.effectiveFilename, mimeType, userId, dbResult.targetFolderId, caption || '', dbResult.existingItem);
+                        return { skipped: false };
+                    } finally {
+                        await fsp.unlink(tempFilePath).catch(() => {});
+                    }
+                })();
 
                 uploadPromises.push(combinedTask);
 
             } else {
                 // === 纯流式模式 ===
-                // 必须暂停流，因为我们还没准备好管道
-                fileStream.pause();
-
+                fileStream.pause(); // 暂停流，等待 DB 检查
                 const streamTask = (async () => {
                     const folderPathParts = pathParts;
                     const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
@@ -349,16 +366,15 @@ app.post('/upload', requireLogin, (req, res) => {
                     } else {
                         const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                         if (conflict) {
-                            fileStream.resume();
+                            fileStream.resume(); // 消耗流
                             return { skipped: true };
                         }
                     }
                     
-                    // storage.upload 内部通常会 pipe，这会自动 resume 流
                     await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
                     return { skipped: false };
                 })().catch(err => {
-                    fileStream.resume(); // 确保错误时流也能结束
+                    fileStream.resume(); // 确保错误时消耗流
                     throw err;
                 });
                 
@@ -396,6 +412,8 @@ app.post('/upload', requireLogin, (req, res) => {
         res.status(400).json({ success: false, message: `请求预处理失败: ${err.message}` });
     }
 });
+
+// --- API 路由 ---
 
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
