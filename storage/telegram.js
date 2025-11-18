@@ -9,11 +9,11 @@ const FILE_NAME = 'storage/telegram.js';
 
 // --- 日志辅助函数 ---
 const log = (level, func, message, ...args) => {
-    // const timestamp = new Date().toISOString();
-    // console.log(`[${timestamp}] [${level}] [${FILE_NAME}:${func}] - ${message}`, ...args);
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] [TELEGRAM:${level}] [${func}] - ${message}`, ...args);
 };
 
-async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '', existingItem = null) { // <-- 新增 existingItem 参数
+async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, caption = '', existingItem = null) { // <-- 参数名改为 fileStreamOrBuffer
     const FUNC_NAME = 'upload';
     log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 Telegram...`);
   
@@ -22,15 +22,20 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             const formData = new FormData();
             formData.append('chat_id', process.env.CHANNEL_ID);
             formData.append('caption', caption || fileName);
-            formData.append('document', fileStream, { filename: fileName });
             
-            // 关键：监听输入流的错误，防止它静默失败
-            fileStream.on('error', err => {
-                log('ERROR', FUNC_NAME, `输入文件流 (fileStream) 发生错误 for "${fileName}":`, err);
-                reject(new Error(`输入文件流中断: ${err.message}`));
-            });
+            // form-data 库同时支持 Buffer 和 Stream
+            formData.append('document', fileStreamOrBuffer, { filename: fileName });
+            
+            // --- 关键修正：仅当输入是流时才添加错误监听 ---
+            if (!Buffer.isBuffer(fileStreamOrBuffer) && typeof fileStreamOrBuffer.on === 'function') {
+                fileStreamOrBuffer.on('error', err => {
+                    log('ERROR', FUNC_NAME, `输入文件流发生错误 for "${fileName}":`, err);
+                    reject(new Error(`输入文件流中断: ${err.message}`));
+                });
+            }
 
             log('DEBUG', FUNC_NAME, `正在发送 POST 请求到 Telegram API for "${fileName}"`);
+            
             const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
                 headers: formData.getHeaders(),
                 maxContentLength: Infinity,
@@ -41,14 +46,15 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             if (res.data.ok) {
                 const result = res.data.result;
                 const fileData = result.document || result.video || result.audio || result.photo;
+                // Telegram 有时返回 photo 是数组，取最大的那张（通常是最后一张）
+                const finalFileData = Array.isArray(fileData) ? fileData[fileData.length - 1] : fileData;
 
-                if (fileData && fileData.file_id) {
+                if (finalFileData && finalFileData.file_id) {
                     
                     // --- BUG 1 修复逻辑 ---
                     if (existingItem) {
                         // 覆盖：先删除旧的消息
                         log('DEBUG', FUNC_NAME, `(覆盖) 正在删除旧的 Telegram 消息: ${existingItem.message_id}`);
-                        // 我们使用 data.deleteMessages，它也会处理数据库删除
                         await data.deleteMessages([existingItem.message_id]);
                         log('INFO', FUNC_NAME, `旧消息 ${existingItem.message_id} 已删除。`);
                     }
@@ -58,16 +64,15 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
                     const dbResult = await data.addFile({
                       message_id: result.message_id,
                       fileName,
-                      mimetype: fileData.mime_type || mimetype,
-                      size: fileData.file_size,
-                      file_id: fileData.file_id,
-                      thumb_file_id: fileData.thumb ? fileData.thumb.file_id : null,
+                      mimetype: finalFileData.mime_type || mimetype, // 修正取值变量
+                      size: finalFileData.file_size,
+                      file_id: finalFileData.file_id,
+                      thumb_file_id: finalFileData.thumb ? finalFileData.thumb.file_id : null,
                       date: Date.now(),
                     }, folderId, userId, 'telegram');
                     
                     log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
                     resolve({ success: true, data: res.data, fileId: dbResult.fileId });
-                    // --- BUG 1 修复逻辑结束 ---
 
                 } else {
                      reject(new Error('Telegram API 响应成功，但缺少 file_id'));
@@ -78,11 +83,11 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
         } catch (error) {
             const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
             log('ERROR', FUNC_NAME, `上传到 Telegram 失败 for "${fileName}": ${errorDescription}`);
-            // 确保流在任何错误情况下都被消耗掉
-            if (fileStream && typeof fileStream.resume === 'function') {
-                fileStream.resume();
+            
+            // 仅当它是流且具有 resume 方法时才调用
+            if (fileStreamOrBuffer && typeof fileStreamOrBuffer.resume === 'function') {
+                fileStreamOrBuffer.resume();
             }
-            // BUG 2 修复：Telegram 会处理原子性。如果上传失败，不会创建消息，因此无需清理。
             reject(new Error(`上传至 Telegram 失败: ${errorDescription}`));
         }
     });
