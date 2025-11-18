@@ -1,4 +1,4 @@
-// server.js (修复 WebDAV 密码保存 bug)
+// server.js
 
 require('dotenv').config();
 const express = require('express');
@@ -342,11 +342,12 @@ app.post('/upload', requireLogin, (req, res) => {
                         }
                     }
                 } else {
-                    // --- 流式模式 ---
-                    let streamSize = 0;
-                    fileStream.on('data', chunk => streamSize += chunk.length);
-                    fileStream.on('end', () => log('STREAM_END', `Busboy 流结束: ${finalFilename}, 累计大小: ${streamSize}`));
+                    // --- 流式模式 (关键修复：移除所有数据监听) ---
+                    log('STREAM_MODE', `启用流式上传: ${finalFilename}`);
+                    // 注意：这里绝对不能有 fileStream.on('data')，否则数据会被提前消耗！
+                    // 直接将原始流传给 storage
                     await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
+                    log('STREAM_SUCCESS', `上传流程结束: ${finalFilename}`);
                 }
 
                 return { skipped: false };
@@ -1169,7 +1170,6 @@ app.get('/api/admin/webdav', requireAdmin, (req, res) => {
     res.json(webdavConfig.url ? [{ id: 1, ...webdavConfig }] : []);
 });
 
-// --- 关键修正：修复 WebDAV 密码保存时被清空的 Bug ---
 app.post('/api/admin/webdav', requireAdmin, (req, res) => {
     const { url, username, password } = req.body;
     if (!url || !username) {
