@@ -99,7 +99,6 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
         let remotePath; 
         try {
             const webdavConfig = getWebdavConfig();
-            // 为每个上传创建独立客户端实例，避免并发干扰
             client = createClient(webdavConfig.url, {
                 username: webdavConfig.username,
                 password: webdavConfig.password
@@ -112,35 +111,40 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
                 await ensureDirectoryExists(folderPath);
             }
 
-            fileStream.on('error', err => {
-                log('ERROR', FUNC_NAME, `输入流错误 "${fileName}":`, err);
-                reject(new Error(`Stream Error: ${err.message}`));
-            });
+            // 如果传入的是流，绑定错误处理
+            if (fileStream && typeof fileStream.on === 'function') {
+                fileStream.on('error', err => {
+                    log('ERROR', FUNC_NAME, `输入流错误 "${fileName}":`, err);
+                    reject(new Error(`Stream Error: ${err.message}`));
+                });
+            }
 
             log('DEBUG', FUNC_NAME, `执行 putFileContents: "${remotePath}"`);
             
-            // 使用 createWriteStream 进行更底层的控制 (webdav 库支持)
-            // 或者使用 putFileContents，但要确保它处理流错误
-            const success = await client.putFileContents(remotePath, fileStream, { 
-                overwrite: true, 
-                onUploadProgress: (progress) => {
-                    if (fileStream.destroyed) {
-                        // 主动检测流是否被销毁
-                        log('WARN', FUNC_NAME, `检测到流销毁: "${fileName}"`);
-                    }
+            let options = { overwrite: true };
+            
+            // --- 关键修正：自动检测并设置 Content-Length ---
+            // 如果传入的是本地文件流 (fs.ReadStream)，自动获取文件大小
+            if (fileStream && fileStream.path && typeof fileStream.path === 'string') {
+                try {
+                    const fsStats = fs.statSync(fileStream.path);
+                    options.contentLength = fsStats.size;
+                    log('DEBUG', FUNC_NAME, `检测到本地文件流，设置 Content-Length: ${fsStats.size}`);
+                } catch (e) {
+                    log('WARN', FUNC_NAME, `无法获取本地流文件大小: ${e.message}`);
                 }
-            });
+            }
+
+            const success = await client.putFileContents(remotePath, fileStream, options);
 
             if (!success) {
                 throw new Error('WebDAV putFileContents 返回 false');
             }
             
-            // --- 关键校验：检查上传后的文件大小 ---
             const stats = await client.stat(remotePath);
             log('DEBUG', FUNC_NAME, `上传后检查: "${fileName}", Size: ${stats.size}`);
             
             if (stats.size === 0) {
-                // 如果远端文件是 0 字节，说明上传失败（可能是 Premature close 且被吞掉了）
                 throw new Error('上传验证失败: 远端文件大小为 0 字节');
             }
 
@@ -185,7 +189,6 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
     });
 }
 
-// ... remove, stream, getUrl, createDirectory 保持不变 ...
 async function remove(files, folders, userId) {
     const client = getClient();
     const results = { success: true, errors: [] };
