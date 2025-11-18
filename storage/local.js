@@ -3,6 +3,7 @@ const fsp = require('fs').promises;
 const fs = require('fs');
 const path = require('path');
 const data = require('../data.js');
+const crypto = require('crypto'); // 确保引入 crypto
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
 const FILE_NAME = 'storage/local.js';
@@ -17,7 +18,7 @@ async function setup() {
 }
 setup();
 
-async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '', existingItem = null) {
+async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, caption = '', existingItem = null) {
     const FUNC_NAME = 'upload';
     log('INFO', FUNC_NAME, `上传开始: "${fileName}"`);
     
@@ -31,59 +32,90 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
     const finalFilePath = path.join(finalFolderPath, fileName);
     const relativeFilePath = path.join(relativeFolderPath, fileName).replace(/\\/g, '/');
 
-    return new Promise((resolve, reject) => {
-        const writeStream = fs.createWriteStream(finalFilePath);
+    // --- 封装数据库更新逻辑 ---
+    const updateDatabase = async (size) => {
+        if (existingItem) {
+            await data.updateFile(existingItem.id, {
+                mimetype: mimetype,
+                file_id: relativeFilePath,
+                size: size,
+                date: Date.now(),
+            }, userId);
+            return { success: true, message: '覆盖成功', fileId: existingItem.id };
+        } else {
+            // 修正：使用 BigInt 生成 ID，与 server.js 保持一致
+            const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
+            const dbResult = await data.addFile({
+                message_id: messageId,
+                fileName,
+                mimetype,
+                size: size,
+                file_id: relativeFilePath,
+                thumb_file_id: null,
+                date: Date.now(),
+            }, folderId, userId, 'local');
+            return { success: true, message: '上传成功', fileId: dbResult.fileId };
+        }
+    };
 
-        fileStream.on('error', err => {
-            log('ERROR', FUNC_NAME, `输入流错误: ${err.message}`);
-            writeStream.close();
-            fs.unlink(finalFilePath, () => {});
-            reject(err);
-        });
+    // --- 核心修复：判断输入是 Buffer 还是 Stream ---
+    if (Buffer.isBuffer(fileStreamOrBuffer)) {
+        // 1. 处理 Buffer (来自缓冲模式的小文件)
+        try {
+            log('DEBUG', FUNC_NAME, `检测到 Buffer 输入, 大小: ${fileStreamOrBuffer.length} bytes`);
+            await fsp.writeFile(finalFilePath, fileStreamOrBuffer);
+            const stats = await fsp.stat(finalFilePath);
+            return await updateDatabase(stats.size);
+        } catch (err) {
+            log('ERROR', FUNC_NAME, `Buffer 写入失败: ${err.message}`);
+            throw err;
+        }
+    } else {
+        // 2. 处理 Stream (来自流式模式或缓冲模式的大文件)
+        return new Promise((resolve, reject) => {
+            const writeStream = fs.createWriteStream(finalFilePath);
+            const fileStream = fileStreamOrBuffer; 
 
-        writeStream.on('finish', async () => {
-            try {
-                const stats = await fsp.stat(finalFilePath);
-                log('DEBUG', FUNC_NAME, `写入完成: Size=${stats.size}`);
-                
-                if (stats.size === 0) {
-                     log('WARN', FUNC_NAME, `文件大小为0，可能上传失败`);
-                }
-
-                if (existingItem) {
-                    await data.updateFile(existingItem.id, {
-                        mimetype: mimetype,
-                        file_id: relativeFilePath,
-                        size: stats.size,
-                        date: Date.now(),
-                    }, userId);
-                    resolve({ success: true, message: '覆盖成功', fileId: existingItem.id });
-                } else {
-                    const messageId = BigInt(Date.now()) * 1000000n + BigInt(Math.floor(Math.random() * 1000000));
-                    const dbResult = await data.addFile({
-                        message_id: messageId,
-                        fileName,
-                        mimetype,
-                        size: stats.size,
-                        file_id: relativeFilePath,
-                        thumb_file_id: null,
-                        date: Date.now(),
-                    }, folderId, userId, 'local');
-                    resolve({ success: true, message: '上传成功', fileId: dbResult.fileId });
-                }
-            } catch (err) {
-                 log('ERROR', FUNC_NAME, `DB更新失败: ${err.message}`);
-                 reject(err);
+            // 安全检查
+            if (typeof fileStream.pipe !== 'function') {
+                 const msg = '输入不是有效的流或 Buffer';
+                 log('ERROR', FUNC_NAME, msg);
+                 return reject(new Error(msg));
             }
+
+            fileStream.on('error', err => {
+                log('ERROR', FUNC_NAME, `输入流错误: ${err.message}`);
+                writeStream.close();
+                fs.unlink(finalFilePath, () => {});
+                reject(err);
+            });
+
+            writeStream.on('finish', async () => {
+                try {
+                    const stats = await fsp.stat(finalFilePath);
+                    log('DEBUG', FUNC_NAME, `流写入完成: Size=${stats.size}`);
+                    
+                    if (stats.size === 0) {
+                        log('WARN', FUNC_NAME, `文件大小为0，可能上传失败`);
+                    }
+                    
+                    const result = await updateDatabase(stats.size);
+                    resolve(result);
+                } catch (err) {
+                    log('ERROR', FUNC_NAME, `DB更新失败: ${err.message}`);
+                    reject(err);
+                }
+            });
+
+            writeStream.on('error', err => {
+                log('ERROR', FUNC_NAME, `写入流错误: ${err.message}`);
+                fs.unlink(finalFilePath, () => {});
+                reject(err);
+            });
+            
+            fileStream.pipe(writeStream);
         });
-        writeStream.on('error', err => {
-            log('ERROR', FUNC_NAME, `写入流错误: ${err.message}`);
-            fs.unlink(finalFilePath, () => {});
-            reject(err);
-        });
-        
-        fileStream.pipe(writeStream);
-    });
+    }
 }
 
 async function remove(files, folders, userId) {
@@ -141,11 +173,11 @@ async function getUrl(file_id, userId) {
     return path.join(userDir, file_id);
 }
 
-function stream(file_id, userId) {
+function stream(file_id, userId, options) { 
     const userDir = path.join(UPLOAD_DIR, String(userId));
     const finalFilePath = path.join(userDir, file_id);
     if (fs.existsSync(finalFilePath)) {
-        return fs.createReadStream(finalFilePath);
+        return fs.createReadStream(finalFilePath, options);
     }
     throw new Error('本地档案不存在');
 }
