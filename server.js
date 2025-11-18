@@ -385,7 +385,9 @@ app.post('/upload', requireLogin, (req, res) => {
                 return { skipped: false };
             })().catch(err => {
                 fileStream.resume();
-                throw err;
+                // --- *** 关键修正：防止未捕获的 Promise Rejection *** ---
+                // 不再 throw err，而是返回包含错误的对象
+                return { success: false, error: err };
             });
             uploadPromises.push(fileUploadPromise);
         });
@@ -393,6 +395,14 @@ app.post('/upload', requireLogin, (req, res) => {
         busboy.on('finish', async () => {
             try {
                 const results = await Promise.all(uploadPromises);
+                
+                // 检查是否有上传错误
+                const errors = results.filter(r => r && r.error);
+                if (errors.length > 0) {
+                     // 抛出第一个错误，让外层 catch 处理
+                     throw errors[0].error;
+                }
+
                 const allSkipped = results.length > 0 && results.every(r => r.skipped);
 
                 if (allSkipped) {
@@ -1388,6 +1398,7 @@ app.get('/share/view/file/:token', shareSession, async (req, res) => {
 app.get('/share/view/folder/:token/:path(*)?', shareSession, async (req, res) => {
     try {
         // --- *** 关键修正 2: 修复代理缓存问题 *** ---
+        // 强制设置 HTTP 响应头，禁止任何代理或浏览器缓存此页面
         // 强制设置 HTTP 响应头，禁止任何代理或浏览器缓存此页面
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
         res.setHeader('Pragma', 'no-cache');
