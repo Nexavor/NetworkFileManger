@@ -1,4 +1,3 @@
-// [nexavor/networkfilemanger/NetworkFileManger-62bb5341e558464e13e458591cd25cd6794cd996/server.js]
 // server.js (最终修正版 - 修复所有路由中的 BigInt/Int 解析)
 
 require('dotenv').config();
@@ -297,11 +296,13 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- 关键修改：/upload 路由 ---
+// --- 关键修改：/upload 路由，支援非流式上传 ---
 app.post('/upload', requireLogin, (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
+    const config = storageManager.readConfig();
+    const uploadMode = config.uploadMode || 'stream'; // 读取上传模式，默认为流式
     const MAX_FILENAME_BYTES = 255; 
 
     try {
@@ -339,12 +340,10 @@ app.post('/upload', requireLogin, (req, res) => {
                 const folderPathParts = pathParts;
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                 
-                // --- BUG 1 修复逻辑 开始 ---
-                let existingItem = null; // <-- 新增变量
+                let existingItem = null;
 
                 if (action === 'overwrite') {
-                    existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId); // <-- 查找现有项
-                    // 在此处不要删除
+                    existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                 } else if (action === 'rename') {
                     finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
                 } else {
@@ -355,9 +354,33 @@ app.post('/upload', requireLogin, (req, res) => {
                     }
                 }
                 
-                // 将 existingItem 传递给 storage.upload
-                await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
-                // --- BUG 1 修复逻辑 结束 ---
+                // --- 分支逻辑：流式 vs 缓冲式 ---
+                if (uploadMode === 'buffer') {
+                    // 缓冲模式：先写入临时文件
+                    const tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}-${path.basename(finalFilename)}`);
+                    try {
+                        // 1. 将输入流写入临时文件
+                        const writeStream = fs.createWriteStream(tempFilePath);
+                        await new Promise((resolve, reject) => {
+                            fileStream.pipe(writeStream);
+                            fileStream.on('error', reject);
+                            writeStream.on('error', reject);
+                            writeStream.on('finish', resolve);
+                        });
+                        
+                        // 2. 创建从临时文件读取的流，并上传
+                        const readStream = fs.createReadStream(tempFilePath);
+                        await storage.upload(readStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
+                    } finally {
+                        // 3. 清理临时文件
+                        if (fs.existsSync(tempFilePath)) {
+                            await fsp.unlink(tempFilePath).catch(() => {});
+                        }
+                    }
+                } else {
+                    // 流式模式 (默认)：直接传递 busboy 的流
+                    await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
+                }
 
                 return { skipped: false };
             })().catch(err => {
@@ -1163,15 +1186,30 @@ app.post('/api/user/change-password', requireLogin, async (req, res) => {
 });
 
 app.get('/api/admin/storage-mode', requireAdmin, (req, res) => {
-    res.json({ mode: storageManager.readConfig().storageMode });
+    // 修正：同时返回 uploadMode
+    const config = storageManager.readConfig();
+    res.json({ 
+        storageMode: config.storageMode,
+        uploadMode: config.uploadMode || 'stream'
+    });
 });
 
 app.post('/api/admin/storage-mode', requireAdmin, (req, res) => {
     const { mode } = req.body;
     if (storageManager.setStorageMode(mode)) {
-        res.json({ success: true, message: '设定已储存。' });
+        res.json({ success: true, message: '储存模式已设定。' });
     } else {
         res.status(400).json({ success: false, message: '无效的模式' });
+    }
+});
+
+// --- 新增：设定上传模式的 API ---
+app.post('/api/admin/upload-mode', requireAdmin, (req, res) => {
+    const { mode } = req.body;
+    if (storageManager.setUploadMode(mode)) {
+        res.json({ success: true, message: '上传模式已设定。' });
+    } else {
+        res.status(400).json({ success: false, message: '无效的上传模式' });
     }
 });
 
