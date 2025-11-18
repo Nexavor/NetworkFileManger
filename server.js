@@ -1,4 +1,4 @@
-// server.js
+// server.js (修复 WebDAV 密码保存 bug)
 
 require('dotenv').config();
 const express = require('express');
@@ -19,6 +19,7 @@ const { encrypt, decrypt } = require('./crypto.js');
 
 const app = express();
 
+// 处理 JSON 中的 BigInt 序列化
 const jsonReplacer = (key, value) => {
     if (typeof value === 'bigint') {
         return value.toString();
@@ -35,6 +36,7 @@ const log = (tag, message) => {
     console.log(`[${time}] [${tag}] ${message}`);
 };
 
+// 清理临时目录
 async function cleanupTempDir() {
     try {
         if (!fs.existsSync(TMP_DIR)) {
@@ -60,11 +62,12 @@ app.use(session({
   cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 } 
 }));
 
+// 分享链接的专用 Session
 const shareSession = session({
   secret: process.env.SESSION_SECRET + '-share',
   resave: false,
   saveUninitialized: true,
-  cookie: { }
+  cookie: { /* maxAge 已移除，浏览器关闭即失效 */ }
 });
 
 app.set('trust proxy', 1);
@@ -91,6 +94,7 @@ async function checkRememberMeCookie(req, res, next) {
                 req.session.isAdmin = !!user.is_admin;
                 req.session.unlockedFolders = [];
                 
+                // 滚动 Token 机制
                 await data.deleteAuthToken(rememberToken);
                 const newRememberToken = crypto.randomBytes(64).toString('hex');
                 const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
@@ -117,6 +121,7 @@ async function checkRememberMeCookie(req, res, next) {
 }
 app.use(checkRememberMeCookie); 
 
+// 定时清理过期 Token
 setInterval(async () => {
     try { await data.deleteExpiredAuthTokens(); } catch (e) {}
 }, 1000 * 60 * 60 * 24);
@@ -141,6 +146,7 @@ function requireAdmin(req, res, next) {
     }
 }
 
+// --- 页面路由 ---
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views/login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views/register.html')));
 app.get('/editor', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/editor.html')));
@@ -1163,16 +1169,24 @@ app.get('/api/admin/webdav', requireAdmin, (req, res) => {
     res.json(webdavConfig.url ? [{ id: 1, ...webdavConfig }] : []);
 });
 
+// --- 关键修正：修复 WebDAV 密码保存时被清空的 Bug ---
 app.post('/api/admin/webdav', requireAdmin, (req, res) => {
     const { url, username, password } = req.body;
     if (!url || !username) {
         return res.status(400).json({ success: false, message: '缺少必要参数' });
     }
     const config = storageManager.readConfig();
-    config.webdav = { url, username };
-    if (password) {
-        config.webdav.password = password;
-    }
+    
+    // 获取旧配置中的密码（如果存在）
+    const oldPassword = (config.webdav && config.webdav.password) ? config.webdav.password : '';
+    
+    config.webdav = { 
+        url, 
+        username,
+        // 如果前端传来了新密码则使用新密码，否则保留旧密码
+        password: password ? password : oldPassword
+    };
+    
     if (storageManager.writeConfig(config)) {
         res.json({ success: true, message: 'WebDAV 设定已储存' });
     } else {
