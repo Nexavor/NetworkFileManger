@@ -16,13 +16,17 @@ function readConfig() {
             if (!config.webdav || Array.isArray(config.webdav)) {
                 config.webdav = {}; 
             }
+            // 确保 transferMode 存在，预设为 'stream' (纯流式)
+            if (!config.transferMode) {
+                config.transferMode = 'stream';
+            }
             return config;
         }
     } catch (error) {
         // console.error("读取设定档失败:", error);
     }
     // --- *** 关键修正：将预设值从 'telegram' 改为 'local' *** ---
-    return { storageMode: 'local', webdav: {} }; 
+    return { storageMode: 'local', transferMode: 'stream', webdav: {} }; 
 }
 
 function writeConfig(config) {
@@ -54,7 +58,18 @@ function getStorage() {
 
 function setStorageMode(mode) {
     if (['local', 'telegram', 'webdav'].includes(mode)) {
+        config = readConfig();
         config.storageMode = mode;
+        return writeConfig(config);
+    }
+    return false;
+}
+
+// --- 新增：设定传输模式 ---
+function setTransferMode(mode) {
+    if (['stream', 'semi'].includes(mode)) {
+        config = readConfig();
+        config.transferMode = mode;
         return writeConfig(config);
     }
     return false;
@@ -63,6 +78,7 @@ function setStorageMode(mode) {
 module.exports = {
     getStorage,
     setStorageMode,
+    setTransferMode, // 导出新函数
     readConfig,
     writeConfig
 };
