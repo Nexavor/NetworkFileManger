@@ -1,4 +1,4 @@
-// server.js (带详细调试日志版)
+// server.js (修复 WebDAV 0字节问题：强制 Content-Length)
 
 require('dotenv').config();
 const express = require('express');
@@ -231,16 +231,15 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- 上传路由 (带调试日志) ---
+// --- 上传路由 (修复 WebDAV Content-Length 问题) ---
 app.post('/upload', requireLogin, (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
     const config = storageManager.readConfig(); 
     const transferMode = config.transferMode || 'stream';
+    const storageMode = config.storageMode || 'local';
     const MAX_FILENAME_BYTES = 255; 
-
-    console.log(`[Upload Debug] Request received. Mode: ${transferMode}`);
 
     try {
         if (!folderId) throw new Error('folderId is missing from query parameters');
@@ -255,61 +254,42 @@ app.post('/upload', requireLogin, (req, res) => {
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
             const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
             const { mimeType } = fileInfo;
-            console.log(`[Upload Debug] Processing file: ${relativePath} (${mimeType})`);
             
+            // 1. 档名检查
             const pathParts = relativePath.split('/').filter(p => p);
             let finalFilename = pathParts.pop() || relativePath;
 
             if (Buffer.byteLength(finalFilename, 'utf8') > MAX_FILENAME_BYTES) {
-                console.error(`[Upload Debug] Filename too long: ${finalFilename}`);
                 fileStream.resume(); 
-                uploadPromises.push(Promise.reject(new Error(`档名过长`)));
+                uploadPromises.push(Promise.reject(new Error(`档名 "${finalFilename.substring(0, 30)}..." 过长。`)));
                 return;
             }
 
+            // 2. 检查是否跳过
             const action = resolutions[relativePath] || 'upload';
             if (action === 'skip') {
-                console.log(`[Upload Debug] Action is SKIP for ${relativePath}`);
                 fileStream.resume(); 
                 uploadPromises.push(Promise.resolve({ skipped: true }));
                 return;
             }
 
             if (transferMode === 'semi') {
-                // === 半流式模式 (调试版) ===
+                // === 半流式模式 ===
                 const tempFileName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.tmp`;
                 const tempFilePath = path.join(TMP_DIR, tempFileName);
-                console.log(`[Upload Debug] Temp file path: ${tempFilePath}`);
-                
                 const writeStream = fs.createWriteStream(tempFilePath);
                 
-                // 调试：统计接收到的流字节数
-                let receivedBytes = 0;
-                fileStream.on('data', (chunk) => {
-                    receivedBytes += chunk.length;
-                });
-
+                // 任务 A: 写入临时文件
                 const writeTask = new Promise((resolve, reject) => {
-                    writeStream.on('open', () => console.log(`[Upload Debug] WriteStream opened`));
-                    
                     fileStream.pipe(writeStream);
-                    
-                    fileStream.on('error', (err) => {
-                        console.error(`[Upload Debug] FileStream Error: ${err.message}`);
-                        reject(err);
-                    });
-                    writeStream.on('error', (err) => {
-                        console.error(`[Upload Debug] WriteStream Error: ${err.message}`);
-                        reject(err);
-                    });
-                    writeStream.on('finish', () => {
-                        console.log(`[Upload Debug] WriteStream finished. Received bytes from stream: ${receivedBytes}`);
-                        resolve();
-                    });
+                    fileStream.on('error', reject);
+                    writeStream.on('error', reject);
+                    // 使用 close 确保文件句柄已完全关闭
+                    writeStream.on('close', resolve);
                 });
 
+                // 任务 B: 数据库检查
                 const dbTask = (async () => {
-                    console.log(`[Upload Debug] Starting DB check...`);
                     const folderPathParts = pathParts;
                     const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                     
@@ -322,39 +302,22 @@ app.post('/upload', requireLogin, (req, res) => {
                         effectiveFilename = await data.findAvailableName(effectiveFilename, targetFolderId, userId, false);
                     } else {
                         const conflict = await data.findItemInFolder(effectiveFilename, targetFolderId, userId);
-                        if (conflict) {
-                            console.log(`[Upload Debug] DB Conflict found.`);
-                            return { skipped: true };
-                        }
+                        if (conflict) return { skipped: true };
                     }
-                    console.log(`[Upload Debug] DB check complete. Upload target: ${effectiveFilename}`);
                     return { skipped: false, targetFolderId, effectiveFilename, existingItem };
                 })();
 
+                // 组合任务
                 const combinedTask = (async () => {
                     let dbResult, dbError;
-                    try {
-                        dbResult = await dbTask;
-                    } catch (e) { dbError = e; }
+                    try { dbResult = await dbTask; } catch (e) { dbError = e; }
 
                     try {
                         await writeTask;
                     } catch (writeErr) {
-                        console.error(`[Upload Debug] Write failed completely.`);
                         await fsp.unlink(tempFilePath).catch(() => {});
-                        if (dbError) throw new Error(`DB & Write Error: ${dbError.message} / ${writeErr.message}`);
+                        if (dbError) throw new Error(`DB错误: ${dbError.message}, 且写入中断: ${writeErr.message}`);
                         throw writeErr;
-                    }
-
-                    // 调试：检查磁盘文件大小
-                    try {
-                        const stats = await fsp.stat(tempFilePath);
-                        console.log(`[Upload Debug] Disk file size check: ${stats.size} bytes`);
-                        if (stats.size === 0 && receivedBytes > 0) {
-                            console.error(`[Upload Debug] CRITICAL ERROR: Stream had data but file is empty!`);
-                        }
-                    } catch (statErr) {
-                        console.error(`[Upload Debug] Failed to stat temp file: ${statErr.message}`);
                     }
 
                     if (dbError) {
@@ -363,20 +326,23 @@ app.post('/upload', requireLogin, (req, res) => {
                     }
 
                     if (dbResult.skipped) {
-                         console.log(`[Upload Debug] Skipping upload logic based on DB result.`);
                          await fsp.unlink(tempFilePath).catch(() => {});
                          return { skipped: true };
                     }
 
                     try {
-                        console.log(`[Upload Debug] Starting upload to backend storage...`);
-                        const tempReadStream = fs.createReadStream(tempFilePath);
-                        await storage.upload(tempReadStream, dbResult.effectiveFilename, mimeType, userId, dbResult.targetFolderId, caption || '', dbResult.existingItem);
-                        console.log(`[Upload Debug] Upload to backend storage success.`);
+                        // --- 关键修复：针对 WebDAV 使用 Buffer 以确保 Content-Length ---
+                        let dataToUpload;
+                        if (storageMode === 'webdav') {
+                            // 读取为 Buffer，这将强制发送 Content-Length 头
+                            dataToUpload = await fsp.readFile(tempFilePath);
+                        } else {
+                            // Local / Telegram 继续使用流以节省内存
+                            dataToUpload = fs.createReadStream(tempFilePath);
+                        }
+
+                        await storage.upload(dataToUpload, dbResult.effectiveFilename, mimeType, userId, dbResult.targetFolderId, caption || '', dbResult.existingItem);
                         return { skipped: false };
-                    } catch(err) {
-                        console.error(`[Upload Debug] Backend storage upload failed: ${err.message}`);
-                        throw err;
                     } finally {
                         await fsp.unlink(tempFilePath).catch(() => {});
                     }
@@ -386,8 +352,7 @@ app.post('/upload', requireLogin, (req, res) => {
 
             } else {
                 // === 纯流式模式 ===
-                console.log(`[Upload Debug] Using STREAM mode.`);
-                fileStream.pause(); 
+                fileStream.pause();
                 const streamTask = (async () => {
                     const folderPathParts = pathParts;
                     const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
@@ -418,7 +383,6 @@ app.post('/upload', requireLogin, (req, res) => {
         });
 
         busboy.on('finish', async () => {
-            console.log(`[Upload Debug] Busboy finished parsing.`);
             try {
                 const results = await Promise.all(uploadPromises);
                 const allSkipped = results.length > 0 && results.every(r => r && r.skipped);
@@ -429,7 +393,6 @@ app.post('/upload', requireLogin, (req, res) => {
                      res.json({ success: true, message: '上传完成' });
                 }
             } catch (error) {
-                console.error(`[Upload Debug] Final Error: ${error.message}`);
                 if (!res.headersSent) {
                     res.status(500).json({ success: false, message: `上传任务执行失败: ${error.message}` });
                 }
@@ -437,7 +400,6 @@ app.post('/upload', requireLogin, (req, res) => {
         });
 
         busboy.on('error', (err) => {
-            console.error(`[Upload Debug] Busboy Error: ${err.message}`);
             req.unpipe(busboy);
             if (!res.headersSent) {
                 res.status(500).json({ success: false, message: '上传解析失败' });
@@ -447,7 +409,6 @@ app.post('/upload', requireLogin, (req, res) => {
         req.pipe(busboy);
 
     } catch (err) {
-        console.error(`[Upload Debug] Setup Error: ${err.message}`);
         res.status(400).json({ success: false, message: `请求预处理失败: ${err.message}` });
     }
 });
