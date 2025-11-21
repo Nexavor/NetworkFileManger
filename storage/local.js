@@ -6,12 +6,6 @@ const data = require('../data.js');
 const crypto = require('crypto'); // 确保引入 crypto
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
-const FILE_NAME = 'storage/local.js';
-
-const log = (level, func, message, ...args) => {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] [LOCAL:${level}] [${func}] - ${message}`, ...args);
-};
 
 async function setup() {
     try { await fsp.mkdir(UPLOAD_DIR, { recursive: true }); } catch (e) {}
@@ -19,9 +13,6 @@ async function setup() {
 setup();
 
 async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, caption = '', existingItem = null) {
-    const FUNC_NAME = 'upload';
-    log('INFO', FUNC_NAME, `上传开始: "${fileName}"`);
-    
     const userDir = path.join(UPLOAD_DIR, String(userId));
     const folderPathParts = await data.getFolderPath(folderId, userId);
     const relativeFolderPath = path.join(...folderPathParts.slice(1).map(p => p.name)); 
@@ -62,12 +53,10 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
     if (Buffer.isBuffer(fileStreamOrBuffer)) {
         // 1. 处理 Buffer (来自缓冲模式的小文件)
         try {
-            log('DEBUG', FUNC_NAME, `检测到 Buffer 输入, 大小: ${fileStreamOrBuffer.length} bytes`);
             await fsp.writeFile(finalFilePath, fileStreamOrBuffer);
             const stats = await fsp.stat(finalFilePath);
             return await updateDatabase(stats.size);
         } catch (err) {
-            log('ERROR', FUNC_NAME, `Buffer 写入失败: ${err.message}`);
             throw err;
         }
     } else {
@@ -78,13 +67,10 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
 
             // 安全检查
             if (typeof fileStream.pipe !== 'function') {
-                 const msg = '输入不是有效的流或 Buffer';
-                 log('ERROR', FUNC_NAME, msg);
-                 return reject(new Error(msg));
+                 return reject(new Error('输入不是有效的流或 Buffer'));
             }
 
             fileStream.on('error', err => {
-                log('ERROR', FUNC_NAME, `输入流错误: ${err.message}`);
                 writeStream.close();
                 fs.unlink(finalFilePath, () => {});
                 reject(err);
@@ -93,22 +79,15 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             writeStream.on('finish', async () => {
                 try {
                     const stats = await fsp.stat(finalFilePath);
-                    log('DEBUG', FUNC_NAME, `流写入完成: Size=${stats.size}`);
-                    
-                    if (stats.size === 0) {
-                        log('WARN', FUNC_NAME, `文件大小为0，可能上传失败`);
-                    }
                     
                     const result = await updateDatabase(stats.size);
                     resolve(result);
                 } catch (err) {
-                    log('ERROR', FUNC_NAME, `DB更新失败: ${err.message}`);
                     reject(err);
                 }
             });
 
             writeStream.on('error', err => {
-                log('ERROR', FUNC_NAME, `写入流错误: ${err.message}`);
                 fs.unlink(finalFilePath, () => {});
                 reject(err);
             });
