@@ -30,12 +30,6 @@ app.set('json replacer', jsonReplacer);
 
 const TMP_DIR = path.join(__dirname, 'data', 'tmp');
 
-// --- 调试日志工具 ---
-const log = (tag, message) => {
-    const time = new Date().toISOString();
-    console.log(`[${time}] [${tag}] ${message}`);
-};
-
 // 清理临时目录
 async function cleanupTempDir() {
     try {
@@ -113,7 +107,6 @@ async function checkRememberMeCookie(req, res, next) {
                 res.clearCookie('remember_me', { path: '/' });
             }
         } catch (err) {
-            console.error('Check remember token error:', err);
             res.clearCookie('remember_me', { path: '/' });
         }
     }
@@ -233,7 +226,7 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- 核心修改：/upload 路由 (含日志与增强缓冲模式) ---
+// --- /upload 路由 (已移除日志) ---
 app.post('/upload', requireLogin, (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
@@ -241,8 +234,6 @@ app.post('/upload', requireLogin, (req, res) => {
     const config = storageManager.readConfig();
     const uploadMode = config.uploadMode || 'stream'; 
     const MAX_FILENAME_BYTES = 255; 
-
-    log('UPLOAD_START', `User: ${userId}, Mode: ${uploadMode}, Folder: ${folderId}`);
 
     try {
         if (!folderId) throw new Error('缺少 folderId');
@@ -256,7 +247,6 @@ app.post('/upload', requireLogin, (req, res) => {
 
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
             const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
-            log('BUSBOY_FILE', `开始接收文件: ${relativePath}, Encoding: ${fileInfo.encoding}, Mime: ${fileInfo.mimeType}`);
             
             const fileUploadPromise = (async () => {
                 const { mimeType } = fileInfo;
@@ -270,7 +260,6 @@ app.post('/upload', requireLogin, (req, res) => {
 
                 const action = resolutions[relativePath] || 'upload';
                 if (action === 'skip') {
-                    log('UPLOAD_SKIP', `跳过文件: ${finalFilename}`);
                     fileStream.resume();
                     return { skipped: true };
                 }
@@ -295,21 +284,16 @@ app.post('/upload', requireLogin, (req, res) => {
                     // --- 缓冲模式：先写入本地临时文件 ---
                     const tempFileName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}-${path.basename(finalFilename)}`;
                     const tempFilePath = path.join(TMP_DIR, tempFileName);
-                    log('BUFFER_MODE', `缓冲写入临时文件: ${tempFilePath}`);
 
                     try {
                         // 1. 写入临时文件
                         const writeStream = fs.createWriteStream(tempFilePath);
-                        let receivedBytes = 0;
                         
                         await new Promise((resolve, reject) => {
-                            fileStream.on('data', chunk => receivedBytes += chunk.length);
                             fileStream.pipe(writeStream);
-                            
                             fileStream.on('error', err => reject(err));
                             writeStream.on('error', err => reject(err));
                             writeStream.on('finish', () => {
-                                log('BUFFER_FINISH', `临时文件写入完成: ${finalFilename}, Size: ${receivedBytes} bytes`);
                                 resolve();
                             });
                         });
@@ -319,40 +303,28 @@ app.post('/upload', requireLogin, (req, res) => {
                              throw new Error("接收到的文件大小为 0 字节，上传中止。");
                         }
 
-                        // 3. 上传到最终存储 (策略优化：小文件用 Buffer，大文件用流)
-                        log('BUFFER_UPLOAD', `开始将临时文件上传到后端 (${storage.type}): ${finalFilename}`);
-                        
+                        // 3. 上传到最终存储
                         let uploadData;
-                        // 阈值设为 50MB。WebDAV 上传 Buffer 最稳，彻底解决 0KB 问题。
                         if (stats.size < 50 * 1024 * 1024) { 
-                            log('BUFFER_STRATEGY', `文件较小 (${stats.size})，使用 Buffer 上传以确保稳定`);
                             uploadData = await fsp.readFile(tempFilePath);
                         } else {
-                            log('BUFFER_STRATEGY', `文件较大 (${stats.size})，使用 Stream 上传`);
                             uploadData = fs.createReadStream(tempFilePath);
-                            // 这里的流有 path 属性，storage/webdav.js 会检测并设置 Content-Length
                         }
 
                         await storage.upload(uploadData, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
-                        log('BUFFER_SUCCESS', `后端上传成功: ${finalFilename}`);
 
                     } finally {
                         if (fs.existsSync(tempFilePath)) {
-                            await fsp.unlink(tempFilePath).catch(e => log('CLEANUP_ERR', e.message));
+                            await fsp.unlink(tempFilePath).catch(e => {});
                         }
                     }
                 } else {
-                    // --- 流式模式 (关键修复：移除所有数据监听) ---
-                    log('STREAM_MODE', `启用流式上传: ${finalFilename}`);
-                    // 注意：这里绝对不能有 fileStream.on('data')，否则数据会被提前消耗！
-                    // 直接将原始流传给 storage
+                    // --- 流式模式 ---
                     await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
-                    log('STREAM_SUCCESS', `上传流程结束: ${finalFilename}`);
                 }
 
                 return { skipped: false };
             })().catch(err => {
-                log('UPLOAD_ERR', `处理文件失败 ${relativePath}: ${err.message}`);
                 fileStream.resume(); 
                 return { success: false, error: err };
             });
@@ -361,12 +333,10 @@ app.post('/upload', requireLogin, (req, res) => {
         });
 
         busboy.on('finish', async () => {
-            log('BUSBOY_FINISH', 'Busboy 解析完成，等待所有上传任务结束...');
             try {
                 const results = await Promise.all(uploadPromises);
                 const errors = results.filter(r => r && r.error);
                 if (errors.length > 0) {
-                     log('UPLOAD_FAIL', `总任务中有 ${errors.length} 个错误。第一个错误: ${errors[0].error.message}`);
                      throw errors[0].error;
                 }
                 const allSkipped = results.length > 0 && results.every(r => r.skipped);
@@ -383,7 +353,6 @@ app.post('/upload', requireLogin, (req, res) => {
         });
 
         busboy.on('error', (err) => {
-            log('BUSBOY_ERR', `Busboy 错误: ${err.message}`);
             req.unpipe(busboy);
             if (!res.headersSent) res.status(500).json({ success: false, message: '上传解析失败' });
         });
@@ -391,12 +360,10 @@ app.post('/upload', requireLogin, (req, res) => {
         req.pipe(busboy);
 
     } catch (err) {
-        log('PRE_UPLOAD_ERR', err.message);
         res.status(400).json({ success: false, message: `请求失败: ${err.message}` });
     }
 });
 
-// ... (其余路由保持原样，包含 BigInt 修复) ...
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
     const userId = req.session.userId;
@@ -883,7 +850,6 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
         res.attachment('download.zip');
 
         archive.on('error', function(err) {
-            console.error('Archiver error:', err);
             if (!res.headersSent) {
                 res.status(500).send({ error: `压缩失败: ${err.message}` });
             } else {
@@ -927,7 +893,6 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
                     }
                 }
             } catch (err) {
-                console.error(`[Archiver] 无法附加档案 "${file.path}": ${err.message}`);
                 errors.push(err.message);
                 archive.append(`错误：无法附加档案 "${file.path}"。\n错误讯息: ${err.message}`, { name: `${file.path} (错误).txt` });
             }
@@ -944,7 +909,6 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
 
                     processFile(file)
                         .catch(err => {
-                            console.error("并发处理文件时发生未捕获的错误: ", err);
                         })
                         .finally(() => {
                             activeTasks--;
@@ -958,7 +922,6 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
         await archive.finalize();
         
     } catch (error) {
-        console.error('压缩档案时发生严重错误:', error);
         if (!res.headersSent) {
             res.status(500).send('压缩档案时发生错误: ' + error.message);
         }
