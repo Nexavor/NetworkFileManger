@@ -5,18 +5,8 @@ const FormData = require('form-data');
 const data = require('../data.js');
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
-const FILE_NAME = 'storage/telegram.js';
-
-// --- 日志辅助函数 ---
-const log = (level, func, message, ...args) => {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] [TELEGRAM:${level}] [${func}] - ${message}`, ...args);
-};
 
 async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, caption = '', existingItem = null) { // <-- 参数名改为 fileStreamOrBuffer
-    const FUNC_NAME = 'upload';
-    log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 Telegram...`);
-  
     return new Promise(async (resolve, reject) => {
         try {
             const formData = new FormData();
@@ -29,19 +19,15 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             // --- 关键修正：仅当输入是流时才添加错误监听 ---
             if (!Buffer.isBuffer(fileStreamOrBuffer) && typeof fileStreamOrBuffer.on === 'function') {
                 fileStreamOrBuffer.on('error', err => {
-                    log('ERROR', FUNC_NAME, `输入文件流发生错误 for "${fileName}":`, err);
                     reject(new Error(`输入文件流中断: ${err.message}`));
                 });
             }
-
-            log('DEBUG', FUNC_NAME, `正在发送 POST 请求到 Telegram API for "${fileName}"`);
             
             const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
                 headers: formData.getHeaders(),
                 maxContentLength: Infinity,
                 maxBodyLength: Infinity,
             });
-            log('DEBUG', FUNC_NAME, `收到 Telegram API 的响应 for "${fileName}"`);
 
             if (res.data.ok) {
                 const result = res.data.result;
@@ -54,13 +40,10 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
                     // --- BUG 1 修复逻辑 ---
                     if (existingItem) {
                         // 覆盖：先删除旧的消息
-                        log('DEBUG', FUNC_NAME, `(覆盖) 正在删除旧的 Telegram 消息: ${existingItem.message_id}`);
                         await data.deleteMessages([existingItem.message_id]);
-                        log('INFO', FUNC_NAME, `旧消息 ${existingItem.message_id} 已删除。`);
                     }
                     
                     // (新增或覆盖) 添加新文件的数据库条目
-                    log('DEBUG', FUNC_NAME, `正在将新文件资讯添加到资料库: "${fileName}"`);
                     const dbResult = await data.addFile({
                       message_id: result.message_id,
                       fileName,
@@ -71,7 +54,6 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
                       date: Date.now(),
                     }, folderId, userId, 'telegram');
                     
-                    log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
                     resolve({ success: true, data: res.data, fileId: dbResult.fileId });
 
                 } else {
@@ -82,7 +64,6 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             }
         } catch (error) {
             const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
-            log('ERROR', FUNC_NAME, `上传到 Telegram 失败 for "${fileName}": ${errorDescription}`);
             
             // 仅当它是流且具有 resume 方法时才调用
             if (fileStreamOrBuffer && typeof fileStreamOrBuffer.resume === 'function') {
