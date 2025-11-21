@@ -6,15 +6,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const FILE_NAME = 'storage/webdav.js';
 let client = null;
 const creatingDirs = new Set();
-
-// --- 日志辅助函数 (带时间戳) ---
-const log = (level, func, message, ...args) => {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] [WEBDAV:${level}] [${func}] - ${message}`, ...args);
-};
 
 function getWebdavConfig() {
     const storageManager = require('./index'); 
@@ -42,7 +35,6 @@ function resetClient() {
 }
 
 async function ensureDirectoryExists(fullPath) {
-    const FUNC_NAME = 'ensureDirectoryExists';
     if (!fullPath || fullPath === "/") return;
     
     while (creatingDirs.has(fullPath)) {
@@ -60,13 +52,10 @@ async function ensureDirectoryExists(fullPath) {
             currentPath += `/${part}`;
             const exists = await client.exists(currentPath);
             if (!exists) {
-                log('INFO', FUNC_NAME, `创建目录: "${currentPath}"`);
                 try {
                     await client.createDirectory(currentPath);
                 } catch (e) {
-                    if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
-                         log('WARN', FUNC_NAME, `创建目录可能失败: ${e.message}`);
-                    }
+                    // Ignore errors if directory likely created concurrently or not allowed
                 }
             }
         }
@@ -91,9 +80,6 @@ async function getFolderPath(folderId, userId) {
 }
 
 async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '', existingItem = null) {
-    const FUNC_NAME = 'upload';
-    log('INFO', FUNC_NAME, `开始处理文件: "${fileName}"`);
-    
     return new Promise(async (resolve, reject) => {
         let client; 
         let remotePath; 
@@ -114,13 +100,10 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             // 如果传入的是流，绑定错误处理
             if (fileStream && typeof fileStream.on === 'function') {
                 fileStream.on('error', err => {
-                    log('ERROR', FUNC_NAME, `输入流错误 "${fileName}":`, err);
                     reject(new Error(`Stream Error: ${err.message}`));
                 });
             }
 
-            log('DEBUG', FUNC_NAME, `执行 putFileContents: "${remotePath}"`);
-            
             let options = { overwrite: true };
             
             // --- 关键修正：自动检测并设置 Content-Length ---
@@ -129,9 +112,8 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
                 try {
                     const fsStats = fs.statSync(fileStream.path);
                     options.contentLength = fsStats.size;
-                    log('DEBUG', FUNC_NAME, `检测到本地文件流，设置 Content-Length: ${fsStats.size}`);
                 } catch (e) {
-                    log('WARN', FUNC_NAME, `无法获取本地流文件大小: ${e.message}`);
+                    // Ignore stat errors
                 }
             }
 
@@ -142,14 +124,12 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             }
             
             const stats = await client.stat(remotePath);
-            log('DEBUG', FUNC_NAME, `上传后检查: "${fileName}", Size: ${stats.size}`);
             
             if (stats.size === 0) {
                 throw new Error('上传验证失败: 远端文件大小为 0 字节');
             }
 
             if (existingItem) {
-                log('INFO', FUNC_NAME, `更新数据库 (覆盖): ${existingItem.id}`);
                 await data.updateFile(existingItem.id, {
                     mimetype: mimetype,
                     file_id: remotePath,
@@ -159,7 +139,6 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
                 resolve({ success: true, message: '覆盖成功', fileId: existingItem.id });
             } else {
                 const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
-                log('INFO', FUNC_NAME, `写入数据库 (新增): ${messageId}`);
                 const dbResult = await data.addFile({
                     message_id: messageId,
                     fileName,
@@ -172,7 +151,6 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             }
 
         } catch (error) {
-            log('ERROR', FUNC_NAME, `流程失败 for "${fileName}": ${error.message}`);
             if (fileStream && typeof fileStream.resume === 'function') {
                 fileStream.resume();
             }
@@ -180,7 +158,6 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             // 发生错误时，尝试清理可能存在的 0KB 残留文件
             if (client && remotePath) {
                 try {
-                    log('INFO', FUNC_NAME, `清理残留文件: "${remotePath}"`);
                     await client.deleteFile(remotePath);
                 } catch (e) { }
             }
