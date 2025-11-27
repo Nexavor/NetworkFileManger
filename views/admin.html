@@ -20,6 +20,25 @@
             margin-top: 0;
             height: 42px; /* 与 input 对齐 */
         }
+        /* 新增：配额编辑表单的样式 */
+        .quota-edit-form {
+            display: flex;
+            align-items: center;
+            gap: 5px; /* 调整元素间的间距 */
+        }
+        .quota-edit-form input {
+            width: 100px !important;
+            padding: 5px !important;
+            margin: 0 5px 0 0 !important;
+            box-sizing: border-box;
+            height: 30px;
+        }
+        /* 保证按钮的宽度和高度 */
+        .quota-edit-form button {
+            height: 30px;
+            padding: 5px 10px;
+            margin: 0 !important;
+        }
     </style>
 </head>
 <body>
@@ -95,6 +114,27 @@
         </div>
 
         <div class="setting-card">
+            <h2>使用者配额管理</h2>
+            <p>设定普通使用者的最大储存空间（0 GB 表示无限，预设 1 GB）。</p>
+
+            <div class="table-container">
+                <table class="user-table" id="quota-table">
+                    <thead>
+                        <tr>
+                            <th>使用者名称</th>
+                            <th>身份</th>
+                            <th>已用空间</th>
+                            <th>最大空间 (GB)</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="quota-table-body">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="setting-card">
             <h2>使用者管理</h2>
             <form id="add-user-form">
                 <div class="form-grid">
@@ -118,7 +158,7 @@
     <script src="/vendor/axios/axios.min.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            // ... (其他 DOM 元素获取) ...
+            // ... (Omitted existing DOM element declarations)
             const currentModeEl = document.getElementById('current-mode');
             const currentUploadModeEl = document.getElementById('current-upload-mode');
             const storageSelect = document.getElementById('storage-select');
@@ -141,6 +181,23 @@
             const saveWebdavBtn = document.getElementById('save-webdav-btn');
             const clearWebdavFormBtn = document.getElementById('clear-webdav-form-btn');
 
+            // --- 新增：配额管理 DOM 元素 ---
+            const quotaTableBody = document.getElementById('quota-table-body');
+
+            // --- 新增：字节格式化工具函数 ---
+            const formatBytes = (bytes, decimals = 2) => {
+                if (!bytes || bytes === 0) return '0 B';
+                const k = 1024;
+                const dm = decimals < 0 ? 0 : decimals;
+                const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+            };
+            
+            // --- 新增：GB和Bytes转换工具函数 ---
+            const bytesToGB = (bytes) => (bytes / 1073741824); // 1GB = 1073741824 Bytes
+            const GBToBytes = (gb) => Math.round(parseFloat(gb) * 1073741824);
+            const DEFAULT_MAX_GB = bytesToGB(1073741824).toFixed(2); 
 
             async function loadCurrentSettings() {
                 try {
@@ -285,9 +342,10 @@
             
             async function loadUsers() {
                 try {
-                    const res = await axios.get('/api/admin/users');
+                    // 1. 加载用户管理列表 (只显示普通用户)
+                    const resUsers = await axios.get('/api/admin/users');
                     userTableBody.innerHTML = '';
-                    res.data.forEach(user => {
+                    resUsers.data.forEach(user => {
                         const row = `
                             <tr>
                                 <td>${user.username}</td>
@@ -299,8 +357,53 @@
                         `;
                         userTableBody.innerHTML += row;
                     });
+
+                    // 2. 加载用户配额管理列表 (所有用户及其配额)
+                    const resQuota = await axios.get('/api/admin/users-with-quota');
+                    quotaTableBody.innerHTML = '';
+
+                    resQuota.data.users.forEach(user => {
+                        const isSystemAdmin = user.is_admin === 1;
+                        const used = formatBytes(user.used_storage_bytes);
+                        const maxBytes = user.max_storage_bytes;
+                        const maxGBDisplay = maxBytes === 0 ? '无限' : bytesToGB(maxBytes).toFixed(2);
+                        
+                        let row = document.createElement('tr');
+                        row.dataset.userId = user.id;
+
+                        if (isSystemAdmin) {
+                            row.innerHTML = `
+                                <td>${user.username}</td>
+                                <td><span style="color:#dc3545; font-weight:bold;">管理员</span></td>
+                                <td>${used}</td>
+                                <td>无限</td>
+                                <td>—</td>
+                            `;
+                        } else {
+                            // 普通用户可编辑配额
+                            row.innerHTML = `
+                                <td>${user.username}</td>
+                                <td>普通用户</td>
+                                <td>${used}</td>
+                                <td data-max-bytes="${maxBytes}">
+                                    <span class="max-quota-display">${maxBytes === 0 ? '无限' : maxGBDisplay + ' GB'}</span>
+                                    <div class="quota-edit-form" style="display:none; align-items:center;">
+                                        <input type="number" step="0.01" min="0" value="${maxBytes === 0 ? 0 : maxGBDisplay}" class="quota-input" data-default-gb="${DEFAULT_MAX_GB}"> GB
+                                        <button class="save-quota-btn upload-link-btn" style="background-color: #28a745; padding: 5px 10px; margin: 0 5px; font-size: 12px; height: 30px;"><i class="fas fa-save"></i></button>
+                                        <button class="cancel-quota-btn upload-link-btn" style="background-color: #6c757d; padding: 5px 10px; font-size: 12px; height: 30px;">取消</button>
+                                    </div>
+                                </td>
+                                <td class="actions">
+                                    <button class="edit-quota-btn upload-link-btn" style="background-color: #007bff; padding: 5px 10px; font-size: 12px; height: 30px;"><i class="fas fa-pen"></i> 编辑配额</button>
+                                </td>
+                            `;
+                        }
+                        quotaTableBody.appendChild(row);
+                    });
                 } catch (error) {
+                    console.error("加载用户或配额失败:", error);
                     userTableBody.innerHTML = '<tr><td colspan="2">加载使用者失败</td></tr>';
+                    quotaTableBody.innerHTML = '<tr><td colspan="5">加载配额列表失败</td></tr>';
                 }
             }
 
@@ -341,7 +444,7 @@
                 }
 
                 if (target.classList.contains('delete-user-btn')) {
-                    if (confirm(`确定要删除使用者 "${username}" 吗？\n此操作将会删除该使用者的所有档案和资料夹，且无法复原！`)) {
+                    if (confirm(`确定要删除使用者 "${username}" 吗？\n此操作将会删除该使用者的所有档案和资料夾，且无法复原！`)) {
                         try {
                             await axios.post('/api/admin/delete-user', { userId });
                             alert(`使用者 "${username}" 已被删除。`);
@@ -352,6 +455,97 @@
                     }
                 }
             });
+
+            // --- 新增：配额表操作事件 ---
+            quotaTableBody.addEventListener('click', async (e) => {
+                const target = e.target.closest('button');
+                if (!target) return;
+
+                const row = target.closest('tr');
+                if (!row) return;
+                
+                const userId = row.dataset.userId;
+                const quotaCell = row.querySelector('td[data-max-bytes]'); 
+                const displayEl = quotaCell.querySelector('.max-quota-display');
+                const editForm = quotaCell.querySelector('.quota-edit-form');
+                const editBtn = row.querySelector('.edit-quota-btn');
+                const inputEl = quotaCell.querySelector('.quota-input');
+
+                // 编辑按钮点击事件
+                if (target.classList.contains('edit-quota-btn')) {
+                    if (displayEl && editForm && inputEl && editBtn) {
+                        displayEl.style.display = 'none';
+                        editForm.style.display = 'flex'; 
+                        editBtn.style.display = 'none';
+                    }
+                }
+
+                // 取消按钮点击事件
+                if (target.classList.contains('cancel-quota-btn')) {
+                    if (displayEl && editForm && editBtn) {
+                        displayEl.style.display = 'inline';
+                        editForm.style.display = 'none';
+                        editBtn.style.display = 'block';
+                    }
+                }
+                
+                // 保存按钮点击事件
+                if (target.classList.contains('save-quota-btn')) {
+                    const newGB = inputEl.value.trim();
+
+                    if (isNaN(parseFloat(newGB)) || parseFloat(newGB) < 0) {
+                        alert('请输入一个有效的数字 (>= 0)');
+                        return;
+                    }
+                    
+                    const newMaxBytes = GBToBytes(newGB);
+                    // 尝试从已用空间单元格中提取字节数
+                    const usedText = row.querySelector('td:nth-child(3)').textContent;
+                    // 使用正则从 "10 MB" 格式中提取数字部分
+                    const usedMatch = usedText.match(/(\d+(\.\d+)?)\s*([A-Z]+)/);
+                    let currentUsedBytes = 0;
+                    if(usedMatch) {
+                        const num = parseFloat(usedMatch[1]);
+                        const unit = usedMatch[3];
+                        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                        const k = 1024;
+                        const index = sizes.indexOf(unit);
+                        if(index > 0) {
+                            currentUsedBytes = Math.round(num * Math.pow(k, index));
+                        } else if (index === 0) {
+                            currentUsedBytes = num;
+                        }
+                    }
+
+                    if (newMaxBytes !== 0 && newMaxBytes < currentUsedBytes) {
+                        const usedDisplay = formatBytes(currentUsedBytes);
+                        alert(`新配额不能低于当前已用空间 (${usedDisplay})！`);
+                        return;
+                    }
+
+                    let confirmationMessage = newMaxBytes === 0
+                        ? "确定要设置此用户最大空间为 无限 吗？"
+                        : `确定要设置此用户最大空间为 ${formatBytes(newMaxBytes)} 吗？`;
+                    
+                    if (!confirm(confirmationMessage)) return;
+
+                    try {
+                        const response = await axios.post('/api/admin/set-quota', { 
+                            userId, 
+                            maxBytes: newMaxBytes 
+                        });
+                        if (response.data.success) {
+                            alert('配额更新成功！');
+                            loadUsers(); // 重新加载列表以更新显示
+                        } else {
+                            alert('配额更新失败：' + response.data.message);
+                        }
+                    } catch (error) {
+                        alert('配额更新失败：' + (error.response?.data?.message || '服务器错误'));
+                    }
+                }
+            });
+
 
             loadUsers();
             loadCurrentSettings();
