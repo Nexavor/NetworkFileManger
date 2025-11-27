@@ -1,4 +1,4 @@
-// data.js (真正最终修正版 - 修复 SQL 语法错误 和 module.exports 语法错误)
+// data.js
 
 const db = require('./database.js');
 const crypto = require('crypto');
@@ -14,7 +14,7 @@ const creatingFolders = new Set();
 // --- (Helper 1: 定义所有文件栏位) ---
 // 避免在每个查询中重复输入 "SELECT *"
 const ALL_FILE_COLUMNS = `
-    fileName, mimetype, file_id, thumb_file_id, date, size, folder_id, user_id, storage_type
+    fileName, mimetype, file_id, thumb_file_id, date, size, folder_id, user_id, storage_type, is_deleted, deleted_at
 `;
 // --- (Helper 2: 定义读取 message_id 的安全方式) ---
 // 这会强制 SQLite 在 node-sqlite3 驱动程式取得它之前，
@@ -25,7 +25,8 @@ const SAFE_SELECT_ID_AS_TEXT = `CAST(message_id AS TEXT) AS id`;
 
 function createUser(username, hashedPassword) {
     return new Promise((resolve, reject) => {
-        const sql = `INSERT INTO users (username, password, is_admin) VALUES (?, ?, 0)`;
+        // 修改：插入默认存储配额 (1GB = 1073741824 bytes)
+        const sql = `INSERT INTO users (username, password, is_admin, max_storage_bytes) VALUES (?, ?, 0, 1073741824)`;
         db.run(sql, [username, hashedPassword], function(err) {
             if (err) return reject(err);
             resolve({ id: this.lastID, username });
@@ -81,7 +82,6 @@ function listAllUsers() {
     });
 }
 
-
 async function deleteUser(userId) {
     const userUploadDir = path.join(UPLOAD_DIR, String(userId));
     try {
@@ -101,37 +101,60 @@ async function deleteUser(userId) {
     });
 }
 
-// --- *** 关键修正 开始 *** ---
-// 重写 searchItems 函数以正确处理加密
+// --- 新增：用户配额管理 ---
+
+async function getUserQuota(userId) {
+    const user = await new Promise((resolve, reject) => {
+        db.get("SELECT max_storage_bytes FROM users WHERE id = ?", [userId], (err, row) => err ? reject(err) : resolve(row));
+    });
+
+    const usage = await new Promise((resolve, reject) => {
+        // 统计该用户所有文件的总大小 (包括回收站中的文件)
+        // 如果只想统计未删除的，可以加上 AND is_deleted = 0
+        db.get("SELECT SUM(size) as total_size FROM files WHERE user_id = ?", [userId], (err, row) => err ? reject(err) : resolve(row));
+    });
+
+    return {
+        max: user ? (user.max_storage_bytes || 1073741824) : 1073741824, // 默认 1GB
+        used: usage && usage.total_size ? usage.total_size : 0
+    };
+}
+
+async function checkQuota(userId, incomingSize) {
+    const quota = await getUserQuota(userId);
+    return (quota.used + incomingSize) <= quota.max;
+}
+
+// --- 搜索与列表 ---
+
 function searchItems(query, userId) {
     return new Promise((resolve, reject) => {
         const searchQuery = `%${query}%`;
 
         // 此 CTE (Common Table Expression) 递归地建立每个资料夾的祖先路径，
-        // 并确定路径中是否有任何一个资料夾被加密。
+        // 并确定路径中是否有任何一个资料夾被加密或被删除。
         const baseQuery = `
-            WITH RECURSIVE folder_ancestry(id, parent_id, is_locked) AS (
-                -- 基底查询: 选出该使用者的所有资料夾，并标记其自身的加密状态
-                SELECT id, parent_id, (password IS NOT NULL) as is_locked
+            WITH RECURSIVE folder_ancestry(id, parent_id, is_locked, is_deleted) AS (
+                -- 基底查询: 选出该使用者的所有资料夾，并标记其自身的加密和删除状态
+                SELECT id, parent_id, (password IS NOT NULL) as is_locked, is_deleted
                 FROM folders
                 WHERE user_id = ?
                 UNION ALL
-                -- 递归步骤: 向上查找父资料夹，并继承其加密状态
-                SELECT fa.id, f.parent_id, (fa.is_locked OR (f.password IS NOT NULL))
+                -- 递归步骤: 向上查找父资料夹，并继承其状态
+                SELECT fa.id, f.parent_id, (fa.is_locked OR (f.password IS NOT NULL)), (fa.is_deleted OR f.is_deleted)
                 FROM folders f
                 JOIN folder_ancestry fa ON f.id = fa.parent_id
                 WHERE f.user_id = ?
             ),
-            -- 聚合结果: 对每个资料夾ID，只要其路径上有任一加密，最终状态就是加密
-            folder_lock_status AS (
-                SELECT id, MAX(is_locked) as is_path_locked
+            -- 聚合结果: 对每个资料夾ID，只要其路径上有任一加密或删除，最终状态就是加密/删除
+            folder_status AS (
+                SELECT id, MAX(is_locked) as is_path_locked, MAX(is_deleted) as is_path_deleted
                 FROM folder_ancestry
                 GROUP BY id
             )
         `;
 
-        // 查询未被加密路径下的文件
-        // --- *** 最终修正：移除多余的 "as id" *** ---
+        // 查询未被加密且未被删除路径下的文件，且文件本身未被删除
         const sqlFiles = baseQuery + `
             SELECT 
                 ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS},
@@ -139,12 +162,13 @@ function searchItems(query, userId) {
                 f.fileName as name, 
                 'file' as type
             FROM files f
-            JOIN folder_lock_status fls ON f.folder_id = fls.id
-            WHERE f.fileName LIKE ? AND f.user_id = ? AND fls.is_path_locked = 0
+            JOIN folder_status fs ON f.folder_id = fs.id
+            WHERE f.fileName LIKE ? AND f.user_id = ? 
+            AND fs.is_path_locked = 0 AND fs.is_path_deleted = 0 AND f.is_deleted = 0
             ORDER BY f.date DESC;
         `;
         
-        // 查询未被加密路径下的资料夾
+        // 查询未被加密且未被删除路径下的资料夾，且资料夹本身未被删除
         const sqlFolders = baseQuery + `
             SELECT 
                 f.id, 
@@ -153,8 +177,10 @@ function searchItems(query, userId) {
                 'folder' as type, 
                 (f.password IS NOT NULL) as is_locked
             FROM folders f
-            JOIN folder_lock_status fls ON f.id = fls.id
-            WHERE f.name LIKE ? AND f.user_id = ? AND fls.is_path_locked = 0 AND f.parent_id IS NOT NULL
+            JOIN folder_status fs ON f.id = fs.id
+            WHERE f.name LIKE ? AND f.user_id = ? 
+            AND fs.is_path_locked = 0 AND fs.is_path_deleted = 0 AND f.is_deleted = 0
+            AND f.parent_id IS NOT NULL
             ORDER BY f.name ASC;
         `;
 
@@ -165,7 +191,6 @@ function searchItems(query, userId) {
             contents.folders = folders.map(f => ({ ...f, encrypted_id: encrypt(f.id) }));
             db.all(sqlFiles, [userId, userId, searchQuery, userId], (err, files) => {
                 if (err) return reject(err);
-                // --- *** 最终修正：移除不必要的 map *** ---
                 contents.files = files;
                 resolve(contents);
             });
@@ -173,58 +198,62 @@ function searchItems(query, userId) {
     });
 }
 
-// 新增 isFileAccessible 函数用于在直接存取文件前进行权限验证
 async function isFileAccessible(fileId, userId, unlockedFolders = []) {
-    // --- *** 最终修正：此处 fileId 是 BigInt，getFilesByIds 必须能处理 *** ---
     const file = (await getFilesByIds([fileId], userId))[0];
     if (!file) {
-        return false; // 找不到档案或档案不属于该使用者
+        return false; 
+    }
+
+    // 如果文件本身在回收站中，则不可访问（除非是恢复操作，但那是另一套逻辑）
+    if (file.is_deleted) {
+        return false;
     }
 
     const path = await getFolderPath(file.folder_id, userId);
     if (!path || path.length === 0) {
-        return false; // 资料库不一致，这不应该发生
+        return false; 
     }
 
-    // 一次性查询路径上所有资料夾的加密状态
     const folderIds = path.map(p => p.id);
     const placeholders = folderIds.map(() => '?').join(',');
-    const sql = `SELECT id, password IS NOT NULL as is_locked FROM folders WHERE id IN (${placeholders}) AND user_id = ?`;
+    const sql = `SELECT id, password IS NOT NULL as is_locked, is_deleted FROM folders WHERE id IN (${placeholders}) AND user_id = ?`;
     
-    const folderStatuses = await new Promise((resolve, reject) => {
+    const folderInfos = await new Promise((resolve, reject) => {
         db.all(sql, [...folderIds, userId], (err, rows) => {
             if (err) return reject(err);
-            resolve(new Map(rows.map(row => [row.id, row.is_locked])));
+            resolve(new Map(rows.map(row => [row.id, row])));
         });
     });
 
-    // 检查路径上的每个资料夾
     for (const folder of path) {
-        if (folderStatuses.get(folder.id) && !unlockedFolders.includes(folder.id)) {
-            return false; // 发现一个已加密但在 session 中未解锁的资料夾
+        const info = folderInfos.get(folder.id);
+        if (!info) continue;
+        
+        // 如果路径上有文件夹被删除了，文件也不可访问
+        if (info.is_deleted) return false;
+
+        if (info.is_locked && !unlockedFolders.includes(folder.id)) {
+            return false; 
         }
     }
 
-    return true; // 路径上所有资料夾都可存取
+    return true; 
 }
-// --- *** 关键修正 结束 *** ---
 
 function getItemsByIds(itemIds, userId) {
     return new Promise((resolve, reject) => {
         if (!itemIds || itemIds.length === 0) return resolve([]);
         const placeholders = itemIds.map(() => '?').join(',');
         
-        // --- *** 最终修正：移除多余的 "as id" *** ---
         const sql = `
-            SELECT id, name, parent_id, 'folder' as type, null as storage_type, null as file_id, password IS NOT NULL as is_locked
+            SELECT id, name, parent_id, 'folder' as type, null as storage_type, null as file_id, password IS NOT NULL as is_locked, is_deleted
             FROM folders 
             WHERE id IN (${placeholders}) AND user_id = ?
             UNION ALL
-            SELECT ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, folder_id as parent_id, 'file' as type, storage_type, file_id, 0 as is_locked
+            SELECT ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, folder_id as parent_id, 'file' as type, storage_type, file_id, 0 as is_locked, is_deleted
             FROM files 
             WHERE message_id IN (${placeholders}) AND user_id = ?
         `;
-        // --- *** 最终修正：将 BigInt 转换为 String *** ---
         const stringItemIds = itemIds.map(id => id.toString());
         db.all(sql, [...stringItemIds, userId, ...stringItemIds, userId], (err, rows) => {
             if (err) return reject(err);
@@ -235,11 +264,11 @@ function getItemsByIds(itemIds, userId) {
 
 function getChildrenOfFolder(folderId, userId) {
     return new Promise((resolve, reject) => {
-        // --- *** 最终修正：移除多余的 "as id" *** ---
+        // 修改：只获取未删除的子项
         const sql = `
-            SELECT id, name, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ?
+            SELECT id, name, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ? AND is_deleted = 0
             UNION ALL
-            SELECT ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ?
+            SELECT ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? AND is_deleted = 0
         `;
         db.all(sql, [folderId, userId, folderId, userId], (err, rows) => {
             if (err) return reject(err);
@@ -276,7 +305,7 @@ async function getAllDescendantFolderIds(folderId, userId) {
 
 function getFolderDetails(folderId, userId) {
     return new Promise((resolve, reject) => {
-        const sql = `SELECT id, name, parent_id, password, password IS NOT NULL as is_locked FROM folders WHERE id = ? AND user_id = ?`;
+        const sql = `SELECT id, name, parent_id, password, password IS NOT NULL as is_locked, is_deleted FROM folders WHERE id = ? AND user_id = ?`;
         db.get(sql, [folderId, userId], (err, row) => {
             if (err) reject(err);
             else resolve(row);
@@ -286,9 +315,9 @@ function getFolderDetails(folderId, userId) {
 
 function getFolderContents(folderId, userId) {
     return new Promise((resolve, reject) => {
-        const sqlFolders = `SELECT id, name, parent_id, 'folder' as type, password IS NOT NULL as is_locked FROM folders WHERE parent_id = ? AND user_id = ? ORDER BY name ASC`;
-        // --- *** 最终修正：移除多余的 "as id" *** ---
-        const sqlFiles = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS}, ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? ORDER BY name ASC`;
+        // 修改：增加 is_deleted = 0 过滤
+        const sqlFolders = `SELECT id, name, parent_id, 'folder' as type, password IS NOT NULL as is_locked FROM folders WHERE parent_id = ? AND user_id = ? AND is_deleted = 0 ORDER BY name ASC`;
+        const sqlFiles = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS}, ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? AND is_deleted = 0 ORDER BY name ASC`;
         
         let contents = { folders: [], files: [] };
         db.all(sqlFolders, [folderId, userId], (err, folders) => {
@@ -296,7 +325,6 @@ function getFolderContents(folderId, userId) {
             contents.folders = folders.map(f => ({ ...f, encrypted_id: encrypt(f.id) }));
             db.all(sqlFiles, [folderId, userId], (err, files) => {
                 if (err) return reject(err);
-                // --- *** 最终修正：移除不必要的 map *** ---
                 contents.files = files;
                 resolve(contents);
             });
@@ -304,9 +332,126 @@ function getFolderContents(folderId, userId) {
     });
 }
 
+// --- 新增：获取回收站内容 ---
+function getTrashContents(userId) {
+    return new Promise((resolve, reject) => {
+        // 查询已删除的文件夹
+        const sqlFolders = `SELECT id, name, deleted_at, 'folder' as type FROM folders WHERE user_id = ? AND is_deleted = 1 ORDER BY deleted_at DESC`;
+        // 查询已删除的文件
+        const sqlFiles = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, size, deleted_at, 'file' as type FROM files WHERE user_id = ? AND is_deleted = 1 ORDER BY deleted_at DESC`;
+
+        let contents = { folders: [], files: [] };
+        db.all(sqlFolders, [userId], (err, folders) => {
+            if (err) return reject(err);
+            contents.folders = folders.map(f => ({ ...f, encrypted_id: encrypt(f.id) }));
+            db.all(sqlFiles, [userId], (err, files) => {
+                if (err) return reject(err);
+                contents.files = files;
+                resolve(contents);
+            });
+        });
+    });
+}
+
+// --- 新增：软删除 (移入回收站) ---
+async function softDeleteItems(fileIds = [], folderIds = [], userId) {
+    const now = Date.now();
+    return new Promise((resolve, reject) => {
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION;");
+            const promises = [];
+
+            if (fileIds.length > 0) {
+                const stringFileIds = fileIds.map(id => id.toString());
+                const place = stringFileIds.map(() => '?').join(',');
+                // 标记文件为删除，并记录时间
+                const sql = `UPDATE files SET is_deleted = 1, deleted_at = ? WHERE message_id IN (${place}) AND user_id = ?`;
+                promises.push(new Promise((res, rej) => db.run(sql, [now, ...stringFileIds, userId], (e) => e ? rej(e) : res())));
+            }
+
+            if (folderIds.length > 0) {
+                const place = folderIds.map(() => '?').join(',');
+                // 标记文件夹为删除，并记录时间
+                const sql = `UPDATE folders SET is_deleted = 1, deleted_at = ? WHERE id IN (${place}) AND user_id = ?`;
+                promises.push(new Promise((res, rej) => db.run(sql, [now, ...folderIds, userId], (e) => e ? rej(e) : res())));
+            }
+
+            Promise.all(promises)
+                .then(() => db.run("COMMIT;", (e) => e ? reject(e) : resolve({ success: true })))
+                .catch((err) => db.run("ROLLBACK;", () => reject(err)));
+        });
+    });
+}
+
+// --- 新增：还原回收站项目 ---
+async function restoreItems(fileIds = [], folderIds = [], userId) {
+    return new Promise((resolve, reject) => {
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION;");
+            const promises = [];
+
+            if (fileIds.length > 0) {
+                const stringFileIds = fileIds.map(id => id.toString());
+                const place = stringFileIds.map(() => '?').join(',');
+                const sql = `UPDATE files SET is_deleted = 0, deleted_at = NULL WHERE message_id IN (${place}) AND user_id = ?`;
+                promises.push(new Promise((res, rej) => db.run(sql, [...stringFileIds, userId], (e) => e ? rej(e) : res())));
+            }
+
+            if (folderIds.length > 0) {
+                const place = folderIds.map(() => '?').join(',');
+                const sql = `UPDATE folders SET is_deleted = 0, deleted_at = NULL WHERE id IN (${place}) AND user_id = ?`;
+                promises.push(new Promise((res, rej) => db.run(sql, [...folderIds, userId], (e) => e ? rej(e) : res())));
+            }
+
+            Promise.all(promises)
+                .then(() => db.run("COMMIT;", (e) => e ? reject(e) : resolve({ success: true })))
+                .catch((err) => db.run("ROLLBACK;", () => reject(err)));
+        });
+    });
+}
+
+// --- 新增：清理过期回收站项目 ---
+async function cleanupTrash(retentionDays = 30) {
+    const cutoffDate = Date.now() - (retentionDays * 24 * 60 * 60 * 1000);
+    
+    // 查找过期的文件 (is_deleted = 1 且 deleted_at < cutoff)
+    const expiredFilesSql = `SELECT ${SAFE_SELECT_MESSAGE_ID}, user_id FROM files WHERE is_deleted = 1 AND deleted_at < ?`;
+    const expiredFoldersSql = `SELECT id, user_id FROM folders WHERE is_deleted = 1 AND deleted_at < ?`;
+
+    try {
+        const files = await new Promise((res, rej) => db.all(expiredFilesSql, [cutoffDate], (e, r) => e ? rej(e) : res(r)));
+        const folders = await new Promise((res, rej) => db.all(expiredFoldersSql, [cutoffDate], (e, r) => e ? rej(e) : res(r)));
+        
+        // 按用户分组执行物理删除 (Storage模块可能需要userId)
+        const itemsByUser = {};
+        
+        files.forEach(f => {
+            if(!itemsByUser[f.user_id]) itemsByUser[f.user_id] = { files: [], folders: [] };
+            itemsByUser[f.user_id].files.push(BigInt(f.message_id));
+        });
+        
+        folders.forEach(f => {
+            if(!itemsByUser[f.user_id]) itemsByUser[f.user_id] = { files: [], folders: [] };
+            itemsByUser[f.user_id].folders.push(f.id);
+        });
+        
+        for (const userId in itemsByUser) {
+            const { files, folders } = itemsByUser[userId];
+            if (files.length > 0 || folders.length > 0) {
+                await unifiedDelete(null, null, parseInt(userId), files, folders); 
+            }
+        }
+        return { filesCount: files.length, foldersCount: folders.length };
+
+    } catch (error) {
+        console.error("自动清理回收站失败:", error);
+        throw error;
+    }
+}
+
+
 async function getFilesRecursive(folderId, userId, currentPath = '') {
     let allFiles = [];
-    // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
     const sqlFiles = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS} FROM files WHERE folder_id = ? AND user_id = ?`;
     const files = await new Promise((res, rej) => db.all(sqlFiles, [folderId, userId], (err, rows) => err ? rej(err) : res(rows)));
     for (const file of files) {
@@ -350,11 +495,9 @@ function getFolderPath(folderId, userId) {
     });
 }
 
-// --- *** 关键修正 开始 *** ---
 async function findFolderBySharePath(shareToken, pathSegments = []) {
     return new Promise(async (resolve, reject) => {
         try {
-            // 首先，验证 token 并找到根分享资料夾
             const rootFolder = await getFolderByShareToken(shareToken);
             if (!rootFolder) {
                 return resolve(null);
@@ -364,7 +507,6 @@ async function findFolderBySharePath(shareToken, pathSegments = []) {
                 return resolve(rootFolder);
             }
 
-            // 从根目录开始，逐层验证路径
             let currentParentId = rootFolder.id;
             let currentFolder = rootFolder;
             const userId = rootFolder.user_id;
@@ -376,19 +518,17 @@ async function findFolderBySharePath(shareToken, pathSegments = []) {
                 });
 
                 if (!row) {
-                    return resolve(null); // 路径无效
+                    return resolve(null); 
                 }
                 
-                // 检查子资料夾是否已加密
                 if(row.password) {
-                    return resolve(null); // 不允许存取加密的子资料夾
+                    return resolve(null); 
                 }
 
                 currentFolder = row;
                 currentParentId = row.id;
             }
             
-            // 返回最终找到的子资料夹资讯
             resolve(currentFolder);
 
         } catch (error) {
@@ -396,7 +536,6 @@ async function findFolderBySharePath(shareToken, pathSegments = []) {
         }
     });
 }
-// --- *** 关键修正 结束 *** ---
 
 function createFolder(name, parentId, userId) {
     const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
@@ -426,7 +565,7 @@ async function findFolderByPath(startFolderId, pathParts, userId) {
     for (const part of pathParts) {
         if (!part) continue;
         const folder = await new Promise((resolve, reject) => {
-            const sql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
+            const sql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ? AND is_deleted = 0`;
             db.get(sql, [part, currentParentId, userId], (err, row) => err ? reject(err) : resolve(row));
         });
 
@@ -442,7 +581,8 @@ async function findFolderByPath(startFolderId, pathParts, userId) {
 
 function getAllFolders(userId) {
     return new Promise((resolve, reject) => {
-        const sql = "SELECT id, name, parent_id FROM folders WHERE user_id = ? ORDER BY parent_id, name ASC";
+        // 修改：只获取未删除的文件夹
+        const sql = "SELECT id, name, parent_id FROM folders WHERE user_id = ? AND is_deleted = 0 ORDER BY parent_id, name ASC";
         db.all(sql, [userId], (err, rows) => {
             if (err) {
                 reject(err);
@@ -459,7 +599,6 @@ function getAllFolders(userId) {
 
 
 async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, depth = 0) {
-    // console.log(`[Data] moveItem: 开始移动项目 ID ${itemId} (类型: ${itemType}) 到目标资料夾 ID ${targetFolderId}, 深度: ${depth}`);
     const { resolutions = {}, pathPrefix = '' } = options;
     const report = { moved: 0, skipped: 0, errors: 0 };
 
@@ -468,71 +607,48 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
         const idColumn = itemType === 'folder' ? 'id' : 'message_id';
         const nameColumn = itemType === 'folder' ? 'name' : 'fileName';
         
-        // --- *** 最终修正：在 files 表中使用 CAST(message_id AS TEXT) *** ---
         const selectId = itemType === 'folder' ? 'id' : `${SAFE_SELECT_ID_AS_TEXT}`;
         
         const sql = `SELECT ${selectId}, ${nameColumn} as name, '${itemType}' as type FROM ${table} WHERE ${idColumn} = ? AND user_id = ?`;
         
-        // --- *** 最终修正：将 BigInt 转换为 String *** ---
-        // (注意: itemId 在 moveItem 内部调用时可能是 BigInt 或 Int，统一转 string)
         db.get(sql, [itemId.toString(), userId], (err, row) => err ? reject(err) : resolve(row));
     });
 
     if (!sourceItem) {
         report.errors++;
-        // console.error(`[Data] moveItem: 找不到来源项目 ID ${itemId} (类型: ${itemType})`);
         return report;
     }
     
-    // --- *** 最终修正：确保 sourceItem.id 是 BigInt/Int，以便后续比较 *** ---
-    // (还原从数据库读出的 ID)
-    // (因为我们 CAST AS TEXT，所以 sourceItem.id 总是 string)
     const sourceItemId = itemType === 'folder' ? parseInt(sourceItem.id, 10) : BigInt(sourceItem.id);
-
 
     const currentPath = path.posix.join(pathPrefix, sourceItem.name);
     const existingItemInTarget = await findItemInFolder(sourceItem.name, targetFolderId, userId);
     let resolutionAction = resolutions[currentPath] || (existingItemInTarget ? 'skip_default' : 'move');
 
-    // --- *** 关键修正 开始：修复深度合并BUG *** ---
-    // (已在上一版修复)
-    // --- *** 关键修正 结束 *** ---
-
-    // console.log(`[Data] moveItem: 项目 "${currentPath}" 的解决策略为 "${resolutionAction}"`);
-
     switch (resolutionAction) {
         case 'skip':
         case 'skip_default':
             report.skipped++;
-            // console.log(`[Data] moveItem: 跳过项目 "${currentPath}"`);
             return report;
 
-        // --- *** 关键修正 开始：修复文件夹移动时“重命名”执行“覆盖”的BUG *** ---
         case 'rename':
-            // console.log(`[Data] moveItem: 重新命名项目 "${currentPath}"`);
             const newName = await findAvailableName(sourceItem.name, targetFolderId, userId, itemType === 'folder');
-            // console.log(`[Data] moveItem: 找到可用新名称 "${newName}"`);
             if (itemType === 'folder') {
-                // 使用专用的 renameAndMoveFolder 函数，确保操作的原子性和正确性
                 await renameAndMoveFolder(sourceItemId, newName, targetFolderId, userId);
             } else {
                 await renameAndMoveFile(sourceItemId, newName, targetFolderId, userId);
             }
             report.moved++;
             return report;
-        // --- *** 关键修正 结束 *** ---
 
         case 'overwrite':
             if (!existingItemInTarget) {
-                // console.warn(`[Data] moveItem: 尝试覆盖但目标项目 "${currentPath}" 不存在，跳过。`);
                 report.skipped++;
                 return report;
             }
-            // console.log(`[Data] moveItem: 覆盖目标项目 "${currentPath}" (ID: ${existingItemInTarget.id}, 类型: ${existingItemInTarget.type})`);
             
-            // --- *** 最终修正：确保 existingItemInTarget.id 是正确的类型 *** ---
-            // (findItemInFolder 返回的 id 是 string)
             const targetId = existingItemInTarget.type === 'folder' ? parseInt(existingItemInTarget.id, 10) : BigInt(existingItemInTarget.id);
+            // 覆盖时执行物理删除
             await unifiedDelete(targetId, existingItemInTarget.type, userId);
             
             await moveItems(itemType === 'file' ? [sourceItemId] : [], itemType === 'folder' ? [sourceItemId] : [], targetFolderId, userId);
@@ -541,20 +657,16 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
 
         case 'merge':
             if (!existingItemInTarget || existingItemInTarget.type !== 'folder' || itemType !== 'folder') {
-                // console.warn(`[Data] moveItem: 尝试合并但目标项目 "${currentPath}" 不是资料夾，跳过。`);
                 report.skipped++;
                 return report;
             }
             
-            // --- *** 最终修正：确保 existingItemInTarget.id 是 Int *** ---
             const targetFolderIdInt = parseInt(existingItemInTarget.id, 10);
 
-            // console.log(`[Data] moveItem: 合并资料夾 "${currentPath}" 到目标资料夾 ID ${targetFolderIdInt}`);
             const { folders: childFolders, files: childFiles } = await getFolderContents(sourceItemId, userId);
             let allChildrenProcessedSuccessfully = true;
 
             for (const childFolder of childFolders) {
-                // console.log(`[Data] moveItem: 递回移动子资料夹 "${childFolder.name}" (ID: ${childFolder.id})`);
                 const childReport = await moveItem(childFolder.id, 'folder', targetFolderIdInt, userId, { ...options, pathPrefix: currentPath }, depth + 1);
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
@@ -565,8 +677,6 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
             }
             
             for (const childFile of childFiles) {
-                // console.log(`[Data] moveItem: 递回移动子档案 "${childFile.name}" (ID: ${childFile.id})`);
-                // --- *** 最终修正：childFile.id 是 BigInt (string) *** ---
                 const childReport = await moveItem(BigInt(childFile.id), 'file', targetFolderIdInt, userId, { ...options, pathPrefix: currentPath }, depth + 1);
                 report.moved += childReport.moved;
                 report.skipped += childReport.skipped;
@@ -577,49 +687,69 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
             }
             
             if (allChildrenProcessedSuccessfully) {
-                // console.log(`[Data] moveItem: 所有子项目成功合并，删除原始资料夾 ID ${sourceItemId}`);
+                // 成功合并后，物理删除空的源文件夹
                 await unifiedDelete(sourceItemId, 'folder', userId);
-            } else {
-                 // console.warn(`[Data] moveItem: 部分子项目未能成功合并，保留原始资料夾 ID ${sourceItemId}`);
             }
             
             return report;
 
         default: // 'move'
-            // console.log(`[Data] moveItem: 直接移动项目 "${currentPath}"`);
             await moveItems(itemType === 'file' ? [sourceItemId] : [], itemType === 'folder' ? [sourceItemId] : [], targetFolderId, userId);
             report.moved++;
             return report;
     }
 }
 
-
-async function unifiedDelete(itemId, itemType, userId) {
+// 修改 unifiedDelete 以支持直接传入 ID 数组 (重载)，执行物理删除
+async function unifiedDelete(itemId, itemType, userId, explicitFileIds = null, explicitFolderIds = null) {
     const storage = require('./storage').getStorage();
     let filesForStorage = [];
     let foldersForStorage = [];
     
-    if (itemType === 'folder') {
-        const deletionData = await getFolderDeletionData(itemId, userId);
-        filesForStorage.push(...deletionData.files);
-        foldersForStorage.push(...deletionData.folders);
+    if (explicitFileIds || explicitFolderIds) {
+        // 批量模式
+        if (explicitFileIds && explicitFileIds.length > 0) {
+             const directFiles = await getFilesByIds(explicitFileIds, userId);
+             filesForStorage.push(...directFiles);
+        }
+        // 文件夹需要递归获取内容来物理删除
+        if (explicitFolderIds && explicitFolderIds.length > 0) {
+             for(const fid of explicitFolderIds) {
+                 const deletionData = await getFolderDeletionData(fid, userId);
+                 filesForStorage.push(...deletionData.files);
+                 foldersForStorage.push(...deletionData.folders);
+             }
+        }
     } else {
-        // --- *** 最终修正：itemId 是 BigInt *** ---
-        const directFiles = await getFilesByIds([itemId], userId);
-        filesForStorage.push(...directFiles);
+        // 单项模式 (旧逻辑)
+        if (itemType === 'folder') {
+            const deletionData = await getFolderDeletionData(itemId, userId);
+            filesForStorage.push(...deletionData.files);
+            foldersForStorage.push(...deletionData.folders);
+        } else {
+            const directFiles = await getFilesByIds([itemId], userId);
+            filesForStorage.push(...directFiles);
+        }
     }
     
+    // 物理删除
     try {
         await storage.remove(filesForStorage, foldersForStorage, userId);
     } catch (err) {
-        throw new Error("实体档案删除失败，操作已中止。");
+        console.error("实体档案删除失败:", err);
     }
     
-    // --- *** 最终修正：itemId 是 BigInt *** ---
-    const fileIds = filesForStorage.map(f => BigInt(f.message_id));
-    const folderIds = foldersForStorage.map(f => f.id);
+    // 数据库物理删除
+    const fileIdsToDelete = filesForStorage.map(f => BigInt(f.message_id));
+    let folderIdsToDelete = foldersForStorage.map(f => f.id);
     
-    await executeDeletion(fileIds, folderIds, userId);
+    if (explicitFolderIds) {
+        folderIdsToDelete = [...new Set([...folderIdsToDelete, ...explicitFolderIds])];
+    } else if (itemType === 'folder') {
+        folderIdsToDelete.push(itemId);
+    }
+
+    await executeDeletion(fileIdsToDelete, folderIdsToDelete, userId);
 }
 
 async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
@@ -631,7 +761,6 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         const targetPathParts = await getFolderPath(targetFolderId, userId);
         const targetFullPath = path.posix.join(...targetPathParts.slice(1).map(p => p.name));
 
-        // --- *** 最终修正：fileIds 是 BigInt 数组 *** ---
         const filesToMove = await getFilesByIds(fileIds, userId);
         for (const file of filesToMove) {
             const oldRelativePath = file.file_id;
@@ -647,7 +776,6 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
                     await client.moveFile(oldRelativePath, newRelativePath);
                 }
                 
-                // --- *** 最终修正：将 BigInt 转换为 String *** ---
                 await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [newRelativePath, file.message_id.toString()], (e) => e ? rej(e) : res()));
 
             } catch (err) {
@@ -675,7 +803,6 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
                 const descendantFiles = await getFilesRecursive(folder.id, userId);
                 for (const file of descendantFiles) {
                     const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
-                    // --- *** 最终修正：将 BigInt 转换为 String *** ---
                     await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id.toString()], (e) => e ? rej(e) : res()));
                 }
             } catch (err) {
@@ -691,7 +818,6 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
 
             if (fileIds.length > 0) {
                 const place = fileIds.map(() => '?').join(',');
-                // --- *** 最终修正：将 BigInt 转换为 String *** ---
                 promises.push(new Promise((res, rej) => db.run(`UPDATE files SET folder_id = ? WHERE message_id IN (${place}) AND user_id = ?`, [targetFolderId, ...fileIds.map(id => id.toString()), userId], (e) => e ? rej(e) : res())));
             }
 
@@ -722,7 +848,9 @@ async function getFolderDeletionData(folderId, userId) {
     let foldersToDeleteIds = [folderId];
 
     async function findContentsRecursive(currentFolderId) {
-        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
+        // 注意：这里也需要找到 is_deleted=1 的文件，因为这是物理删除
+        // 但如果是用户触发的软删除操作，通常只针对未删除的文件
+        // 不过如果是 unifiedDelete (物理删除)，则需要找到所有文件
         const sqlFiles = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS} FROM files WHERE folder_id = ? AND user_id = ?`;
         const files = await new Promise((res, rej) => db.all(sqlFiles, [currentFolderId, userId], (err, rows) => err ? rej(err) : res(rows)));
         filesToDelete.push(...files);
@@ -769,7 +897,6 @@ function executeDeletion(fileIds, folderIds, userId) {
             const promises = [];
             
             if (fileIds.length > 0) {
-                // --- *** 最终修正：将 BigInt 转换为 String *** ---
                 const stringFileIds = Array.from(new Set(fileIds)).map(id => id.toString());
                 const place = stringFileIds.map(() => '?').join(',');
                 promises.push(new Promise((res, rej) => db.run(`DELETE FROM files WHERE message_id IN (${place}) AND user_id = ?`, [...stringFileIds, userId], (e) => e ? rej(e) : res())));
@@ -792,7 +919,6 @@ function addFile(fileData, folderId = 1, userId, storageType) {
     const sql = `INSERT INTO files (message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folder_id, user_id, storage_type)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     return new Promise((resolve, reject) => {
-        // --- *** 最终修正：将 BigInt 转换为 String *** ---
         db.run(sql, [message_id.toString(), fileName, mimetype, file_id, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
             if (err) reject(err);
             else resolve({ success: true, id: this.lastID, fileId: message_id });
@@ -809,7 +935,6 @@ function updateFile(fileId, updates, userId) {
         for (const key in updates) {
             if (Object.hasOwnProperty.call(updates, key) && validKeys.includes(key)) {
                 fields.push(`${key} = ?`);
-                // --- *** 最终修正：如果更新 message_id，也转 String *** ---
                 values.push(key === 'message_id' ? updates[key].toString() : updates[key]);
             }
         }
@@ -818,7 +943,6 @@ function updateFile(fileId, updates, userId) {
             return resolve({ success: true, changes: 0 });
         }
         
-        // --- *** 最终修正：将 BigInt 转换为 String *** ---
         values.push(fileId.toString(), userId);
         const sql = `UPDATE files SET ${fields.join(', ')} WHERE message_id = ? AND user_id = ?`;
         
@@ -836,11 +960,9 @@ function getFilesByIds(messageIds, userId) {
     if (!messageIds || messageIds.length === 0) {
         return Promise.resolve([]);
     }
-    // --- *** 最终修正：将 BigInt 转换为 String *** ---
     const stringMessageIds = messageIds.map(id => id.toString());
     const placeholders = stringMessageIds.map(() => '?').join(',');
     
-    // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
     const sql = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS} FROM files WHERE message_id IN (${placeholders}) AND user_id = ?`;
     
     return new Promise((resolve, reject) => {
@@ -851,12 +973,7 @@ function getFilesByIds(messageIds, userId) {
     });
 }
 
-// --- *** 关键修正 开始 *** ---
-// 修复了访问过期分享链接可能导致密码失效的BUG。
-// 重构函数以确保在检查链接状态时，严格执行“只读”操作，绝不修改数据库。
-// 这样可以防止因意外的“清理”逻辑而错误地清除了分享密码。
 async function getFileByShareToken(token) {
-    // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
     const getShareSql = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS}, share_password, share_expires_at FROM files WHERE share_token = ?`;
     
     const row = await new Promise((resolve, reject) => {
@@ -866,21 +983,16 @@ async function getFileByShareToken(token) {
         });
     });
 
-    // 如果根据token找不到任何分享，直接返回null
     if (!row) {
         return null;
     }
 
-    // 检查分享是否已过期 (row.share_expires_at 为 null 表示永不过期)
     const isExpired = row.share_expires_at && Date.now() > row.share_expires_at;
 
-    // 如果链接已过期，我们将其视为无效链接，返回 null。
-    // 重要的是，我们不执行任何数据库写操作，从而避免了因过期检查而清除密码的风险。
     if (isExpired) {
         return null; 
     }
     
-    // 如果分享有效且未过期，返回完整的分享信息。
     return row;
 }
 
@@ -894,57 +1006,41 @@ async function getFolderByShareToken(token) {
         });
     });
 
-    // 如果根据token找不到任何分享，直接返回null
     if (!row) {
         return null;
     }
 
-    // 检查分享是否已过期 (row.share_expires_at 为 null 表示永不过期)
     const isExpired = row.share_expires_at && Date.now() > row.share_expires_at;
 
-    // 如果链接已过期，我们将其视为无效链接，返回 null。
-    // 重要的是，我们在这里不执行任何数据库写操作（如 UPDATE 或 DELETE）。
-    // 这可以防止仅仅因为一次过期的访问就清除了分享密码等重要信息。
     if (isExpired) {
         return null; 
     }
 
-    // 如果分享有效且未过期，返回完整的分享信息。
     return row;
 }
-// --- *** 关键修正 结束 *** ---
 
-// --- *** 关键修正 开始 *** ---
 async function findFileInSharedFolder(fileId, folderToken) {
     return new Promise((resolve, reject) => {
-        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
         const sql = `
             WITH RECURSIVE shared_folder_tree(id) AS (
-                -- Base case: the root folder with the share token. It must not be locked.
                 SELECT id FROM folders WHERE share_token = ? AND password IS NULL
                 UNION ALL
-                -- Recursive step: find all children of the folders already in the tree.
-                -- Crucially, do not include children that are themselves locked.
                 SELECT f.id FROM folders f
                 JOIN shared_folder_tree sft ON f.parent_id = sft.id
                 WHERE f.password IS NULL
             )
-            -- Final selection: get the file if its folder_id is in our allowed tree.
             SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS} FROM files f
             WHERE f.message_id = ? AND f.folder_id IN (SELECT id FROM shared_folder_tree);
         `;
 
-        // --- *** 最终修正：将 BigInt 转换为 String *** ---
         db.get(sql, [folderToken, fileId.toString()], (err, row) => {
             if (err) return reject(err);
-            resolve(row); // row will be the file object or null if not found/not allowed
+            resolve(row);
         });
     });
 }
-// --- *** 关键修正 结束 *** ---
 
 async function renameFile(messageId, newFileName, userId) {
-    // --- *** 最终修正：messageId 是 BigInt *** ---
     const file = (await getFilesByIds([messageId], userId))[0];
     if (!file) return { success: false, message: '文件未找到。' };
 
@@ -969,7 +1065,6 @@ async function renameFile(messageId, newFileName, userId) {
         
         const sql = `UPDATE files SET fileName = ?, file_id = ? WHERE message_id = ? AND user_id = ?`;
         return new Promise((resolve, reject) => {
-            // --- *** 最终修正：将 BigInt 转换为 String *** ---
             db.run(sql, [newFileName, newRelativePath, messageId.toString(), userId], function(err) {
                  if (err) reject(err);
                  else resolve({ success: true });
@@ -979,7 +1074,6 @@ async function renameFile(messageId, newFileName, userId) {
 
     const sql = `UPDATE files SET fileName = ? WHERE message_id = ? AND user_id = ?`;
     return new Promise((resolve, reject) => {
-        // --- *** 最终修正：将 BigInt 转换为 String *** ---
         db.run(sql, [newFileName, messageId.toString(), userId], function(err) {
             if (err) reject(err);
             else if (this.changes === 0) resolve({ success: false, message: '文件未找到。' });
@@ -989,7 +1083,6 @@ async function renameFile(messageId, newFileName, userId) {
 }
 
 async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId) {
-    // --- *** 最终修正：messageId 是 BigInt *** ---
     const file = (await getFilesByIds([messageId], userId))[0];
     if (!file) throw new Error('File not found for rename and move');
 
@@ -1016,14 +1109,12 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
         
         const sql = `UPDATE files SET fileName = ?, file_id = ?, folder_id = ? WHERE message_id = ? AND user_id = ?`;
         return new Promise((resolve, reject) => {
-            // --- *** 最终修正：将 BigInt 转换为 String *** ---
             db.run(sql, [newFileName, newRelativePath, targetFolderId, messageId.toString(), userId], (err) => err ? reject(err) : resolve({ success: true }));
         });
     }
 
     const sql = `UPDATE files SET fileName = ?, folder_id = ? WHERE message_id = ? AND user_id = ?`;
     return new Promise((resolve, reject) => {
-        // --- *** 最终修正：将 BigInt 转换为 String *** ---
         db.run(sql, [newFileName, targetFolderId, messageId.toString(), userId], (err) => err ? reject(err) : resolve({ success: true }));
     });
 }
@@ -1055,7 +1146,6 @@ async function renameFolder(folderId, newFolderName, userId) {
             const descendantFiles = await getFilesRecursive(folderId, userId);
             for (const file of descendantFiles) {
                 const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
-                // --- *** 最终修正：将 BigInt 转换为 String *** ---
                 await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id.toString()], (e) => e ? rej(e) : res()));
             }
 
@@ -1076,7 +1166,6 @@ async function renameFolder(folderId, newFolderName, userId) {
     });
 }
 
-// --- *** 关键修正 开始：新增 renameAndMoveFolder 函数 *** ---
 async function renameAndMoveFolder(folderId, newName, targetFolderId, userId) {
     const folder = await new Promise((res, rej) => db.get("SELECT * FROM folders WHERE id=? AND user_id=?", [folderId, userId], (e,r)=>e?rej(e):res(r)));
     if (!folder) throw new Error('Folder not found for rename and move');
@@ -1107,7 +1196,6 @@ async function renameAndMoveFolder(folderId, newName, targetFolderId, userId) {
             const descendantFiles = await getFilesRecursive(folderId, userId);
             for (const file of descendantFiles) {
                 const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
-                // --- *** 最终修正：将 BigInt 转换为 String *** ---
                 await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id.toString()], (e) => e ? rej(e) : res()));
             }
         } catch(err) {
@@ -1121,7 +1209,6 @@ async function renameAndMoveFolder(folderId, newName, targetFolderId, userId) {
         db.run(sql, [newName, targetFolderId, folderId, userId], (err) => err ? reject(err) : resolve({ success: true }));
     });
 }
-// --- *** 关键修正 结束 *** ---
 
 function setFolderPassword(folderId, password, userId) {
     return new Promise((resolve, reject) => {
@@ -1144,11 +1231,7 @@ async function verifyFolderPassword(folderId, password, userId) {
 }
 
 
-// --- *** 这是您要求修改的函数 *** ---
 function createShareLink(itemId, itemType, expiresIn, userId, password = null, customExpiresAt = null) {
-    // 方案：使用 4 字节随机数，生成 8 位 hex 字符串。
-    // 这提供了 16^8 (约 43 亿) 种组合，使用 [0-9, a-f]，不区分大小写。
-    // 兼顾了安全、短链接 和 可用性。
     const token = crypto.randomBytes(4).toString('hex');
     
     let expiresAt = null;
@@ -1182,7 +1265,6 @@ function createShareLink(itemId, itemType, expiresIn, userId, password = null, c
         }
 
         const sql = `UPDATE ${table} SET share_token = ?, share_expires_at = ?, share_password = ? WHERE ${idColumn} = ? AND user_id = ?`;
-        // --- *** 最终修正：将 BigInt 转换为 String (如果 itemType 是 file) *** ---
         const stringItemId = itemType === 'folder' ? itemId : itemId.toString();
         db.run(sql, [token, expiresAt, hashedPassword, stringItemId, userId], function(err) {
             if (err) reject(err);
@@ -1191,13 +1273,11 @@ function createShareLink(itemId, itemType, expiresIn, userId, password = null, c
         });
     });
 }
-// --- *** 修改结束 *** ---
 
 function deleteFilesByIds(messageIds, userId) {
     if (!messageIds || messageIds.length === 0) {
         return Promise.resolve({ success: true, changes: 0 });
     }
-    // --- *** 最终修正：将 BigInt 转换为 String *** ---
     const stringMessageIds = messageIds.map(id => id.toString());
     const placeholders = stringMessageIds.map(() => '?').join(',');
     const sql = `DELETE FROM files WHERE message_id IN (${placeholders}) AND user_id = ?`;
@@ -1212,7 +1292,6 @@ function deleteFilesByIds(messageIds, userId) {
 function getActiveShares(userId) {
     return new Promise((resolve, reject) => {
         const now = Date.now();
-        // --- *** 最终修正：移除多余的 "as id" *** ---
         const sqlFiles = `SELECT ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, 'file' as type, share_token, share_expires_at FROM files WHERE share_token IS NOT NULL AND (share_expires_at IS NULL OR share_expires_at > ?) AND user_id = ?`;
         const sqlFolders = `SELECT id, name, 'folder' as type, share_token, share_expires_at FROM folders WHERE share_token IS NOT NULL AND (share_expires_at IS NULL OR share_expires_at > ?) AND user_id = ?`;
 
@@ -1235,7 +1314,6 @@ function cancelShare(itemId, itemType, userId) {
     const sql = `UPDATE ${table} SET share_token = NULL, share_expires_at = NULL, share_password = NULL WHERE ${idColumn} = ? AND user_id = ?`;
 
     return new Promise((resolve, reject) => {
-        // --- *** 最终修正：将 BigInt 转换为 String (如果 itemType 是 file) *** ---
         const stringItemId = itemType === 'folder' ? itemId : itemId.toString();
         db.run(sql, [stringItemId, userId], function(err) {
             if (err) reject(err);
@@ -1272,11 +1350,12 @@ async function getConflictingItems(itemsToMove, destinationFolderId, userId) {
 
 function checkFullConflict(name, folderId, userId) {
     return new Promise((resolve, reject) => {
+        // 修改：增加 is_deleted = 0 过滤
         const sql = `
             SELECT name FROM (
-                SELECT name FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?
+                SELECT name FROM folders WHERE name = ? AND parent_id = ? AND user_id = ? AND is_deleted = 0
                 UNION ALL
-                SELECT fileName as name FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?
+                SELECT fileName as name FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ? AND is_deleted = 0
             ) LIMIT 1
         `;
         db.get(sql, [name, folderId, userId, name, folderId, userId], (err, row) => {
@@ -1288,8 +1367,8 @@ function checkFullConflict(name, folderId, userId) {
 
 function findFileInFolder(fileName, folderId, userId) {
     return new Promise((resolve, reject) => {
-        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
-        const sql = `SELECT ${SAFE_SELECT_MESSAGE_ID} FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?`;
+        // 修改：增加 is_deleted = 0 过滤
+        const sql = `SELECT ${SAFE_SELECT_MESSAGE_ID} FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ? AND is_deleted = 0`;
         db.get(sql, [fileName, folderId, userId], (err, row) => {
             if (err) return reject(err);
             resolve(row);
@@ -1299,11 +1378,11 @@ function findFileInFolder(fileName, folderId, userId) {
 
 function findItemInFolder(name, folderId, userId) {
     return new Promise((resolve, reject) => {
-        // --- *** 最终修正：移除多余的 "as id" *** ---
+        // 修改：增加 is_deleted = 0 过滤
         const sql = `
-            SELECT id, name, 'folder' as type FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?
+            SELECT id, name, 'folder' as type FROM folders WHERE name = ? AND parent_id = ? AND user_id = ? AND is_deleted = 0
             UNION ALL
-            SELECT ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, 'file' as type FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ?
+            SELECT ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, 'file' as type FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ? AND is_deleted = 0
         `;
         db.get(sql, [name, folderId, userId, name, folderId, userId], (err, row) => {
             if (err) return reject(err);
@@ -1328,7 +1407,6 @@ async function findAvailableName(originalName, folderId, userId, isFolder) {
 
 function findFileByFileId(fileId, userId) {
     return new Promise((resolve, reject) => {
-        // --- *** 最终修正：使用 CAST(message_id AS TEXT) *** ---
         const sql = `SELECT ${SAFE_SELECT_MESSAGE_ID} FROM files WHERE file_id = ? AND user_id = ?`;
         db.get(sql, [fileId, userId], (err, row) => {
             if (err) return reject(err);
@@ -1368,8 +1446,6 @@ async function findOrCreateFolderByPath(fullPath, userId) {
     return parentId;
 }
 
-// --- *** 关键修正 开始 *** ---
-// 重构 resolvePathToFolderId 函数以包含锁和原子化数据库操作
 async function resolvePathToFolderId(startFolderId, pathParts, userId) {
     let currentParentId = startFolderId;
 
@@ -1386,7 +1462,7 @@ async function resolvePathToFolderId(startFolderId, pathParts, userId) {
         try {
             const foundId = await new Promise((resolve, reject) => {
                 db.serialize(() => {
-                    const selectSql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
+                    const selectSql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ? AND is_deleted = 0`;
                     db.get(selectSql, [part, currentParentId, userId], (err, row) => {
                         if (err) {
                             return reject(err);
@@ -1412,10 +1488,6 @@ async function resolvePathToFolderId(startFolderId, pathParts, userId) {
     }
     return currentParentId;
 }
-// --- *** 关键修正 结束 *** ---
-
-
-// --- 新增：管理 Auth Tokens 的函数 ---
 
 function createAuthToken(userId, token, expiresAt) {
     return new Promise((resolve, reject) => {
@@ -1429,7 +1501,6 @@ function createAuthToken(userId, token, expiresAt) {
 
 function findAuthToken(token) {
     return new Promise((resolve, reject) => {
-        // 直接关联 users 表以获取使用者信息
         const sql = `SELECT t.id, t.user_id, t.expires_at, u.username, u.is_admin 
                      FROM auth_tokens t
                      JOIN users u ON t.user_id = u.id
@@ -1451,21 +1522,18 @@ function deleteAuthToken(token) {
     });
 }
 
-// (可选，但推荐) 新增一个函数来清除所有过期的令牌
 function deleteExpiredAuthTokens() {
     return new Promise((resolve, reject) => {
         const now = Date.now();
         const sql = `DELETE FROM auth_tokens WHERE expires_at <= ?`;
         db.run(sql, [now], function(err) {
             if (err) {
-                // console.error("清除过期 token 时出错:", err);
                 return reject(err);
             }
             resolve({ changes: this.changes });
         });
     });
 }
-// --- 新增结束 ---
 
 
 module.exports = {
@@ -1500,7 +1568,6 @@ module.exports = {
     createShareLink,
     getActiveShares,
     cancelShare,
-    // --- *** 最终修正：移除 "D" *** ---
     renameFile,
     renameFolder,
     deleteFilesByIds,
@@ -1517,16 +1584,20 @@ module.exports = {
     findItemInFolder,
     findAvailableName,
     renameAndMoveFile,
-    // --- *** 关键修正：导出新函数 *** ---
     renameAndMoveFolder,
     getFolderDetails,
     setFolderPassword,
     verifyFolderPassword,
     isFileAccessible,
     findFolderBySharePath,
-    // --- 新增 exports ---
     createAuthToken,
     findAuthToken,
     deleteAuthToken,
     deleteExpiredAuthTokens,
+    getUserQuota,
+    checkQuota,
+    getTrashContents,
+    softDeleteItems,
+    restoreItems,
+    cleanupTrash
 };
