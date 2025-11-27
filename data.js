@@ -125,6 +125,54 @@ async function checkQuota(userId, incomingSize) {
     return (quota.used + incomingSize) <= quota.max;
 }
 
+// --- 新增：获取所有用户及其配额信息 ---
+async function listAllUsersWithQuota() {
+    // 获取所有用户及其最大配额
+    const users = await new Promise((resolve, reject) => {
+        // 增加 is_admin 和 max_storage_bytes 字段
+        const sql = `SELECT id, username, is_admin, max_storage_bytes FROM users ORDER BY is_admin DESC, username ASC`;
+        db.all(sql, [], (err, rows) => err ? reject(err) : resolve(rows));
+    });
+
+    // 批量获取每个用户的已用空间
+    const userIds = users.map(u => u.id);
+    if (userIds.length === 0) {
+        return [];
+    }
+    const placeholders = userIds.map(() => '?').join(',');
+    
+    // 使用 GROUP BY 聚合每个用户的总大小
+    // 注意：这里统计的是所有文件，包括回收站中的文件
+    const usageSql = `SELECT user_id, SUM(size) as total_size FROM files WHERE user_id IN (${placeholders}) GROUP BY user_id`;
+    
+    const usageData = await new Promise((resolve, reject) => {
+        db.all(usageSql, userIds, (err, rows) => err ? reject(err) : resolve(rows));
+    });
+    
+    const usageMap = new Map(usageData.map(row => [row.user_id, row.total_size]));
+
+    // 组合数据
+    return users.map(user => ({
+        id: user.id,
+        username: user.username,
+        is_admin: user.is_admin,
+        max_storage_bytes: user.max_storage_bytes || 1073741824, // 默认 1GB
+        used_storage_bytes: usageMap.get(user.id) || 0
+    }));
+}
+
+// --- 新增：设定用户最大存储空间 ---
+function setMaxStorageForUser(userId, maxBytes) {
+    return new Promise((resolve, reject) => {
+        // 不允许修改管理员的配额
+        const sql = `UPDATE users SET max_storage_bytes = ? WHERE id = ? AND is_admin = 0`; 
+        db.run(sql, [maxBytes, userId], function(err) {
+            if (err) return reject(err);
+            resolve({ success: true, changes: this.changes });
+        });
+    });
+}
+
 // --- 搜索与列表 ---
 
 function searchItems(query, userId) {
@@ -285,9 +333,9 @@ async function getAllDescendantFolderIds(folderId, userId) {
     while (queue.length > 0) {
         const currentId = queue.shift();
         const sql = `SELECT id FROM folders WHERE parent_id = ? AND user_id = ?`;
-        const children = await new Promise((resolve, reject) => {
+        const children = await new Promise((res, rej) => {
             db.all(sql, [currentId, userId], (err, rows) => {
-                if (err) reject(err);
+                if (err) rej(err);
                 else resolve(rows);
             });
         });
@@ -770,8 +818,8 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
                 if (storage.type === 'local') {
                     const oldFullPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath);
                     const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
-                    await fs.mkdir(path.dirname(newFullPath), { recursive: true });
-                    await fs.rename(oldFullPath, newFullPath);
+                    await fsp.mkdir(path.dirname(newFullPath), { recursive: true });
+                    await fsp.rename(oldFullPath, newFullPath);
                 } else if (client) {
                     await client.moveFile(oldRelativePath, newRelativePath);
                 }
@@ -1599,5 +1647,7 @@ module.exports = {
     getTrashContents,
     softDeleteItems,
     restoreItems,
-    cleanupTrash
+    cleanupTrash,
+    listAllUsersWithQuota,
+    setMaxStorageForUser
 };
