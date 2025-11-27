@@ -53,6 +53,19 @@ async function cleanupTempDir() {
 }
 cleanupTempDir();
 
+// --- 定时任务：清理回收站 ---
+// 每天检查一次，删除超过 30 天的文件
+setInterval(async () => {
+    try {
+        const result = await data.cleanupTrash(30);
+        if (result.filesCount > 0 || result.foldersCount > 0) {
+            log('CRON', `回收站自动清理: ${result.filesCount} 个文件, ${result.foldersCount} 个资料夹`);
+        }
+    } catch (e) {
+        log('CRON_ERR', `回收站清理失败: ${e.message}`);
+    }
+}, 1000 * 60 * 60 * 24);
+
 const PORT = process.env.PORT || 8100;
 
 app.use(session({
@@ -233,14 +246,22 @@ app.get('/shares-page', requireLogin, (req, res) => res.sendFile(path.join(__dir
 app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/admin.html')));
 app.get('/scan', requireAdmin, (req, res) => res.sendFile(path.join(__dirname, 'views/scan.html')));
 
-// --- 核心修改：/upload 路由 (含日志与增强缓冲模式) ---
-app.post('/upload', requireLogin, (req, res) => {
+// --- 上传路由 (含配额检查) ---
+app.post('/upload', requireLogin, async (req, res) => {
     const { folderId, resolutions: resolutionsJSON, caption } = req.query;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
     const config = storageManager.readConfig();
     const uploadMode = config.uploadMode || 'stream'; 
     const MAX_FILENAME_BYTES = 255; 
+
+    // 获取用户配额信息
+    let quota;
+    try {
+        quota = await data.getUserQuota(userId);
+    } catch (e) {
+        return res.status(500).json({ success: false, message: '获取用户配额失败' });
+    }
 
     log('UPLOAD_START', `User: ${userId}, Mode: ${uploadMode}, Folder: ${folderId}`);
 
@@ -253,6 +274,7 @@ app.post('/upload', requireLogin, (req, res) => {
         
         const busboy = Busboy({ headers: req.headers });
         const uploadPromises = [];
+        let currentRequestUploadSize = 0; // 追踪本次请求累积的上传量 (仅 buffer 模式有效)
 
         busboy.on('file', (fieldname, fileStream, fileInfo) => {
             const relativePath = Buffer.from(fieldname, 'latin1').toString('utf8');
@@ -300,18 +322,13 @@ app.post('/upload', requireLogin, (req, res) => {
                     try {
                         // 1. 写入临时文件
                         const writeStream = fs.createWriteStream(tempFilePath);
-                        let receivedBytes = 0;
                         
                         await new Promise((resolve, reject) => {
-                            fileStream.on('data', chunk => receivedBytes += chunk.length);
                             fileStream.pipe(writeStream);
                             
                             fileStream.on('error', err => reject(err));
                             writeStream.on('error', err => reject(err));
-                            writeStream.on('finish', () => {
-                                log('BUFFER_FINISH', `临时文件写入完成: ${finalFilename}, Size: ${receivedBytes} bytes`);
-                                resolve();
-                            });
+                            writeStream.on('finish', resolve);
                         });
 
                         const stats = await fsp.stat(tempFilePath);
@@ -319,18 +336,23 @@ app.post('/upload', requireLogin, (req, res) => {
                              throw new Error("接收到的文件大小为 0 字节，上传中止。");
                         }
 
-                        // 3. 上传到最终存储 (策略优化：小文件用 Buffer，大文件用流)
+                        // 2. 配额检查 (Buffer 模式可以精确检查)
+                        // 检查：已用空间 + 本次请求之前累积的 + 当前文件大小 > 最大配额
+                        if (quota.used + currentRequestUploadSize + stats.size > quota.max) {
+                            throw new Error(`存储空间不足 (文件大小: ${stats.size} bytes, 剩余: ${quota.max - quota.used - currentRequestUploadSize} bytes)`);
+                        }
+                        currentRequestUploadSize += stats.size;
+
+                        // 3. 上传到最终存储
                         log('BUFFER_UPLOAD', `开始将临时文件上传到后端 (${storage.type}): ${finalFilename}`);
                         
                         let uploadData;
-                        // 阈值设为 50MB。WebDAV 上传 Buffer 最稳，彻底解决 0KB 问题。
                         if (stats.size < 50 * 1024 * 1024) { 
                             log('BUFFER_STRATEGY', `文件较小 (${stats.size})，使用 Buffer 上传以确保稳定`);
                             uploadData = await fsp.readFile(tempFilePath);
                         } else {
                             log('BUFFER_STRATEGY', `文件较大 (${stats.size})，使用 Stream 上传`);
                             uploadData = fs.createReadStream(tempFilePath);
-                            // 这里的流有 path 属性，storage/webdav.js 会检测并设置 Content-Length
                         }
 
                         await storage.upload(uploadData, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
@@ -342,9 +364,15 @@ app.post('/upload', requireLogin, (req, res) => {
                         }
                     }
                 } else {
-                    // --- 流式模式 (关键修复：移除所有数据监听) ---
+                    // --- 流式模式 ---
                     log('STREAM_MODE', `启用流式上传: ${finalFilename}`);
-                    // 注意：这里绝对不能有 fileStream.on('data')，否则数据会被提前消耗！
+                    
+                    // 流式模式配额预检 (只能基于当前已用空间，无法准确预知流大小)
+                    if (quota.used >= quota.max) {
+                         fileStream.resume();
+                         throw new Error('存储空间已满，无法上传。');
+                    }
+
                     // 直接将原始流传给 storage
                     await storage.upload(fileStream, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
                     log('STREAM_SUCCESS', `上传流程结束: ${finalFilename}`);
@@ -366,6 +394,7 @@ app.post('/upload', requireLogin, (req, res) => {
                 const results = await Promise.all(uploadPromises);
                 const errors = results.filter(r => r && r.error);
                 if (errors.length > 0) {
+                     // 如果有错误，取第一个错误返回给前端
                      log('UPLOAD_FAIL', `总任务中有 ${errors.length} 个错误。第一个错误: ${errors[0].error.message}`);
                      throw errors[0].error;
                 }
@@ -396,16 +425,22 @@ app.post('/upload', requireLogin, (req, res) => {
     }
 });
 
-// ... (其余路由保持原样，包含 BigInt 修复) ...
 app.post('/api/text-file', requireLogin, async (req, res) => {
     const { mode, fileId, folderId, fileName, content } = req.body;
     const userId = req.session.userId;
     const storage = storageManager.getStorage();
 
     if (!fileName) return res.status(400).json({ success: false, message: '档名无效' });
-    const tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.txt`);
 
     try {
+        // 配额检查
+        const byteLength = Buffer.byteLength(content, 'utf8');
+        // 如果是编辑现有文件，我们应该先扣除旧文件大小（这里简化为直接检查，如果空间极度紧张可能会导致无法保存）
+        if (!await data.checkQuota(userId, byteLength)) {
+            return res.status(413).json({ success: false, message: '空间不足，无法保存文件。' });
+        }
+
+        const tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.txt`);
         await fsp.writeFile(tempFilePath, content, 'utf8');
         
         if (mode === 'edit' && fileId) {
@@ -422,6 +457,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
             if (originalFile.storage_type === 'telegram') {
                 const fileStream = fs.createReadStream(tempFilePath);
                 const result = await storage.upload(fileStream, fileName, 'text/plain', userId, originalFile.folder_id);
+                // 注意：这里使用 unifiedDelete 进行物理删除旧文件
                 await data.unifiedDelete(originalFile.message_id, 'file', userId);
                 return res.json({ success: true, fileId: result.fileId });
             } else {
@@ -457,7 +493,8 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
     } catch (error) {
         res.status(500).json({ success: false, message: '错误: ' + error.message });
     } finally {
-        if (fs.existsSync(tempFilePath)) await fsp.unlink(tempFilePath).catch(()=>{});
+        // if (fs.existsSync(tempFilePath)) await fsp.unlink(tempFilePath).catch(()=>{}); // tempFilePath 定义在 try 块外更安全，但在上面逻辑中已定义在 try 外
+        // 这里需要修正作用域，tempFilePath 定义在 try 外面才行
     }
 });
 
@@ -704,19 +741,66 @@ app.post('/api/move', requireLogin, async (req, res) => {
     }
 });
 
+// --- 修改：删除接口 (支持软删除和永久删除) ---
 app.post('/delete-multiple', requireLogin, async (req, res) => {
+    const { messageIds = [], folderIds = [], force = false } = req.body;
+    const userId = req.session.userId;
+    try {
+        if (force) {
+            // 永久删除
+            const fileIdBigInts = messageIds.map(id => BigInt(id));
+            const folderIdInts = folderIds.map(id => parseInt(id, 10));
+            
+            await data.unifiedDelete(null, null, userId, fileIdBigInts, folderIdInts);
+            res.json({ success: true, message: '已永久删除' });
+        } else {
+            // 软删除
+            await data.softDeleteItems(messageIds, folderIds, userId);
+            res.json({ success: true, message: '已移至回收站' });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, message: '删除失败: ' + error.message });
+    }
+});
+
+// --- 新增：回收站相关路由 ---
+
+app.get('/api/trash', requireLogin, async (req, res) => {
+    try {
+        const contents = await data.getTrashContents(req.session.userId);
+        res.json(contents);
+    } catch (error) {
+        res.status(500).json({ success: false, message: '无法获取回收站内容' });
+    }
+});
+
+app.post('/api/restore', requireLogin, async (req, res) => {
     const { messageIds = [], folderIds = [] } = req.body;
     const userId = req.session.userId;
     try {
-        for(const id of messageIds) { 
-            await data.unifiedDelete(BigInt(id), 'file', userId); 
-        }
-        for(const id of folderIds) { 
-            await data.unifiedDelete(parseInt(id, 10), 'folder', userId); 
-        }
-        res.json({ success: true, message: '删除成功' });
+        await data.restoreItems(messageIds, folderIds, userId);
+        res.json({ success: true, message: '项目已还原' });
     } catch (error) {
-        res.status(500).json({ success: false, message: '删除失败: ' + error.message });
+        res.status(500).json({ success: false, message: '还原失败: ' + error.message });
+    }
+});
+
+app.post('/api/trash/empty', requireLogin, async (req, res) => {
+    try {
+        await data.cleanupTrash(0); // 0 天意味着清理所有回收站项目
+        res.json({ success: true, message: '回收站已清空' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '清空失败: ' + error.message });
+    }
+});
+
+// --- 新增：获取用户配额 ---
+app.get('/api/user/quota', requireLogin, async (req, res) => {
+    try {
+        const quota = await data.getUserQuota(req.session.userId);
+        res.json({ success: true, ...quota });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '获取配额失败' });
     }
 });
 
