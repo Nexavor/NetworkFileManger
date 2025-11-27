@@ -62,7 +62,7 @@ cron.schedule('0 0 * * *', async () => {
         const sqlExpiredFiles = `SELECT message_id, user_id, storage_type, file_id FROM files WHERE is_deleted = 1 AND deleted_at < ?`;
         const expiredFiles = await new Promise((resolve, reject) => {
             // 此时无法直接访问 db 实例，除非我们导出了它。
-            // database.js 导出了 db 实例。
+            // database.js 导出了 db 实例 (如果需要)。
             const dbInstance = require('./database.js');
             dbInstance.all(sqlExpiredFiles, [thirtyDaysAgo], (err, rows) => {
                 if (err) resolve([]); else resolve(rows || []);
@@ -398,8 +398,9 @@ app.post('/upload', requireLogin, (req, res) => {
                 uploadPromises.push(fileUploadPromise);
             });
 
-            busboy.on('finish', async () => {
-                try {
+            // --- 关键修正：确保 busboy finish 的异步逻辑被捕获 ---
+            busboy.on('finish', () => {
+                (async () => {
                     const results = await Promise.all(uploadPromises);
                     const errors = results.filter(r => r && r.error);
                     if (errors.length > 0) {
@@ -411,11 +412,13 @@ app.post('/upload', requireLogin, (req, res) => {
                     } else {
                          res.json({ success: true, message: '上传完成' });
                     }
-                } catch (error) {
+                })().catch(error => {
+                    // 确保只在未发送响应时发送 500 错误，并记录日志以供调试
                     if (!res.headersSent) {
+                        console.error("Busboy Finish Error (Preventing Crash):", error); 
                         res.status(500).json({ success: false, message: `上传失败: ${error.message}` });
                     }
-                }
+                });
             });
 
             busboy.on('error', (err) => {
@@ -1057,35 +1060,35 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
         const tasks = [...filesToArchive];
         let activeTasks = 0;
 
-        const processFile = async (file) => {
-            try {
-                if (file.storage_type === 'local' || file.storage_type === 'webdav' || file.storage_type === 's3') {
-                    const stream = await storage.stream(file.file_id, userId);
-                    await new Promise((resolve, reject) => {
-                        stream.on('end', resolve);
-                        stream.on('error', (err) => reject(new Error(`(Storage Stream) ${err.message}`)));
-                        archive.append(stream, { name: file.path });
-                    });
-
-                } else if (file.storage_type === 'telegram') {
-                    const link = await storage.getUrl(file.file_id);
-                    if (link) {
-                        const response = await axios({ url: link, method: 'GET', responseType: 'stream' });
-                        await new Promise((resolve, reject) => {
-                            response.data.on('end', resolve);
-                            response.data.on('error', (err) => reject(new Error(`(Telegram Stream) ${err.message}`)));
-                            archive.append(response.data, { name: file.path });
-                        });
-                    } else {
-                         throw new Error(`无法获取档案 ${file.path} 的下载连结。`);
-                    }
-                }
-            } catch (err) {
-                archive.append(`错误：无法附加档案 "${file.path}"。\n错误讯息: ${err.message}`, { name: `${file.path} (错误).txt` });
-            }
-        };
-
         await new Promise((resolveAll) => {
+            const processFile = async (file) => {
+                try {
+                    if (file.storage_type === 'local' || file.storage_type === 'webdav' || file.storage_type === 's3') {
+                        const stream = await storage.stream(file.file_id, userId);
+                        await new Promise((resolve, reject) => {
+                            stream.on('end', resolve);
+                            stream.on('error', (err) => reject(new Error(`(Storage Stream) ${err.message}`)));
+                            archive.append(stream, { name: file.path });
+                        });
+
+                    } else if (file.storage_type === 'telegram') {
+                        const link = await storage.getUrl(file.file_id);
+                        if (link) {
+                            const response = await axios({ url: link, method: 'GET', responseType: 'stream' });
+                            await new Promise((resolve, reject) => {
+                                response.data.on('end', resolve);
+                                response.data.on('error', (err) => reject(new Error(`(Telegram Stream) ${err.message}`)));
+                                archive.append(response.data, { name: file.path });
+                            });
+                        } else {
+                             throw new Error(`无法获取档案 ${file.path} 的下载连结。`);
+                        }
+                    }
+                } catch (err) {
+                    archive.append(`错误：无法附加档案 "${file.path}"。\n错误讯息: ${err.message}`, { name: `${file.path} (错误).txt` });
+                }
+            };
+            
             const runTask = () => {
                 if (tasks.length === 0 && activeTasks === 0) {
                     return resolveAll();
