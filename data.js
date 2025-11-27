@@ -551,17 +551,24 @@ async function moveItem(itemId, itemType, targetFolderId, userId, options = {}, 
 
 // --- 重构：实现软删除 ---
 async function unifiedDelete(itemId, itemType, userId) {
+    // 修复：增加对 itemId 的安全检查，防止调用 toString() 时 itemId 为 undefined/null
+    if (!itemId) {
+        console.warn(`Attempted to call unifiedDelete with falsy itemId for type ${itemType}. Skipping.`);
+        return; 
+    }
     const deletedAt = Date.now();
     
     if (itemType === 'file') {
+        const messageIdStr = itemId.toString(); 
         await new Promise((resolve, reject) => {
-            db.run(`UPDATE files SET is_deleted = 1, deleted_at = ? WHERE message_id = ? AND user_id = ?`, [deletedAt, itemId.toString(), userId], (err) => err ? reject(err) : resolve());
+            db.run(`UPDATE files SET is_deleted = 1, deleted_at = ? WHERE message_id = ? AND user_id = ?`, [deletedAt, messageIdStr, userId], (err) => err ? reject(err) : resolve());
         });
     } else {
         // 文件夹软删除：递归标记所有子内容
         const items = await getFolderDeletionData(itemId, userId, true); // true: 获取未删除的项目
         const fileIds = items.files.map(f => f.message_id.toString());
-        const folderIds = items.folders.map(f => f.id);
+        // 确保所有文件夹 ID 都是字符串类型
+        const folderIds = [itemId, ...items.folders.map(f => f.id)].map(id => id.toString());
         
         db.serialize(() => {
             db.run("BEGIN TRANSACTION;");
@@ -752,10 +759,17 @@ async function addFile(fileData, folderId = 1, userId, storageType) {
     }
 
     const { message_id, fileName, mimetype, file_id, thumb_file_id, date, size } = fileData;
+    
+    // 确保 message_id 是有效的 BigInt 或 string
+    if (!message_id) {
+         throw new Error("文件 ID 缺失，无法记录到数据库。");
+    }
+    const messageIdStr = message_id.toString();
+
     const sql = `INSERT INTO files (message_id, fileName, mimetype, file_id, thumb_file_id, date, size, folder_id, user_id, storage_type)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     return new Promise((resolve, reject) => {
-        db.run(sql, [message_id.toString(), fileName, mimetype, file_id, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
+        db.run(sql, [messageIdStr, fileName, mimetype, file_id, thumb_file_id, date, size, folderId, userId, storageType], function(err) {
             if (err) reject(err);
             else resolve({ success: true, id: this.lastID, fileId: message_id });
         });
