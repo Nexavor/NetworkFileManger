@@ -5,10 +5,8 @@ const fs = require('fs');
 const bcrypt = require('bcrypt');
 require('dotenv').config();
 
-// 1. 定义数据目录路径
+// 1. 确保数据目录存在 (修复 SQLITE_CANTOPEN)
 const dataDir = path.join(__dirname, 'data');
-
-// 2. 关键修复：在连接数据库前，确保 data 目录存在
 if (!fs.existsSync(dataDir)) {
     try {
         fs.mkdirSync(dataDir, { recursive: true });
@@ -25,27 +23,42 @@ const db = new sqlite3.Database(dbPath, (err) => {
         console.error("致命错误：连接资料库失败！", err.message);
         return;
     }
-    // console.log("已连接到 SQLite 资料库。");
     createTables();
 });
 
+// 辅助函数：安全地添加列
+function addColumnIfNotExists(tableName, columnName, columnDef) {
+    return new Promise((resolve, reject) => {
+        db.all(`PRAGMA table_info(${tableName})`, (err, cols) => {
+            if (err) return reject(err);
+            if (!cols.some(c => c.name === columnName)) {
+                db.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDef}`, (err) => {
+                    if (err) console.error(`添加列 ${tableName}.${columnName} 失败:`, err.message);
+                    // 即使失败也继续，避免阻塞
+                    resolve();
+                });
+            } else {
+                resolve();
+            }
+        });
+    });
+}
+
 function createTables() {
     db.serialize(() => {
-        // 1. Users 表：增加 max_storage_bytes
+        // 1. Users 表
         db.run(`CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             password TEXT NOT NULL,
             is_admin INTEGER DEFAULT 0,
-            max_storage_bytes INTEGER DEFAULT 1073741824 
-        )`, (err) => {
-            if (err) return;
-            // 检查并添加列（如果不存在）
-            db.all("PRAGMA table_info(users)", (e, cols) => {
-                if (!cols.some(c => c.name === 'max_storage_bytes')) {
-                    db.run("ALTER TABLE users ADD COLUMN max_storage_bytes INTEGER DEFAULT 1073741824"); // 默认为 1GB
-                }
-            });
+            max_storage_bytes INTEGER DEFAULT 1073741824
+        )`, async (err) => {
+            if (err) return console.error("建立 users 表失败:", err);
+            
+            // 检查并添加缺失的列 (针对旧数据库迁移)
+            await addColumnIfNotExists('users', 'max_storage_bytes', 'INTEGER DEFAULT 1073741824');
+            
             createDependentTables();
         });
     });
@@ -53,7 +66,7 @@ function createTables() {
 
 function createDependentTables() {
     db.serialize(() => {
-        // 2. Folders 表：增加软删除字段
+        // 2. Folders 表
         db.run(`CREATE TABLE IF NOT EXISTS folders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -68,21 +81,22 @@ function createDependentTables() {
             FOREIGN KEY (parent_id) REFERENCES folders (id) ON DELETE CASCADE,
             FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
             UNIQUE(name, parent_id, user_id)
-        )`, (err) => {
-            if (err) return;
-            db.all("PRAGMA table_info(folders)", (e, cols) => {
-                if (!cols.some(c => c.name === 'share_password')) db.run("ALTER TABLE folders ADD COLUMN share_password TEXT");
-                if (!cols.some(c => c.name === 'is_deleted')) db.run("ALTER TABLE folders ADD COLUMN is_deleted INTEGER DEFAULT 0");
-                if (!cols.some(c => c.name === 'deleted_at')) db.run("ALTER TABLE folders ADD COLUMN deleted_at INTEGER");
-                createFilesTable();
-            });
+        )`, async (err) => {
+            if (err) return console.error("建立 folders 表失败:", err);
+
+            // 迁移旧数据：添加新字段
+            await addColumnIfNotExists('folders', 'share_password', 'TEXT');
+            await addColumnIfNotExists('folders', 'is_deleted', 'INTEGER DEFAULT 0');
+            await addColumnIfNotExists('folders', 'deleted_at', 'INTEGER');
+
+            createFilesTable();
         });
     });
 }
 
 function createFilesTable() {
     db.serialize(() => {
-        // 3. Files 表：增加软删除字段
+        // 3. Files 表
         db.run(`CREATE TABLE IF NOT EXISTS files (
             message_id INTEGER PRIMARY KEY,
             fileName TEXT NOT NULL,
@@ -102,14 +116,15 @@ function createFilesTable() {
             UNIQUE(fileName, folder_id, user_id),
             FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE,
             FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-        )`, (err) => {
-            if (err) return;
-            db.all("PRAGMA table_info(files)", (e, cols) => {
-                if (!cols.some(c => c.name === 'share_password')) db.run("ALTER TABLE files ADD COLUMN share_password TEXT");
-                if (!cols.some(c => c.name === 'is_deleted')) db.run("ALTER TABLE files ADD COLUMN is_deleted INTEGER DEFAULT 0");
-                if (!cols.some(c => c.name === 'deleted_at')) db.run("ALTER TABLE files ADD COLUMN deleted_at INTEGER");
-                createAuthTokenTable();
-            });
+        )`, async (err) => {
+            if (err) return console.error("建立 files 表失败:", err);
+
+            // 迁移旧数据：添加新字段
+            await addColumnIfNotExists('files', 'share_password', 'TEXT');
+            await addColumnIfNotExists('files', 'is_deleted', 'INTEGER DEFAULT 0');
+            await addColumnIfNotExists('files', 'deleted_at', 'INTEGER');
+
+            createAuthTokenTable();
         });
     });
 }
@@ -122,21 +137,27 @@ function createAuthTokenTable() {
         expires_at INTEGER NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     )`, (err) => {
+        if (err) console.error("建立 auth_tokens 表失败:", err);
         checkAndCreateAdmin();
     });
 }
 
 function checkAndCreateAdmin() {
     db.get("SELECT * FROM users WHERE is_admin = 1", (err, admin) => {
+        if (err) return;
+        
         if (!admin) {
             const adminUser = process.env.ADMIN_USER || 'admin';
             const adminPass = process.env.ADMIN_PASS || 'admin';
+            
             bcrypt.genSalt(10, (sErr, salt) => {
+                if(sErr) return;
                 bcrypt.hash(adminPass, salt, (hErr, hash) => {
-                    db.run("INSERT INTO users (username, password, is_admin) VALUES (?, ?, 1)", [adminUser, hash], function() {
-                        // console.log(`预设管理员已建立: ${adminUser}`);
+                    if(hErr) return;
+                    db.run("INSERT INTO users (username, password, is_admin, max_storage_bytes) VALUES (?, ?, 1, 1073741824)", [adminUser, hash], function() {
                         const adminId = this.lastID;
-                        db.run("INSERT INTO folders (name, parent_id, user_id) VALUES (?, NULL, ?)", ['/', adminId]);
+                        // 确保根目录存在
+                        db.run("INSERT INTO folders (name, parent_id, user_id) VALUES (?, NULL, ?)", ['/', adminId], () => {});
                     });
                 });
             });
