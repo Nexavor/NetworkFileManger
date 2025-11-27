@@ -1187,7 +1187,8 @@ function checkFullConflict(name, folderId, userId) {
 
 function findFileInFolder(fileName, folderId, userId) {
     return new Promise((resolve, reject) => {
-        const sql = `SELECT ${SAFE_SELECT_MESSAGE_ID}, type as storage_type FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ? AND is_deleted = 0`;
+        // 修正：列名应为 storage_type，而不是 type
+        const sql = `SELECT ${SAFE_SELECT_MESSAGE_ID}, storage_type FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ? AND is_deleted = 0`;
         db.get(sql, [fileName, folderId, userId], (err, row) => {
             if (err) return reject(err);
             // findFileInFolder 被 upload 使用，这里还需要返回 storage_type 吗？
