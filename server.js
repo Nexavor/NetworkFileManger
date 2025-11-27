@@ -1203,6 +1203,43 @@ app.get('/api/admin/all-users', requireAdmin, async (req, res) => {
     }
 });
 
+// --- 新增：获取所有使用者及其配额信息 (Admin) ---
+app.get('/api/admin/users-with-quota', requireAdmin, async (req, res) => {
+    try {
+        const users = await data.listAllUsersWithQuota();
+        res.json({ success: true, users });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '获取使用者配额列表失败。' });
+    }
+});
+
+// --- 新增：设定使用者配额 (Admin) ---
+app.post('/api/admin/set-quota', requireAdmin, async (req, res) => {
+    const { userId, maxBytes } = req.body;
+    let maxBytesInt = parseInt(maxBytes, 10);
+    const userIdInt = parseInt(userId, 10);
+
+    // 检查是否为有效的数字
+    if (isNaN(userIdInt) || isNaN(maxBytesInt) || maxBytesInt < 0) {
+        // 如果传入的是 0 (表示无限)，则接受
+        if (req.body.maxBytes === '0' || req.body.maxBytes === 0) {
+             maxBytesInt = 0;
+        } else {
+             return res.status(400).json({ success: false, message: '无效的使用者 ID 或配额值。' });
+        }
+    }
+    
+    try {
+        const result = await data.setMaxStorageForUser(userIdInt, maxBytesInt);
+        if (result.changes === 0) {
+            return res.status(404).json({ success: false, message: '找不到使用者或该使用者是管理员 (无法修改管理员配额)。' });
+        }
+        res.json({ success: true, message: '配额设定成功。' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: '设定配额失败: ' + error.message });
+    }
+});
+
 app.post('/api/admin/add-user', requireAdmin, async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password || password.length < 4) {
