@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>回收站 - 网络硬盘</title>
+    <script src="/vendor/axios/axios.min.js"></script>
+    <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="/manager.css">
+    <style>
+        .recycle-list {
+            margin-top: 20px;
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            overflow: hidden;
+        }
+        .recycle-item {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+            transition: background-color 0.2s;
+        }
+        .recycle-item:last-child {
+            border-bottom: none;
+        }
+        .recycle-item:hover {
+            background-color: #f8f9fa;
+        }
+        .item-icon {
+            width: 40px;
+            font-size: 1.5em;
+            color: #5f6368;
+            text-align: center;
+            margin-right: 15px;
+        }
+        .item-info {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        .item-name {
+            font-weight: 500;
+            color: #333;
+            margin-bottom: 4px;
+        }
+        .item-meta {
+            font-size: 0.85em;
+            color: #888;
+        }
+        .item-actions {
+            display: flex;
+            gap: 10px;
+        }
+        .action-btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: opacity 0.2s;
+        }
+        .btn-restore {
+            background-color: #28a745;
+            color: white;
+        }
+        .btn-delete {
+            background-color: #dc3545;
+            color: white;
+        }
+        .action-btn:hover {
+            opacity: 0.9;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 50px 20px;
+            color: #6c757d;
+        }
+        .empty-state i {
+            font-size: 3em;
+            margin-bottom: 15px;
+            color: #dee2e6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="main-header">
+            <h1><i class="fas fa-trash-alt"></i> 回收站</h1>
+            <div class="header-buttons">
+                <button id="emptyBinBtn" class="upload-link-btn" style="background-color: #dc3545;"><i class="fas fa-ban"></i> 清空回收站</button>
+                <a href="/" class="upload-link-btn"><i class="fas fa-arrow-left"></i> 返回文件管理器</a>
+            </div>
+        </header>
+
+        <div id="loading" style="text-align: center; padding: 20px;">
+            <i class="fas fa-spinner fa-spin"></i> 正在加载...
+        </div>
+
+        <div id="recycleList" class="recycle-list" style="display: none;">
+            </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const listContainer = document.getElementById('recycleList');
+            const loading = document.getElementById('loading');
+            const emptyBtn = document.getElementById('emptyBinBtn');
+
+            // 格式化文件大小
+            function formatBytes(bytes, decimals = 2) {
+                if (!+bytes) return '0 Bytes';
+                const k = 1024;
+                const dm = decimals < 0 ? 0 : decimals;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+            }
+
+            // 获取图标
+            function getIconClass(type, name) {
+                if (type === 'folder') return 'fa-folder';
+                const ext = name.split('.').pop().toLowerCase();
+                const icons = {
+                    'jpg': 'fa-file-image', 'png': 'fa-file-image', 'gif': 'fa-file-image',
+                    'mp4': 'fa-file-video', 'pdf': 'fa-file-pdf', 'zip': 'fa-file-archive',
+                    'txt': 'fa-file-alt', 'doc': 'fa-file-word', 'docx': 'fa-file-word'
+                };
+                return icons[ext] || 'fa-file';
+            }
+
+            // 加载数据
+            async function loadRecycleBin() {
+                loading.style.display = 'block';
+                listContainer.style.display = 'none';
+                
+                try {
+                    const res = await axios.get('/api/recycle-bin');
+                    const { folders, files } = res.data;
+                    
+                    listContainer.innerHTML = '';
+                    
+                    if (folders.length === 0 && files.length === 0) {
+                        listContainer.innerHTML = `
+                            <div class="empty-state">
+                                <i class="fas fa-trash-restore"></i>
+                                <p>回收站是空的</p>
+                            </div>
+                        `;
+                        emptyBtn.disabled = true;
+                        emptyBtn.style.opacity = '0.5';
+                    } else {
+                        emptyBtn.disabled = false;
+                        emptyBtn.style.opacity = '1';
+                        
+                        const allItems = [
+                            ...folders.map(f => ({...f, type: 'folder'})), 
+                            ...files.map(f => ({...f, type: 'file'}))
+                        ].sort((a, b) => b.deleted_at - a.deleted_at); // 按删除时间倒序
+
+                        allItems.forEach(item => {
+                            const el = document.createElement('div');
+                            el.className = 'recycle-item';
+                            const date = new Date(item.deleted_at).toLocaleString();
+                            const sizeInfo = item.type === 'file' ? ` • ${formatBytes(item.size)}` : '';
+                            
+                            el.innerHTML = `
+                                <div class="item-icon"><i class="fas ${getIconClass(item.type, item.name)}"></i></div>
+                                <div class="item-info">
+                                    <div class="item-name">${item.name}</div>
+                                    <div class="item-meta">删除于: ${date}${sizeInfo}</div>
+                                </div>
+                                <div class="item-actions">
+                                    <button class="action-btn btn-restore" onclick="restoreItem('${item.id || item.message_id}', '${item.type}')" title="还原"><i class="fas fa-undo"></i> 还原</button>
+                                    <button class="action-btn btn-delete" onclick="permanentDelete('${item.id || item.message_id}', '${item.type}')" title="永久删除"><i class="fas fa-times"></i> 删除</button>
+                                </div>
+                            `;
+                            listContainer.appendChild(el);
+                        });
+                    }
+                    
+                    loading.style.display = 'none';
+                    listContainer.style.display = 'block';
+                    
+                } catch (err) {
+                    console.error(err);
+                    loading.innerHTML = '<span style="color:red">加载失败，请刷新页面重试</span>';
+                }
+            }
+
+            // 绑定全局函数以便 HTML onclick 调用
+            window.restoreItem = async (id, type) => {
+                try {
+                    // 按钮 loading 状态 (简单处理)
+                    await axios.post('/api/restore', { itemIds: [{id, type}] });
+                    loadRecycleBin();
+                } catch (err) {
+                    alert('还原失败: ' + (err.response?.data?.message || err.message));
+                }
+            };
+
+            window.permanentDelete = async (id, type) => {
+                if (!confirm('永久删除后无法恢复，确定要继续吗？')) return;
+                try {
+                    await axios.post('/api/permanent-delete', { itemIds: [{id, type}] });
+                    loadRecycleBin();
+                } catch (err) {
+                    alert('删除失败: ' + (err.response?.data?.message || err.message));
+                }
+            };
+
+            emptyBtn.addEventListener('click', async () => {
+                if (!confirm('确定要清空回收站吗？所有文件将永久丢失！')) return;
+                try {
+                    emptyBtn.textContent = '清空中...';
+                    emptyBtn.disabled = true;
+                    await axios.post('/api/empty-recycle-bin');
+                    loadRecycleBin();
+                    emptyBtn.textContent = '清空回收站'; // 重置文字
+                    emptyBtn.innerHTML = '<i class="fas fa-ban"></i> 清空回收站';
+                } catch (err) {
+                    alert('清空失败: ' + (err.response?.data?.message || err.message));
+                    emptyBtn.disabled = false;
+                    emptyBtn.innerHTML = '<i class="fas fa-ban"></i> 清空回收站';
+                }
+            });
+
+            // 初始化
+            loadRecycleBin();
+        });
+    </script>
+</body>
+</html>
