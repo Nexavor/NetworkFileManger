@@ -11,10 +11,22 @@
 <body>
   <div class="container">
     <header class="main-header">
-      <a href="#" id="homeLink">
-        <h1><i class="fas fa-home"></i> 我的文件</h1>
-      </a>
+      <div class="header-left">
+          <a href="#" id="homeLink">
+            <h1><i class="fas fa-home"></i> 我的文件</h1>
+          </a>
+          <div class="quota-container" id="quotaContainer" title="存储空间使用情况">
+              <div class="quota-text">
+                  <span id="quotaUsed">0 B</span> / <span id="quotaMax">1 GB</span>
+              </div>
+              <div class="quota-bar-bg">
+                  <div class="quota-bar-fill" id="quotaBar" style="width: 0%"></div>
+              </div>
+          </div>
+      </div>
+
       <div class="header-buttons">
+        <button id="trashBtn" class="upload-link-btn" style="background-color: #6c757d;" title="回收站"><i class="fas fa-trash-restore"></i></button>
         <button id="view-switch-btn" class="upload-link-btn" title="切换视图"><i class="fas fa-list"></i></button>
         <a href="/shares-page" class="upload-link-btn"><i class="fas fa-share-alt"></i><span class="button-text"> 管理共享</span></a>
         <button id="showUploadModalBtn" class="upload-link-btn"><i class="fas fa-upload"></i><span class="button-text"> 上传文件</span></button>
@@ -31,6 +43,11 @@
         </form>
     </div>
     
+    <div id="trashBanner" style="display: none; background: #fff3cd; color: #856404; padding: 10px; border-radius: 5px; margin-bottom: 15px; align-items: center; justify-content: space-between;">
+        <span><i class="fas fa-trash-alt"></i> <b>回收站</b> - 项目将在 30 天后自动永久删除。</span>
+        <button id="emptyTrashBtn" style="background: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer;">清空回收站</button>
+    </div>
+
     <div id="dropZone">
         <div class="item-grid" id="itemGrid"></div>
         <div class="item-list-view" id="itemListView" style="display: none;">
@@ -48,17 +65,24 @@
         <div id="contextMenu" class="context-menu">
             <div id="selectionInfo"></div>
             <hr id="contextMenuSeparatorTop">
-            <button id="createFolderBtn" title="建立文件夹"><i class="fas fa-folder-plus"></i> <span class="button-text">新建文件夹</span></button>
-            <button id="textEditBtn" title="新建文字档"><i class="fas fa-file-alt"></i> <span class="button-text">新建/编辑文件</span></button>
-            <hr id="contextMenuSeparator1">
-            <button id="openBtn" title="打开" disabled><i class="fas fa-folder-open"></i> <span class="button-text">打开</span></button>
-            <button id="previewBtn" title="预览" disabled><i class="fas fa-eye"></i> <span class="button-text">预览</span></button>
-            <button id="lockBtn" title="加密/解密资料夾" disabled><i class="fas fa-lock"></i> <span class="button-text">加密</span></button>
-            <button id="moveBtn" title="移动" disabled><i class="fas fa-people-arrows"></i> <span class="button-text">移动</span></button>
-            <button id="shareBtn" title="分享" disabled><i class="fas fa-share-alt"></i> <span class="button-text">分享</span></button>
-            <button id="renameBtn" title="重命名" disabled><i class="fas fa-i-cursor"></i> <span class="button-text">重命名</span></button>
-            <button id="downloadBtn" title="下载" disabled><i class="fas fa-download"></i> <span class="button-text">下载</span></button>
-            <button id="deleteBtn" title="删除" disabled><i class="fas fa-trash-alt"></i> <span class="button-text">删除</span></button>
+            
+            <button id="createFolderBtn" title="建立文件夹" class="normal-mode-btn"><i class="fas fa-folder-plus"></i> <span class="button-text">新建文件夹</span></button>
+            <button id="textEditBtn" title="新建文字档" class="normal-mode-btn"><i class="fas fa-file-alt"></i> <span class="button-text">新建/编辑文件</span></button>
+            
+            <hr id="contextMenuSeparator1" class="normal-mode-btn">
+            
+            <button id="openBtn" title="打开" disabled class="normal-mode-btn"><i class="fas fa-folder-open"></i> <span class="button-text">打开</span></button>
+            <button id="previewBtn" title="预览" disabled class="normal-mode-btn"><i class="fas fa-eye"></i> <span class="button-text">预览</span></button>
+            <button id="lockBtn" title="加密/解密资料夾" disabled class="normal-mode-btn"><i class="fas fa-lock"></i> <span class="button-text">加密</span></button>
+            <button id="moveBtn" title="移动" disabled class="normal-mode-btn"><i class="fas fa-people-arrows"></i> <span class="button-text">移动</span></button>
+            <button id="shareBtn" title="分享" disabled class="normal-mode-btn"><i class="fas fa-share-alt"></i> <span class="button-text">分享</span></button>
+            <button id="renameBtn" title="重命名" disabled class="normal-mode-btn"><i class="fas fa-i-cursor"></i> <span class="button-text">重命名</span></button>
+            <button id="downloadBtn" title="下载" disabled class="normal-mode-btn"><i class="fas fa-download"></i> <span class="button-text">下载</span></button>
+            <button id="deleteBtn" title="删除" disabled class="normal-mode-btn"><i class="fas fa-trash-alt"></i> <span class="button-text">删除</span></button>
+            
+            <button id="restoreBtn" title="还原" class="trash-mode-btn" style="display:none;"><i class="fas fa-trash-restore"></i> <span class="button-text">还原</span></button>
+            <button id="deleteForeverBtn" title="永久删除" class="trash-mode-btn" style="display:none; color: #dc3545;"><i class="fas fa-times-circle"></i> <span class="button-text">永久删除</span></button>
+
             <hr id="contextMenuSeparator2">
             <button id="selectAllBtn" title="全选/取消全选"><i class="fas fa-check-double"></i> <span class="button-text">全选</span></button>
             <button id="multiSelectToggleBtn"><i class="fas fa-check-square"></i> <span class="button-text">进入多选模式</span></button>
@@ -201,6 +225,6 @@
     </div>
   </div>
   
-  <script src="/manager.js?v=1.0.1"></script> 
+  <script src="/manager.js?v=1.1.0"></script> 
   </body>
 </html>
