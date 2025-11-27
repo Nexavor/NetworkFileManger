@@ -5,13 +5,27 @@ const fs = require('fs');
 const bcrypt = require('bcrypt');
 require('dotenv').config();
 
-const dbPath = path.join(__dirname, 'data', 'database.db');
+// 1. 定义数据目录路径
+const dataDir = path.join(__dirname, 'data');
+
+// 2. 关键修复：在连接数据库前，确保 data 目录存在
+if (!fs.existsSync(dataDir)) {
+    try {
+        fs.mkdirSync(dataDir, { recursive: true });
+        console.log(`已建立资料目录: ${dataDir}`);
+    } catch (err) {
+        console.error("无法建立资料目录:", err);
+    }
+}
+
+const dbPath = path.join(dataDir, 'database.db');
 
 const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
         console.error("致命错误：连接资料库失败！", err.message);
         return;
     }
+    // console.log("已连接到 SQLite 资料库。");
     createTables();
 });
 
@@ -120,6 +134,7 @@ function checkAndCreateAdmin() {
             bcrypt.genSalt(10, (sErr, salt) => {
                 bcrypt.hash(adminPass, salt, (hErr, hash) => {
                     db.run("INSERT INTO users (username, password, is_admin) VALUES (?, ?, 1)", [adminUser, hash], function() {
+                        // console.log(`预设管理员已建立: ${adminUser}`);
                         const adminId = this.lastID;
                         db.run("INSERT INTO folders (name, parent_id, user_id) VALUES (?, NULL, ?)", ['/', adminId]);
                     });
