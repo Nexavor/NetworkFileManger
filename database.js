@@ -1,10 +1,10 @@
-// database.js (最终正式版 - 恢复自动管理员建立)
+// database.js
 
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcrypt');
-require('dotenv').config(); // 关键修正：确保能读取 .env 档案
+require('dotenv').config();
 
 const dbPath = path.join(__dirname, 'data', 'database.db');
 
@@ -22,9 +22,18 @@ function createTables() {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             password TEXT NOT NULL,
-            is_admin INTEGER DEFAULT 0
+            is_admin INTEGER DEFAULT 0,
+            max_storage_bytes INTEGER DEFAULT 1073741824 -- 默认 1GB
         )`, (err) => {
             if (err) { /* console.error("建立 'users' 表失败:", err.message); */ return; }
+            
+            // 检查并添加 max_storage_bytes 字段 (针对旧数据库)
+            db.all("PRAGMA table_info(users)", (pragmaErr, columns) => {
+                if (!pragmaErr && !columns.some(col => col.name === 'max_storage_bytes')) {
+                    db.run("ALTER TABLE users ADD COLUMN max_storage_bytes INTEGER DEFAULT 1073741824");
+                }
+            });
+
             createDependentTables();
         });
     });
@@ -40,6 +49,9 @@ function createDependentTables() {
             share_token TEXT,
             share_expires_at INTEGER,
             password TEXT,
+            share_password TEXT,
+            is_deleted INTEGER DEFAULT 0,
+            deleted_at INTEGER,
             FOREIGN KEY (parent_id) REFERENCES folders (id) ON DELETE CASCADE,
             FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
             UNIQUE(name, parent_id, user_id)
@@ -47,17 +59,17 @@ function createDependentTables() {
             if (err) { /* console.error("建立 'folders' 表失败:", err.message); */ return; }
 
             db.all("PRAGMA table_info(folders)", (pragmaErr, columns) => {
-                if (pragmaErr) { /* console.error("無法讀取 'folders' 表結構:", pragmaErr.message); */ return; }
+                if (pragmaErr) return;
 
-                const hasSharePassword = columns.some(col => col.name === 'share_password');
-                if (!hasSharePassword) {
-                    db.run("ALTER TABLE folders ADD COLUMN share_password TEXT", (alterErr) => {
-                        if (alterErr) { /* console.error("為 'folders' 表新增 'share_password' 失败:", alterErr.message); */ return; }
-                        createFilesTable();
-                    });
-                } else {
-                    createFilesTable();
+                if (!columns.some(col => col.name === 'share_password')) {
+                    db.run("ALTER TABLE folders ADD COLUMN share_password TEXT");
                 }
+                // 新增回收站字段
+                if (!columns.some(col => col.name === 'is_deleted')) {
+                    db.run("ALTER TABLE folders ADD COLUMN is_deleted INTEGER DEFAULT 0");
+                    db.run("ALTER TABLE folders ADD COLUMN deleted_at INTEGER");
+                }
+                createFilesTable();
             });
         });
     });
@@ -78,6 +90,9 @@ function createFilesTable() {
             folder_id INTEGER NOT NULL DEFAULT 1,
             user_id INTEGER NOT NULL,
             storage_type TEXT NOT NULL DEFAULT 'telegram',
+            share_password TEXT,
+            is_deleted INTEGER DEFAULT 0,
+            deleted_at INTEGER,
             UNIQUE(fileName, folder_id, user_id),
             FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE,
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -85,25 +100,22 @@ function createFilesTable() {
             if (err) { /* console.error("建立 'files' 表失敗:", err.message); */ return; }
 
             db.all("PRAGMA table_info(files)", (pragmaErr, columns) => {
-                if (pragmaErr) { /* console.error("無法讀取 'files' 表結構:", pragmaErr.message); */ return; }
+                if (pragmaErr) return;
 
-                const hasSharePassword = columns.some(col => col.name === 'share_password');
-                if (!hasSharePassword) {
-                    db.run("ALTER TABLE files ADD COLUMN share_password TEXT", (alterErr) => {
-                        if (alterErr) { /* console.error("為 'files' 表新增 'share_password' 失敗:", alterErr.message); */ return; }
-                        // 修改：指向新的函数
-                        createAuthTokenTable();
-                    });
-                } else {
-                    // 修改：指向新的函数
-                    createAuthTokenTable();
+                if (!columns.some(col => col.name === 'share_password')) {
+                    db.run("ALTER TABLE files ADD COLUMN share_password TEXT");
                 }
+                // 新增回收站字段
+                if (!columns.some(col => col.name === 'is_deleted')) {
+                    db.run("ALTER TABLE files ADD COLUMN is_deleted INTEGER DEFAULT 0");
+                    db.run("ALTER TABLE files ADD COLUMN deleted_at INTEGER");
+                }
+                createAuthTokenTable();
             });
         });
     });
 }
 
-// --- 新增：建立 auth_tokens 表 ---
 function createAuthTokenTable() {
     db.run(`CREATE TABLE IF NOT EXISTS auth_tokens (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,37 +125,27 @@ function createAuthTokenTable() {
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     )`, (err) => {
         if (err) { /* console.error("建立 'auth_tokens' 表失败:", err.message); */ return; }
-        // 将 checkAndCreateAdmin 移到这里，确保它是最后执行的
         checkAndCreateAdmin();
     });
 }
-// --- 新增结束 ---
 
 function checkAndCreateAdmin() {
     db.get("SELECT * FROM users WHERE is_admin = 1", (err, admin) => {
-        if (err) { /* console.error("查询管理员时出错:", err.message); */ return; }
+        if (err) return;
         
         if (!admin) {
-            // --- *** 关键修正 开始 *** ---
-            // 如果找不到管理员，则从 .env 档案读取并建立一个
             const adminUser = process.env.ADMIN_USER || 'admin';
             const adminPass = process.env.ADMIN_PASS || 'admin';
-            // --- *** 关键修正 结束 *** ---
             
             bcrypt.genSalt(10, (saltErr, salt) => {
-                if (saltErr) { /* console.error("生成 salt 失败:", saltErr); */ return; }
+                if (saltErr) return;
                 bcrypt.hash(adminPass, salt, (hashErr, hashedPassword) => {
-                    if (hashErr) { /* console.error("密碼雜湊失敗:", hashErr); */ return; }
+                    if (hashErr) return;
 
                     db.run("INSERT INTO users (username, password, is_admin) VALUES (?, ?, 1)", [adminUser, hashedPassword], function(insertErr) {
-                        if (insertErr) { /* console.error("建立管理員帳號失敗:", insertErr.message); */ return; }
-                        
+                        if (insertErr) return;
                         const adminId = this.lastID;
-                        
-                        // 为新管理员建立根目录
-                        db.run("INSERT INTO folders (name, parent_id, user_id) VALUES (?, NULL, ?)", ['/', adminId], (folderErr) => {
-                            if(folderErr) { /* console.error("為管理員建立根目錄失敗:", folderErr.message); */ }
-                        });
+                        db.run("INSERT INTO folders (name, parent_id, user_id) VALUES (?, NULL, ?)", ['/', adminId], (folderErr) => {});
                     });
                 });
             });
