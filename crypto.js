@@ -19,6 +19,7 @@ function encrypt(text) {
         // 使用 Base64 URL 安全编码，以避免 URL 中的特殊字元问题
         return iv.toString('base64url') + ':' + encrypted.toString('base64url');
     } catch (error) {
+        console.error("加密失败:", error);
         return text; // 加密失败时返回原文字
     }
 }
@@ -38,6 +39,7 @@ function decrypt(text) {
         decrypted = Buffer.concat([decrypted, decipher.final()]);
         return decrypted.toString();
     } catch (error) {
+        console.error(`解密失败: "${text}"`, error);
         return null; // 解密失败
     }
 }

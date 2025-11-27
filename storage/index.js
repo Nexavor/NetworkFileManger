@@ -2,7 +2,6 @@
 const telegramStorage = require('./telegram');
 const localStorage = require('./local');
 const webdavStorage = require('./webdav');
-const s3Storage = require('./s3'); // 新增：引入 S3 模块
 const fs = require('fs');
 const path = require('path');
 
@@ -17,10 +16,6 @@ function readConfig() {
             if (!config.webdav || Array.isArray(config.webdav)) {
                 config.webdav = {}; 
             }
-            // 确保 s3 设定存在
-            if (!config.s3) {
-                config.s3 = {};
-            }
             // 确保 uploadMode 存在
             if (!config.uploadMode) {
                 config.uploadMode = 'stream';
@@ -30,8 +25,8 @@ function readConfig() {
     } catch (error) {
         // console.error("读取设定档失败:", error);
     }
-    // 预设值
-    return { storageMode: 'local', uploadMode: 'stream', webdav: {}, s3: {} }; 
+    // --- *** 关键修正：将预设值从 'telegram' 改为 'local'，并增加 uploadMode *** ---
+    return { storageMode: 'local', uploadMode: 'stream', webdav: {} }; 
 }
 
 function writeConfig(config) {
@@ -41,14 +36,9 @@ function writeConfig(config) {
         const newConfig = { ...currentConfig, ...config };
         
         fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2));
-        
-        // 如果是 WebDAV 设定变更，则重置客户端
+        // 如果是 WebDAV 设定变更，则重置客户端以使用新设定
         if (newConfig.storageMode === 'webdav') {
             webdavStorage.resetClient();
-        }
-        // 如果是 S3 设定变更，则重置客户端
-        if (newConfig.storageMode === 's3') {
-            s3Storage.resetClient();
         }
         return true;
     } catch (error) {
@@ -67,14 +57,11 @@ function getStorage() {
     if (config.storageMode === 'webdav') {
         return webdavStorage;
     }
-    if (config.storageMode === 's3') { // 新增：S3 支持
-        return s3Storage;
-    }
     return telegramStorage;
 }
 
 function setStorageMode(mode) {
-    if (['local', 'telegram', 'webdav', 's3'].includes(mode)) {
+    if (['local', 'telegram', 'webdav'].includes(mode)) {
         const current = readConfig();
         current.storageMode = mode;
         return writeConfig(current);
@@ -82,7 +69,7 @@ function setStorageMode(mode) {
     return false;
 }
 
-// 设定上传模式
+// --- 新增：设定上传模式 ---
 function setUploadMode(mode) {
     if (['stream', 'buffer'].includes(mode)) {
         const current = readConfig();
@@ -95,7 +82,7 @@ function setUploadMode(mode) {
 module.exports = {
     getStorage,
     setStorageMode,
-    setUploadMode,
+    setUploadMode, // 导出新函数
     readConfig,
     writeConfig
 };

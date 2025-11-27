@@ -7,43 +7,6 @@
   <script src="/vendor/axios/axios.min.js"></script>
   <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
   <link rel="stylesheet" href="/manager.css">
-  <style>
-      /* 新增配额进度条样式 */
-      .quota-container { 
-          margin-right: 15px; 
-          width: 150px; 
-          text-align: right; 
-          display: flex;
-          flex-direction: column;
-          justify-content: center;
-      }
-      .quota-text { 
-          font-size: 12px; 
-          color: #fff; 
-          margin-bottom: 3px; 
-          text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
-      }
-      .quota-bar-bg { 
-          width: 100%; 
-          height: 6px; 
-          background-color: rgba(255,255,255,0.3); 
-          border-radius: 3px; 
-          overflow: hidden; 
-      }
-      .quota-bar-fill { 
-          height: 100%; 
-          background-color: #28a745; 
-          width: 0%; 
-          transition: width 0.3s; 
-      }
-      .quota-bar-fill.warning { background-color: #ffc107; }
-      .quota-bar-fill.danger { background-color: #dc3545; }
-
-      /* 响应式调整 */
-      @media (max-width: 768px) {
-          .quota-container { display: none; }
-      }
-  </style>
 </head>
 <body>
   <div class="container">
@@ -52,13 +15,6 @@
         <h1><i class="fas fa-home"></i> 我的文件</h1>
       </a>
       <div class="header-buttons">
-        <div class="quota-container" id="quotaContainer" style="display:none;">
-            <div class="quota-text" id="quotaText">加载中...</div>
-            <div class="quota-bar-bg"><div class="quota-bar-fill" id="quotaFill"></div></div>
-        </div>
-        
-        <a href="/recycle-bin" class="upload-link-btn" style="background-color: #6c757d;" title="回收站"><i class="fas fa-trash"></i><span class="button-text"> 回收站</span></a>
-        
         <button id="view-switch-btn" class="upload-link-btn" title="切换视图"><i class="fas fa-list"></i></button>
         <a href="/shares-page" class="upload-link-btn"><i class="fas fa-share-alt"></i><span class="button-text"> 管理共享</span></a>
         <button id="showUploadModalBtn" class="upload-link-btn"><i class="fas fa-upload"></i><span class="button-text"> 上传文件</span></button>
@@ -97,9 +53,6 @@
             <hr id="contextMenuSeparator1">
             <button id="openBtn" title="打开" disabled><i class="fas fa-folder-open"></i> <span class="button-text">打开</span></button>
             <button id="previewBtn" title="预览" disabled><i class="fas fa-eye"></i> <span class="button-text">预览</span></button>
-            
-            <button id="copyBtn" title="复制" disabled><i class="fas fa-copy"></i> <span class="button-text">复制</span></button>
-            
             <button id="lockBtn" title="加密/解密资料夾" disabled><i class="fas fa-lock"></i> <span class="button-text">加密</span></button>
             <button id="moveBtn" title="移动" disabled><i class="fas fa-people-arrows"></i> <span class="button-text">移动</span></button>
             <button id="shareBtn" title="分享" disabled><i class="fas fa-share-alt"></i> <span class="button-text">分享</span></button>
@@ -154,10 +107,10 @@
 
   <div id="moveModal" class="modal">
     <div class="move-modal-content">
-        <h3 id="moveModalTitle">移动到...</h3>
+        <h3>移动到...</h3>
         <p>请选择目标夹：</p>
         <div id="folderTree"></div>
-        <button id="confirmMoveBtn" disabled>确定</button>
+        <button id="confirmMoveBtn" disabled>确定移动</button>
         <button id="cancelMoveBtn">取消</button>
     </div>
   </div>
@@ -248,6 +201,6 @@
     </div>
   </div>
   
-  <script src="/manager.js?v=1.0.2"></script> 
+  <script src="/manager.js?v=1.0.1"></script> 
   </body>
 </html>

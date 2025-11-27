@@ -6,6 +6,12 @@ const data = require('../data.js');
 const crypto = require('crypto'); // 确保引入 crypto
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'data', 'uploads');
+const FILE_NAME = 'storage/local.js';
+
+const log = (level, func, message, ...args) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] [LOCAL:${level}] [${func}] - ${message}`, ...args);
+};
 
 async function setup() {
     try { await fsp.mkdir(UPLOAD_DIR, { recursive: true }); } catch (e) {}
@@ -13,6 +19,9 @@ async function setup() {
 setup();
 
 async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, caption = '', existingItem = null) {
+    const FUNC_NAME = 'upload';
+    log('INFO', FUNC_NAME, `上传开始: "${fileName}"`);
+    
     const userDir = path.join(UPLOAD_DIR, String(userId));
     const folderPathParts = await data.getFolderPath(folderId, userId);
     const relativeFolderPath = path.join(...folderPathParts.slice(1).map(p => p.name)); 
@@ -26,13 +35,13 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
     // --- 封装数据库更新逻辑 ---
     const updateDatabase = async (size) => {
         if (existingItem) {
-            await data.updateFile(existingItem.message_id, {
+            await data.updateFile(existingItem.id, {
                 mimetype: mimetype,
                 file_id: relativeFilePath,
                 size: size,
                 date: Date.now(),
             }, userId);
-            return { success: true, message: '覆盖成功', fileId: existingItem.message_id };
+            return { success: true, message: '覆盖成功', fileId: existingItem.id };
         } else {
             // 修正：使用 BigInt 生成 ID，与 server.js 保持一致
             const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
@@ -53,10 +62,12 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
     if (Buffer.isBuffer(fileStreamOrBuffer)) {
         // 1. 处理 Buffer (来自缓冲模式的小文件)
         try {
+            log('DEBUG', FUNC_NAME, `检测到 Buffer 输入, 大小: ${fileStreamOrBuffer.length} bytes`);
             await fsp.writeFile(finalFilePath, fileStreamOrBuffer);
             const stats = await fsp.stat(finalFilePath);
             return await updateDatabase(stats.size);
         } catch (err) {
+            log('ERROR', FUNC_NAME, `Buffer 写入失败: ${err.message}`);
             throw err;
         }
     } else {
@@ -67,10 +78,13 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
 
             // 安全检查
             if (typeof fileStream.pipe !== 'function') {
-                 return reject(new Error('输入不是有效的流或 Buffer'));
+                 const msg = '输入不是有效的流或 Buffer';
+                 log('ERROR', FUNC_NAME, msg);
+                 return reject(new Error(msg));
             }
 
             fileStream.on('error', err => {
+                log('ERROR', FUNC_NAME, `输入流错误: ${err.message}`);
                 writeStream.close();
                 fs.unlink(finalFilePath, () => {});
                 reject(err);
@@ -79,15 +93,22 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             writeStream.on('finish', async () => {
                 try {
                     const stats = await fsp.stat(finalFilePath);
+                    log('DEBUG', FUNC_NAME, `流写入完成: Size=${stats.size}`);
+                    
+                    if (stats.size === 0) {
+                        log('WARN', FUNC_NAME, `文件大小为0，可能上传失败`);
+                    }
                     
                     const result = await updateDatabase(stats.size);
                     resolve(result);
                 } catch (err) {
+                    log('ERROR', FUNC_NAME, `DB更新失败: ${err.message}`);
                     reject(err);
                 }
             });
 
             writeStream.on('error', err => {
+                log('ERROR', FUNC_NAME, `写入流错误: ${err.message}`);
                 fs.unlink(finalFilePath, () => {});
                 reject(err);
             });
@@ -115,8 +136,6 @@ async function remove(files, folders, userId) {
         }
     }
 
-    // 本地文件夹删除仅在物理删除时进行
-    // 注意：如果是软删除，folders 数组可能为空，这里不会执行
     for (const folder of folders) {
         try {
             const folderPath = path.join(userDir, folder.path);
@@ -163,21 +182,4 @@ function stream(file_id, userId, options) {
     throw new Error('本地档案不存在');
 }
 
-// --- 新增 Copy 功能 ---
-async function copy(file, newRelativePath, userId) {
-    const userDir = path.join(UPLOAD_DIR, String(userId));
-    const oldPath = path.join(userDir, file.file_id);
-    
-    // data.js 会计算好包含目标文件夹路径的 newRelativePath
-    const newPath = path.join(userDir, newRelativePath);
-    
-    // 确保目标目录存在
-    await fsp.mkdir(path.dirname(newPath), { recursive: true });
-    
-    // 执行物理复制
-    await fsp.copyFile(oldPath, newPath);
-    
-    return newRelativePath;
-}
-
-module.exports = { upload, remove, getUrl, stream, copy, type: 'local' };
+module.exports = { upload, remove, getUrl, stream, type: 'local' };

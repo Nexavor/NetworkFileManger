@@ -5,8 +5,18 @@ const FormData = require('form-data');
 const data = require('../data.js');
 
 const TELEGRAM_API = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
+const FILE_NAME = 'storage/telegram.js';
 
-async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, caption = '', existingItem = null) {
+// --- 日志辅助函数 ---
+const log = (level, func, message, ...args) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] [TELEGRAM:${level}] [${func}] - ${message}`, ...args);
+};
+
+async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, caption = '', existingItem = null) { // <-- 参数名改为 fileStreamOrBuffer
+    const FUNC_NAME = 'upload';
+    log('INFO', FUNC_NAME, `开始上传文件: "${fileName}" 到 Telegram...`);
+  
     return new Promise(async (resolve, reject) => {
         try {
             const formData = new FormData();
@@ -19,15 +29,19 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             // --- 关键修正：仅当输入是流时才添加错误监听 ---
             if (!Buffer.isBuffer(fileStreamOrBuffer) && typeof fileStreamOrBuffer.on === 'function') {
                 fileStreamOrBuffer.on('error', err => {
+                    log('ERROR', FUNC_NAME, `输入文件流发生错误 for "${fileName}":`, err);
                     reject(new Error(`输入文件流中断: ${err.message}`));
                 });
             }
+
+            log('DEBUG', FUNC_NAME, `正在发送 POST 请求到 Telegram API for "${fileName}"`);
             
             const res = await axios.post(`${TELEGRAM_API}/sendDocument`, formData, { 
                 headers: formData.getHeaders(),
                 maxContentLength: Infinity,
                 maxBodyLength: Infinity,
             });
+            log('DEBUG', FUNC_NAME, `收到 Telegram API 的响应 for "${fileName}"`);
 
             if (res.data.ok) {
                 const result = res.data.result;
@@ -37,22 +51,27 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
 
                 if (finalFileData && finalFileData.file_id) {
                     
+                    // --- BUG 1 修复逻辑 ---
                     if (existingItem) {
                         // 覆盖：先删除旧的消息
+                        log('DEBUG', FUNC_NAME, `(覆盖) 正在删除旧的 Telegram 消息: ${existingItem.message_id}`);
                         await data.deleteMessages([existingItem.message_id]);
+                        log('INFO', FUNC_NAME, `旧消息 ${existingItem.message_id} 已删除。`);
                     }
                     
                     // (新增或覆盖) 添加新文件的数据库条目
+                    log('DEBUG', FUNC_NAME, `正在将新文件资讯添加到资料库: "${fileName}"`);
                     const dbResult = await data.addFile({
                       message_id: result.message_id,
                       fileName,
-                      mimetype: finalFileData.mime_type || mimetype,
+                      mimetype: finalFileData.mime_type || mimetype, // 修正取值变量
                       size: finalFileData.file_size,
                       file_id: finalFileData.file_id,
                       thumb_file_id: finalFileData.thumb ? finalFileData.thumb.file_id : null,
                       date: Date.now(),
                     }, folderId, userId, 'telegram');
                     
+                    log('INFO', FUNC_NAME, `文件 "${fileName}" 已成功存入资料库。`);
                     resolve({ success: true, data: res.data, fileId: dbResult.fileId });
 
                 } else {
@@ -63,6 +82,7 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             }
         } catch (error) {
             const errorDescription = error.response ? (error.response.data.description || JSON.stringify(error.response.data)) : error.message;
+            log('ERROR', FUNC_NAME, `上传到 Telegram 失败 for "${fileName}": ${errorDescription}`);
             
             // 仅当它是流且具有 resume 方法时才调用
             if (fileStreamOrBuffer && typeof fileStreamOrBuffer.resume === 'function') {
@@ -116,35 +136,4 @@ async function getUrl(file_id) {
   return null;
 }
 
-// --- 新增 Copy 功能 ---
-async function copy(file, newFileName, userId) {
-    // Telegram 不允许直接 Bot 到 Bot 的复制，但可以用 sendDocument 发送已有的 file_id
-    // 这样会生成一个新的 message_id，但共享底层的 file 对象
-    try {
-        const res = await axios.post(`${TELEGRAM_API}/sendDocument`, {
-            chat_id: process.env.CHANNEL_ID,
-            document: file.file_id,
-            caption: newFileName
-        });
-        
-        if (res.data.ok) {
-            const result = res.data.result;
-            const fileData = result.document || result.video || result.audio || result.photo;
-            const finalFileData = Array.isArray(fileData) ? fileData[fileData.length - 1] : fileData;
-            
-            // 返回结构化的数据，供 data.js 使用
-            return {
-                message_id: result.message_id,
-                file_id: finalFileData.file_id,
-                thumb_file_id: finalFileData.thumb ? finalFileData.thumb.file_id : null,
-                size: finalFileData.file_size
-            };
-        } else {
-            throw new Error(res.data.description);
-        }
-    } catch (error) {
-        throw new Error(`Telegram 复制失败: ${error.message}`);
-    }
-}
-
-module.exports = { upload, remove, getUrl, copy, type: 'telegram' };
+module.exports = { upload, remove, getUrl, type: 'telegram' };
