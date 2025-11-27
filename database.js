@@ -1,11 +1,10 @@
-// database.js
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcrypt');
 require('dotenv').config();
 
-// 1. 确保数据目录存在 (修复 SQLITE_CANTOPEN)
+// 1. 确保数据目录存在
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) {
     try {
@@ -26,15 +25,18 @@ const db = new sqlite3.Database(dbPath, (err) => {
     createTables();
 });
 
-// 辅助函数：安全地添加列
+// 辅助函数：安全地添加列 (如果不存在)
 function addColumnIfNotExists(tableName, columnName, columnDef) {
     return new Promise((resolve, reject) => {
         db.all(`PRAGMA table_info(${tableName})`, (err, cols) => {
-            if (err) return reject(err);
+            if (err) {
+                // 如果表不存在，忽略错误，由 createTables 处理
+                return resolve();
+            }
             if (!cols.some(c => c.name === columnName)) {
+                console.log(`正在为表 ${tableName} 添加列 ${columnName}...`);
                 db.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDef}`, (err) => {
                     if (err) console.error(`添加列 ${tableName}.${columnName} 失败:`, err.message);
-                    // 即使失败也继续，避免阻塞
                     resolve();
                 });
             } else {
@@ -56,7 +58,7 @@ function createTables() {
         )`, async (err) => {
             if (err) return console.error("建立 users 表失败:", err);
             
-            // 检查并添加缺失的列 (针对旧数据库迁移)
+            // 迁移旧数据：检查并添加缺失的列
             await addColumnIfNotExists('users', 'max_storage_bytes', 'INTEGER DEFAULT 1073741824');
             
             createDependentTables();
