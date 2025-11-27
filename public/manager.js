@@ -1,1755 +1,1145 @@
-// public/manager.js (最终修正版 - 移除所有对文件ID的 parseInt)
-
 document.addEventListener('DOMContentLoaded', () => {
-    // --- *** 关键修正：新增 Axios 全局拦截器 *** ---
-    // 此拦截器会捕获所有 axios 请求的错误
-    axios.interceptors.response.use(
-        (response) => {
-            // 对成功的响应不执行任何操作，直接返回
-            return response;
-        },
-        (error) => {
-            // 检查是否是 401 未授权错误
-            if (error.response && error.response.status === 401) {
-                // 侦测到 401 错误（会话过期）
-                // alert('您的登入会话已过期，将自动跳转到登入页面。'); // <-- 移除此提示框
-                window.location.href = '/login';
-                // 返回一个永远不会 resolved 的 Promise，以中断当前的 .then() 链
-                return new Promise(() => {});
-            }
-            
-            // 检查是否是网路错误（伺服器断线）
-            // error.response 不存在，但 error.request 存在，是标准网路错误的特征
-            if (!error.response && error.request) {
-                // 侦测到网路错误（伺服器无回应）
-                // alert('无法连接到伺服器，可能已经断线。将自动跳转到登入页面。'); // <-- 移除此提示框
-                window.location.href = '/login';
-                // 返回一个永远不会 resolved 的 Promise
-                return new Promise(() => {});
-            }
-
-            // 对于所有其他错误（如 404, 500 等），正常抛出，
-            // 让局部的 .catch() 区块去处理
-            return Promise.reject(error);
-        }
-    );
-    // --- *** 修正结束 *** ---
-
-    // --- 关键修正：将进度条从DOM中移到文件显示区外部 ---
+    // --- 全局变量 ---
     const dropZone = document.getElementById('dropZone');
-    const container = document.querySelector('.container');
-    const dragUploadProgressArea = document.getElementById('dragUploadProgressArea');
-    if (container && dragUploadProgressArea && dropZone) {
-        // 将进度条元素移动到 #dropZone 之后，成为其兄弟元素
-        dropZone.parentNode.insertBefore(dragUploadProgressArea, dropZone.nextSibling);
-    }
-    // --- 修正结束 ---
-
-    // 追踪最后互动方式 (滑鼠 vs 键盘)
-    const body = document.body;
-    body.classList.add('using-mouse'); // 预设是滑鼠
-
-    window.addEventListener('keydown', (e) => {
-        if (['Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', ' '].includes(e.key)) {
-            body.classList.remove('using-mouse');
-            body.classList.add('using-keyboard');
-        }
-    });
-
-    window.addEventListener('mousemove', () => {
-        if (!body.classList.contains('using-mouse')) {
-            body.classList.remove('using-keyboard');
-            body.classList.add('using-mouse');
-        }
-    });
-
-    window.addEventListener('mousedown', () => {
-        body.classList.remove('using-keyboard');
-        body.classList.add('using-mouse');
-    });
-
-    // DOM 元素
-    const homeLink = document.getElementById('homeLink');
     const itemGrid = document.getElementById('itemGrid');
+    const itemListBody = document.getElementById('itemListBody');
+    const itemListView = document.getElementById('itemListView');
     const breadcrumb = document.getElementById('breadcrumb');
-    const contextMenu = document.getElementById('contextMenu');
-    const selectionInfo = document.getElementById('selectionInfo');
-    const multiSelectToggleBtn = document.getElementById('multiSelectToggleBtn');
-    const createFolderBtn = document.getElementById('createFolderBtn');
     const searchForm = document.getElementById('searchForm');
     const searchInput = document.getElementById('searchInput');
-    const openBtn = document.getElementById('openBtn'); // <-- 新增
-    const previewBtn = document.getElementById('previewBtn');
-    const shareBtn = document.getElementById('shareBtn');
-    const renameBtn = document.getElementById('renameBtn');
-    const moveBtn = document.getElementById('moveBtn');
-    const downloadBtn = document.getElementById('downloadBtn');
-    const deleteBtn = document.getElementById('deleteBtn');
-    const selectAllBtn = document.getElementById('selectAllBtn');
-    const textEditBtn = document.getElementById('textEditBtn');
-    const logoutBtn = document.getElementById('logoutBtn');
+    const contextMenu = document.getElementById('contextMenu');
+    const dropZoneOverlay = document.getElementById('dropZoneOverlay');
+    const viewSwitchBtn = document.getElementById('view-switch-btn');
     const changePasswordBtn = document.getElementById('changePasswordBtn');
-    const previewModal = document.getElementById('previewModal');
-    const modalContent = document.getElementById('modalContent');
-    const closeModal = document.querySelector('.close-button');
-    const moveModal = document.getElementById('moveModal');
-    const folderTree = document.getElementById('folderTree');
-    const confirmMoveBtn = document.getElementById('confirmMoveBtn');
-    const cancelMoveBtn = document.getElementById('cancelMoveBtn');
-    const conflictModal = document.getElementById('conflictModal');
-    const conflictModalTitle = document.getElementById('conflictModalTitle');
-    const conflictFileName = document.getElementById('conflictFileName');
-    const conflictOptions = document.getElementById('conflictOptions');
-    const applyToAllContainer = document.getElementById('applyToAllContainer');
-    const applyToAllCheckbox = document.getElementById('applyToAllCheckbox');
-    const folderConflictModal = document.getElementById('folderConflictModal');
-    const folderConflictName = document.getElementById('folderConflictName');
-    const folderConflictOptions = document.getElementById('folderConflictOptions');
-    const applyToAllFoldersContainer = document.getElementById('applyToAllFoldersContainer');
-    const applyToAllFoldersCheckbox = document.getElementById('applyToAllFoldersCheckbox');
-    const shareModal = document.getElementById('shareModal');
-    const uploadModal = document.getElementById('uploadModal');
     const showUploadModalBtn = document.getElementById('showUploadModalBtn');
+    const logoutBtn = document.getElementById('logoutBtn');
+    
+    // 模态框元素
+    const previewModal = document.getElementById('previewModal');
+    const previewModalContent = document.getElementById('modalContent');
+    const closePreviewBtn = previewModal.querySelector('.close-button');
+    
+    const uploadModal = document.getElementById('uploadModal');
     const closeUploadModalBtn = document.getElementById('closeUploadModalBtn');
     const uploadForm = document.getElementById('uploadForm');
     const fileInput = document.getElementById('fileInput');
     const folderInput = document.getElementById('folderInput');
-    const uploadSubmitBtn = document.getElementById('uploadSubmitBtn');
-    const fileListContainer = document.getElementById('file-selection-list');
     const folderSelect = document.getElementById('folderSelect');
+    const fileSelectionList = document.getElementById('file-selection-list');
+    const progressBar = document.getElementById('progressBar');
+    const progressArea = document.getElementById('progressArea');
     const uploadNotificationArea = document.getElementById('uploadNotificationArea');
-    const dragUploadProgressBar = document.getElementById('dragUploadProgressBar');
-    const viewSwitchBtn = document.getElementById('view-switch-btn');
-    const itemListView = document.getElementById('itemListView');
-    const itemListBody = document.getElementById('itemListBody');
-    const contextMenuSeparator1 = document.getElementById('contextMenuSeparator1');
-    const contextMenuSeparator2 = document.getElementById('contextMenuSeparator2');
-    const contextMenuSeparatorTop = document.getElementById('contextMenuSeparatorTop');
-    const lockBtn = document.getElementById('lockBtn');
+    const uploadSubmitBtn = document.getElementById('uploadSubmitBtn');
+    
+    const moveModal = document.getElementById('moveModal');
+    const moveModalTitle = document.getElementById('moveModalTitle');
+    const folderTree = document.getElementById('folderTree');
+    const confirmMoveBtn = document.getElementById('confirmMoveBtn');
+    const cancelMoveBtn = document.getElementById('cancelMoveBtn');
+
     const passwordModal = document.getElementById('passwordModal');
-    const passwordModalTitle = document.getElementById('passwordModalTitle');
-    const passwordPromptText = document.getElementById('passwordPromptText');
     const passwordForm = document.getElementById('passwordForm');
     const passwordInput = document.getElementById('passwordInput');
     const oldPasswordContainer = document.getElementById('oldPasswordContainer');
     const oldPasswordInput = document.getElementById('oldPasswordInput');
     const confirmPasswordContainer = document.getElementById('confirmPasswordContainer');
     const confirmPasswordInput = document.getElementById('confirmPasswordInput');
-    const passwordSubmitBtn = document.getElementById('passwordSubmitBtn');
+    const passwordModalTitle = document.getElementById('passwordModalTitle');
+    const passwordPromptText = document.getElementById('passwordPromptText');
     const passwordCancelBtn = document.getElementById('passwordCancelBtn');
-    const listHeader = document.querySelector('.list-header');
+    
+    const shareModal = document.getElementById('shareModal');
+    const expiresInSelect = document.getElementById('expiresInSelect');
+    const customExpiresInput = document.getElementById('customExpiresInput');
+    const sharePasswordInput = document.getElementById('sharePasswordInput');
+    const confirmShareBtn = document.getElementById('confirmShareBtn');
+    const cancelShareBtn = document.getElementById('cancelShareBtn');
+    const shareOptions = document.getElementById('shareOptions');
+    const shareResult = document.getElementById('shareResult');
+    const shareLinkContainer = document.getElementById('shareLinkContainer');
+    const copyLinkBtn = document.getElementById('copyLinkBtn');
+    const closeShareModalBtn = document.getElementById('closeShareModalBtn');
 
-    // 状态
-    let isMultiSelectMode = false;
-    let currentFolderId = 1;
-    let currentEncryptedFolderId = null;
-    let currentFolderContents = { folders: [], files: [] };
+    // 冲突处理模态框
+    const conflictModal = document.getElementById('conflictModal');
+    const conflictFileName = document.getElementById('conflictFileName');
+    const conflictOptions = document.getElementById('conflictOptions');
+    const applyToAllCheckbox = document.getElementById('applyToAllCheckbox');
+
+    const folderConflictModal = document.getElementById('folderConflictModal');
+    const folderConflictName = document.getElementById('folderConflictName');
+    const folderConflictOptions = document.getElementById('folderConflictOptions');
+    const applyToAllFoldersCheckbox = document.getElementById('applyToAllFoldersCheckbox');
+
+    // 上下文菜单按钮
+    const createFolderBtn = document.getElementById('createFolderBtn');
+    const textEditBtn = document.getElementById('textEditBtn');
+    const openBtn = document.getElementById('openBtn');
+    const previewBtnContext = document.getElementById('previewBtn');
+    const copyBtn = document.getElementById('copyBtn');
+    const lockBtn = document.getElementById('lockBtn');
+    const moveBtn = document.getElementById('moveBtn');
+    const shareBtn = document.getElementById('shareBtn');
+    const renameBtn = document.getElementById('renameBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const deleteBtn = document.getElementById('deleteBtn');
+    const selectAllBtn = document.getElementById('selectAllBtn');
+    const multiSelectToggleBtn = document.getElementById('multiSelectToggleBtn');
+
+    // 配额相关
+    const quotaContainer = document.getElementById('quotaContainer');
+    const quotaText = document.getElementById('quotaText');
+    const quotaFill = document.getElementById('quotaFill');
+
+    // 状态变量
+    let currentEncryptedFolderId = null; 
+    let currentPath = [];
+    let currentViewMode = localStorage.getItem('viewMode') || 'grid';
+    let currentSort = { field: 'name', direction: 'asc' };
     let selectedItems = new Map();
+    let isMultiSelectMode = false;
+    let lastClickedItemId = null; 
+    let allItems = []; 
+    
+    // 移动/复制/密码/冲突 操作相关变量
     let moveTargetFolderId = null;
-    let moveTargetEncryptedFolderId = null; // 修正：新增状态以储存加密ID
-    let isSearchMode = false;
-    const MAX_TELEGRAM_SIZE = 1000 * 1024 * 1024;
-    let foldersLoaded = false;
-    let currentView = 'grid';
-    let currentSort = {
-        key: 'name',
-        order: 'asc' 
-    };
-    
-    let passwordPromise = {};
+    let isCopyOperation = false;
+    let passwordCallback = null;
+    let currentConflictResolutions = {}; // { relativePath: 'overwrite' | 'rename' | 'skip' }
+    let conflictQueue = []; // 待处理的冲突列表
+    let currentConflictCallback = null; // 解决当前冲突后的回调
 
-    const EDITABLE_EXTENSIONS = [
-        '.txt', '.md', '.json', '.js', '.css', '.html', '.xml', '.yaml', '.yml', 
-        '.log', '.ini', '.cfg', '.conf', '.sh', '.bat', '.py', '.java', '.c', 
-        '.cpp', '.h', '.hpp', '.cs', '.php', '.rb', '.go', '.rs', '.ts', '.sql'
-    ];
+    // Axios 拦截器
+    axios.interceptors.response.use(response => response, error => {
+        if (error.response && error.response.status === 401) {
+            window.location.href = '/login';
+            return new Promise(() => {});
+        }
+        return Promise.reject(error);
+    });
 
-    function isEditableFile(fileName) {
-        if (!fileName) return false;
-        const lowerCaseFileName = fileName.toLowerCase();
-        return EDITABLE_EXTENSIONS.some(ext => lowerCaseFileName.endsWith(ext));
-    }
-
-    const formatBytes = (bytes, decimals = 2) => {
-        if (!bytes || bytes === 0) return '0 Bytes';
-        const k = 1024;
-        const dm = decimals < 0 ? 0 : decimals;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
-    };
-    
-    const formatDateTime = (timestamp) => {
-        if (!timestamp) return '—';
-        return new Date(timestamp).toLocaleString('zh-CN', {
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false
-        }).replace(/\//g, '-');
-    };
-
-    function showNotification(message, type = 'info', container = null) {
-        const notification = document.createElement('div');
-        notification.className = `notification ${type}`;
-        notification.textContent = message;
-
-        if (container) {
-            notification.classList.add('local');
-            container.innerHTML = '';
-            container.appendChild(notification);
+    // --- 初始化 ---
+    function init() {
+        setupEventListeners();
+        setupDragAndDrop();
+        
+        const pathParts = window.location.pathname.split('/');
+        if (pathParts.length > 2 && pathParts[1] === 'view') {
+            const encryptedId = pathParts[2];
+            loadFolderContents(encryptedId);
         } else {
-            notification.classList.add('global');
-            const existingNotif = document.querySelector('.notification.global');
-            if (existingNotif) existingNotif.remove();
-            document.body.appendChild(notification);
-            setTimeout(() => {
-                if (notification.parentElement) notification.parentElement.removeChild(notification);
-            }, 5000);
+             window.location.href = '/';
+        }
+        
+        updateViewModeUI();
+        updateQuota();
+    }
+
+    // --- 核心功能：加载内容 ---
+    async function loadFolderContents(encryptedFolderId) {
+        if (!encryptedFolderId) return;
+        currentEncryptedFolderId = encryptedFolderId;
+
+        itemGrid.innerHTML = '<div class="loading-message"><i class="fas fa-spinner fa-spin"></i> 正在加载...</div>';
+        itemListBody.innerHTML = '';
+        
+        try {
+            const response = await axios.get(`/api/folder/${encryptedFolderId}`);
+            
+            if (response.data.locked) {
+                currentPath = response.data.path;
+                renderBreadcrumb();
+                itemGrid.innerHTML = `
+                    <div class="locked-folder-message">
+                        <i class="fas fa-lock fa-3x"></i>
+                        <h3>此资料夾已上锁</h3>
+                        <p>请输入密码以检视内容</p>
+                        <button id="unlockFolderBtn" class="primary-btn">解锁</button>
+                    </div>
+                `;
+                document.getElementById('unlockFolderBtn').addEventListener('click', () => promptForPassword(encryptedFolderId, 'unlock'));
+                updateQuota();
+                return;
+            }
+
+            const { contents, path } = response.data;
+            currentPath = path;
+            allItems = [...contents.folders, ...contents.files];
+            
+            renderBreadcrumb();
+            renderItems(allItems);
+            clearSelection();
+            updateQuota();
+
+        } catch (error) {
+            console.error('加载失败:', error);
+            itemGrid.innerHTML = '<div class="error-message">加载失败，请重试。</div>';
+            if (error.response && error.response.status === 404) {
+                 alert('资料夾不存在');
+                 window.location.href = '/';
+            }
         }
     }
-    
-    const performUpload = async (url, formData, isDrag = false) => {
-        const progressBar = isDrag ? dragUploadProgressBar : document.getElementById('progressBar');
-        const progressArea = isDrag ? dragUploadProgressArea : document.getElementById('progressArea');
-        const submitBtn = isDrag ? null : uploadSubmitBtn;
-        const notificationContainer = isDrag ? null : uploadNotificationArea;
-    
-        progressArea.style.display = 'block';
-        progressBar.style.width = '0%';
-        progressBar.textContent = '0%';
-        if (submitBtn) submitBtn.disabled = true;
-    
+
+    // --- 核心功能：配额更新 ---
+    async function updateQuota() {
+        if (!quotaContainer) return;
         try {
-            const res = await axios.post(url, formData, {
-                onUploadProgress: p => {
-                    const percent = Math.round((p.loaded * 100) / p.total);
-                    progressBar.style.width = percent + '%';
-                    progressBar.textContent = percent + '%';
-                }
-            });
-            if (res.data.success) {
-                if (!isDrag) {
-                    uploadModal.style.display = 'none';
-                }
-                if (res.data.skippedAll) {
-                    showNotification('没有文件被上传，所有冲突的项目都已被跳过。', 'info');
-                } else {
-                    showNotification('上传成功！', 'success');
-                }
-                fileInput.value = '';
-                folderInput.value = '';
-                loadFolderContents(currentEncryptedFolderId);
-            } else {
-                showNotification(`上传失败: ${res.data.message}`, 'error', notificationContainer);
-            }
-        } catch (error) {
-            // 401 和网路错误已由全局拦截器处理，这里只处理其他如 500 错误
-            if (error.response) {
-                 showNotification('上传失败: ' + (error.response?.data?.message || '服务器错误'), 'error', notificationContainer);
-            }
-        } finally {
-            if (submitBtn) submitBtn.disabled = false;
-            setTimeout(() => { progressArea.style.display = 'none'; }, 2000);
-        }
-    };
-    
-    const uploadFiles = async (allFilesData, targetFolderId, isDrag = false) => {
-        if (allFilesData.length === 0) {
-            showNotification('请选择文件或文件夹。', 'error', !isDrag ? uploadNotificationArea : null);
-            return;
-        }
-
-        // --- *** 关键修正：改用字节长度进行验证 *** ---
-        const MAX_FILENAME_BYTES = 255; 
-        const encoder = new TextEncoder();
-        const longFileNames = allFilesData.filter(data => {
-            const fileName = data.relativePath.split('/').pop();
-            return encoder.encode(fileName).length > MAX_FILENAME_BYTES;
-        });
-
-        if (longFileNames.length > 0) {
-            const fileNames = longFileNames.map(data => `"${data.relativePath.split('/').pop()}"`).join(', ');
-            showNotification(`部分档名过长 (超过 ${MAX_FILENAME_BYTES} 字节)，无法上传: ${fileNames}`, 'error', !isDrag ? uploadNotificationArea : null);
-            return;
-        }
-        // --- 修正结束 ---
-
-        const notificationContainer = isDrag ? null : uploadNotificationArea;
-
-        const oversizedFiles = allFilesData.filter(data => data.file.size > MAX_TELEGRAM_SIZE);
-        if (oversizedFiles.length > 0) {
-            const fileNames = oversizedFiles.map(data => `"${data.file.name}"`).join(', ');
-            showNotification(`文件 ${fileNames} 过大，超过 ${formatBytes(MAX_TELEGRAM_SIZE)} 的限制。`, 'error', notificationContainer);
-            return;
-        }
-
-        const filesToCheck = allFilesData.map(data => ({
-            relativePath: data.relativePath
-        }));
-
-        let existenceData = [];
-        try {
-            const res = await axios.post('/api/check-existence', { files: filesToCheck, folderId: targetFolderId });
-            existenceData = res.data.files;
-        } catch (error) {
-            // 401 和网路错误已由全局拦截器处理
-            if (error.response) {
-                showNotification(error.response?.data?.message || '检查文件是否存在时出错。', 'error', notificationContainer);
-            }
-            return;
-        }
-
-        const resolutions = {};
-        const conflicts = existenceData.filter(f => f.exists).map(f => f.relativePath);
-        
-        if (conflicts.length > 0) {
-            const conflictResult = await handleConflict(conflicts, '档案');
-            if (conflictResult.aborted) {
-                showNotification('上传操作已取消。', 'info', notificationContainer);
-                return;
-            }
-            Object.assign(resolutions, conflictResult.resolutions);
-        }
-
-        const formData = new FormData();
-        allFilesData.forEach(data => {
-            formData.append(data.relativePath, data.file);
-        });
-        
-        const params = new URLSearchParams();
-        params.append('folderId', targetFolderId);
-        params.append('resolutions', JSON.stringify(resolutions));
-
-        if (!isDrag) {
-            const captionInput = document.getElementById('uploadCaption');
-            if (captionInput && captionInput.value) {
-                params.append('caption', captionInput.value);
-            }
-        }
-        
-        const uploadUrl = `/upload?${params.toString()}`;
-        
-        await performUpload(uploadUrl, formData, isDrag);
-    };
-
-    const loadFolderContents = async (encryptedFolderId) => {
-        try {
-            isSearchMode = false;
-            if (searchInput) searchInput.value = '';
+            const res = await axios.get('/api/user/quota');
+            const { max, used } = res.data;
+            const percent = Math.min(100, (used / max) * 100);
             
-            currentEncryptedFolderId = encryptedFolderId; 
-
-            const res = await axios.get(`/api/folder/${encryptedFolderId}`);
+            quotaText.textContent = `${formatBytes(used)} / ${formatBytes(max)}`;
+            quotaFill.style.width = `${percent}%`;
             
-            if (res.data.locked) {
-                const { password } = await promptForPassword(`资料夾 "${res.data.path[res.data.path.length-1].name}" 已加密`, '请输入密码以存取:');
-                if (password === null) { 
-                    const parent = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2] : null;
-                    if (parent && parent.encrypted_id) {
-                       history.back();
-                    }
-                    return;
-                }
-                try {
-                    const currentFolderOriginalId = res.data.path[res.data.path.length - 1].id;
-                    await axios.post(`/api/folder/${currentFolderOriginalId}/verify`, { password });
-                    loadFolderContents(encryptedFolderId);
-                } catch (error) {
-                    alert('密码错误！');
-                    const parent = res.data.path.length > 1 ? res.data.path[res.data.path.length - 2] : null;
-                    if (parent && parent.encrypted_id) {
-                       loadFolderContents(parent.encrypted_id);
-                    }
-                }
-                return;
-            }
-
-            currentFolderContents = res.data.contents;
-            currentFolderId = res.data.path[res.data.path.length - 1].id;
-
-            const currentIds = new Set([...res.data.contents.folders.map(f => String(f.id)), ...res.data.contents.files.map(f => String(f.id))]);
-            selectedItems.forEach((_, key) => {
-                if (!currentIds.has(key)) {
-                    selectedItems.delete(key);
-                }
-            });
-            renderBreadcrumb(res.data.path);
-            renderItems(currentFolderContents.folders, currentFolderContents.files);
-            updateContextMenu();
-        } catch (error) {
-            // --- *** 关键修正：移除局部的 401 检查 *** ---
-            // 全局拦截器现在会处理 401 错误和网路断线
-            // if (error.response && error.response.status === 401) {
-            //     window.location.href = '/login';
-            // }
-            // --- *** 修正结束 *** ---
+            quotaFill.classList.remove('warning', 'danger');
+            if (percent > 90) quotaFill.classList.add('danger');
+            else if (percent > 70) quotaFill.classList.add('warning');
             
-            // 只处理非 401 和非网路错误（例如 404 找不到资料夹）
-            itemGrid.innerHTML = '<p>加载内容失败。</p>';
-            itemListBody.innerHTML = '<p>加载内容失败。</p>';
+            quotaContainer.style.display = 'flex';
+        } catch (e) {
+            quotaContainer.style.display = 'none';
         }
-    };
-    const executeSearch = async (query) => {
-        try {
-            isSearchMode = true;
-            const res = await axios.get(`/api/search?q=${encodeURIComponent(query)}`);
-            currentFolderContents = res.data.contents;
-            selectedItems.clear();
-            renderBreadcrumb(res.data.path);
-            renderItems(currentFolderContents.folders, currentFolderContents.files);
-            updateContextMenu();
-        } catch (error) {
-            itemGrid.innerHTML = '<p>搜寻失败。</p>';
-            itemListBody.innerHTML = '<p>搜寻失败。</p>';
-        }
-    };
-    const renderBreadcrumb = (path) => {
-        breadcrumb.innerHTML = '';
-        if(!path || path.length === 0) return;
-        path.forEach((p, index) => {
-            if (index > 0) breadcrumb.innerHTML += '<span class="separator">/</span>';
-            if (p.id === null) {
-                breadcrumb.innerHTML += `<span>${p.name}</span>`;
-                return;
-            }
-            const link = document.createElement(index === path.length - 1 && !isSearchMode ? 'span' : 'a');
-            link.textContent = p.name === '/' ? '根目录' : p.name;
-            if (link.tagName === 'A') {
-                link.href = '#';
-                link.dataset.encryptedFolderId = p.encrypted_id;
-            }
-            breadcrumb.appendChild(link);
-        });
-    };
-    
-    const sortItems = (folders, files) => {
-        const { key, order } = currentSort;
-        const direction = order === 'asc' ? 1 : -1;
+    }
 
-        const sortedFolders = [...folders].sort((a, b) => {
-            if (key === 'name') {
-                return a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true }) * direction;
-            }
-            return a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true });
-        });
-
-        const sortedFiles = [...files].sort((a, b) => {
-            if (key === 'name') {
-                return a.name.localeCompare(b.name, 'zh-Hans-CN', { numeric: true }) * direction;
-            }
-            if (key === 'size') {
-                return (a.size - b.size) * direction;
-            }
-            if (key === 'date') {
-                return (a.date - b.date) * direction;
-            }
+    // --- 渲染逻辑 ---
+    function renderItems(items) {
+        items.sort((a, b) => {
+            let valA = a[currentSort.field];
+            let valB = b[currentSort.field];
+            if (typeof valA === 'string') valA = valA.toLowerCase();
+            if (typeof valB === 'string') valB = valB.toLowerCase();
+            if (valA < valB) return currentSort.direction === 'asc' ? -1 : 1;
+            if (valA > valB) return currentSort.direction === 'asc' ? 1 : -1;
             return 0;
         });
 
-        return { folders: sortedFolders, files: sortedFiles };
-    };
-    
-    const renderItems = (folders, files) => {
-        const parentGrid = itemGrid;
-        const parentList = itemListBody;
+        itemGrid.innerHTML = '';
+        items.forEach(item => itemGrid.appendChild(createGridItemElement(item)));
 
-        parentGrid.innerHTML = '';
-        parentList.innerHTML = '';
-
-        const { folders: sortedFolders, files: sortedFiles } = sortItems(folders, files);
+        itemListBody.innerHTML = '';
+        items.forEach(item => itemListBody.appendChild(createListItemElement(item)));
         
-        const allItems = [...sortedFolders, ...sortedFiles];
+        if(items.length === 0) {
+            itemGrid.innerHTML = '<div class="empty-folder">此文件夹为空</div>';
+            itemListBody.innerHTML = '<div class="empty-folder">此文件夹为空</div>';
+        }
+    }
+
+    function createGridItemElement(item) {
+        const div = document.createElement('div');
+        div.className = 'grid-item';
+        div.dataset.id = item.id || item.message_id;
+        div.dataset.type = item.type;
+        div.dataset.name = item.name || item.fileName;
+        if (item.encrypted_id) div.dataset.encryptedId = item.encrypted_id;
         
-        if (allItems.length === 0) {
-            if (currentView === 'grid') parentGrid.innerHTML = isSearchMode ? '<p>找不到符合条件的文件。</p>' : '<p>这个资料夾是空的。</p>';
-            else parentList.innerHTML = isSearchMode ? '<div class="list-item"><p>找不到符合条件的文件。</p></div>' : '<div class="list-item"><p>这个资料夾是空的。</p></div>';
-            return;
-        }
+        if (selectedItems.has(getUniqueId(item))) div.classList.add('selected');
 
-        allItems.forEach(item => {
-            if (currentView === 'grid') {
-                parentGrid.appendChild(createItemCard(item));
-            } else {
-                parentList.appendChild(createListItem(item));
-            }
-        });
-        updateSortIndicator();
-    };
-
-    const createItemCard = (item) => {
-        const card = document.createElement('div');
-        card.className = 'item-card';
-        card.dataset.id = item.id;
-        card.dataset.type = item.type;
-        card.dataset.name = item.name === '/' ? '根目录' : item.name;
+        let iconClass = 'fa-file';
         if (item.type === 'folder') {
-            card.dataset.isLocked = item.is_locked;
-            card.dataset.encryptedFolderId = item.encrypted_id; // 修正：添加加密ID
-        }
-        card.setAttribute('tabindex', '0');
-
-        let iconHtml = '';
-        if (item.type === 'file') {
-            const fullFile = currentFolderContents.files.find(f => f.id === item.id) || item;
-            if (fullFile.storage_type === 'telegram' && fullFile.thumb_file_id) {
-                iconHtml = `<img src="/thumbnail/${item.id}" alt="缩图" loading="lazy">`;
-            } else if (fullFile.mimetype && fullFile.mimetype.startsWith('image/')) {
-                 iconHtml = `<img src="/download/proxy/${item.id}" alt="图片" loading="lazy">`;
-            } else if (fullFile.mimetype && fullFile.mimetype.startsWith('video/')) {
-                iconHtml = `<video src="/download/proxy/${item.id}#t=0.1" preload="metadata" muted></video>`;
-            } else {
-                 iconHtml = `<i class="fas ${getFileIconClass(item.mimetype, item.name)}"></i>`;
-            }
-        } else { // folder
-            iconHtml = `<i class="fas ${item.is_locked ? 'fa-lock' : 'fa-folder'}"></i>`;
+            iconClass = item.is_locked ? 'fa-folder-open' : 'fa-folder';
+            if(item.is_locked) div.classList.add('locked');
+        } else {
+            iconClass = getFileIconClass(item.name || item.fileName);
         }
 
-        card.innerHTML = `<div class="item-icon">${iconHtml}</div><div class="item-info"><h5 title="${item.name}">${item.name === '/' ? '根目录' : item.name}</h5></div>`;
-        if (selectedItems.has(String(item.id))) card.classList.add('selected');
-        return card;
-    };
-
-    const createListItem = (item) => {
-        const itemDiv = document.createElement('div');
-        itemDiv.className = 'list-item';
-        itemDiv.dataset.id = item.id;
-        itemDiv.dataset.type = item.type;
-        itemDiv.dataset.name = item.name === '/' ? '根目录' : item.name;
-        if (item.type === 'folder') {
-            itemDiv.dataset.isLocked = item.is_locked;
-            itemDiv.dataset.encryptedFolderId = item.encrypted_id; // 修正：添加加密ID
+        let iconHtml = `<i class="fas ${iconClass}"></i>`;
+        if (item.type === 'file' && isImage(item.name) && item.storage_type === 'telegram' && item.thumb_file_id) {
+             div.classList.add('has-thumbnail');
+             iconHtml = `<img src="/thumbnail/${item.message_id}" loading="lazy" alt="${item.name}">`;
         }
-        itemDiv.setAttribute('tabindex', '0');
 
-        const icon = item.type === 'folder' ? (item.is_locked ? 'fa-lock' : 'fa-folder') : getFileIconClass(item.mimetype, item.name);
-        const name = item.name === '/' ? '根目录' : item.name;
-        const size = item.type === 'file' && item.size ? formatBytes(item.size) : '—';
-        const date = item.date ? formatDateTime(item.date) : '—';
-
-
-        itemDiv.innerHTML = `
-            <div class="list-icon"><i class="fas ${icon}"></i></div>
-            <div class="list-name" title="${name}">${name}</div>
-            <div class="list-size">${size}</div>
-            <div class="list-date">${date}</div>
+        div.innerHTML = `
+            <div class="item-icon">${iconHtml}</div>
+            <div class="item-name">${escapeHtml(item.name || item.fileName)}</div>
+            ${item.is_locked ? '<i class="fas fa-lock item-lock-indicator"></i>' : ''}
         `;
 
-        if (selectedItems.has(String(item.id))) {
-            itemDiv.classList.add('selected');
-        }
+        addItemEventListeners(div, item);
+        return div;
+    }
 
-        return itemDiv;
-    };
+    function createListItemElement(item) {
+        const div = document.createElement('div');
+        div.className = 'list-item';
+        div.dataset.id = item.id || item.message_id;
+        div.dataset.type = item.type;
+        div.dataset.name = item.name || item.fileName;
+        if (item.encrypted_id) div.dataset.encryptedId = item.encrypted_id;
 
-    const getFileIconClass = (mimetype, fileName) => {
-        const lowerFileName = (fileName || '').toLowerCase();
-        const archiveExtensions = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso', 'dmg'];
-        const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tiff'];
+        if (selectedItems.has(getUniqueId(item))) div.classList.add('selected');
 
-        for (const ext of archiveExtensions) {
-            if (lowerFileName.endsWith('.' + ext)) return 'fa-file-archive';
-        }
-        for (const ext of imageExtensions) {
-            if (lowerFileName.endsWith('.' + ext)) return 'fa-file-image';
-        }
+        let iconClass = item.type === 'folder' ? (item.is_locked ? 'fa-lock' : 'fa-folder') : getFileIconClass(item.name);
+        const dateStr = item.date ? new Date(item.date).toLocaleString() : '-';
+        const sizeStr = item.size ? formatBytes(item.size) : '-';
 
-        if (!mimetype) return 'fa-file';
-        if (mimetype.startsWith('image/')) return 'fa-file-image';
-        if (mimetype.startsWith('video/')) return 'fa-file-video';
-        if (mimetype.startsWith('audio/')) return 'fa-file-audio';
-        if (mimetype.includes('pdf')) return 'fa-file-pdf';
-        if (mimetype.includes('archive') || mimetype.includes('zip')) return 'fa-file-archive';
-        if (mimetype.startsWith('text/')) return 'fa-file-alt';
-        
-        return 'fa-file';
-    };
+        div.innerHTML = `
+            <div class="list-col-icon"><i class="fas ${iconClass}"></i></div>
+            <div class="list-col-name">${escapeHtml(item.name || item.fileName)}</div>
+            <div class="list-col-size">${item.type === 'folder' ? '-' : sizeStr}</div>
+            <div class="list-col-date">${dateStr}</div>
+        `;
+
+        addItemEventListeners(div, item);
+        return div;
+    }
     
-    const updateContextMenu = (targetItem = null) => {
+    function addItemEventListeners(element, item) {
+        element.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (e.ctrlKey || e.metaKey || isMultiSelectMode) {
+                toggleSelection(item, element);
+            } else if (e.shiftKey && lastClickedItemId) {
+                selectRange(lastClickedItemId, getUniqueId(item));
+            } else {
+                clearSelection();
+                selectItem(item, element);
+            }
+            lastClickedItemId = getUniqueId(item);
+        });
+
+        element.addEventListener('dblclick', (e) => {
+            e.stopPropagation();
+            if (item.type === 'folder') {
+                if (item.is_locked) promptForPassword(item.encrypted_id, 'unlock');
+                else loadFolderContents(item.encrypted_id);
+            } else {
+                previewFile(item);
+            }
+        });
+
+        element.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!selectedItems.has(getUniqueId(item))) {
+                clearSelection();
+                selectItem(item, element);
+            }
+            showContextMenu(e.pageX, e.pageY);
+        });
+    }
+
+    function renderBreadcrumb() {
+        breadcrumb.innerHTML = '';
+        const homeLink = document.createElement('a');
+        homeLink.href = '#';
+        homeLink.innerHTML = '<i class="fas fa-home"></i>';
+        homeLink.addEventListener('click', (e) => { e.preventDefault(); window.location.href = '/'; });
+        breadcrumb.appendChild(homeLink);
+
+        currentPath.forEach((folder, index) => {
+            const separator = document.createElement('span');
+            separator.className = 'separator';
+            separator.textContent = '/';
+            breadcrumb.appendChild(separator);
+
+            if (index === currentPath.length - 1) {
+                const span = document.createElement('span');
+                span.className = 'current';
+                span.textContent = folder.name;
+                breadcrumb.appendChild(span);
+            } else {
+                const a = document.createElement('a');
+                a.href = '#';
+                a.textContent = folder.name;
+                a.addEventListener('click', (e) => { e.preventDefault(); loadFolderContents(folder.encrypted_id); });
+                breadcrumb.appendChild(a);
+            }
+        });
+    }
+
+    // --- 选择逻辑 ---
+    function getUniqueId(item) { return `${item.type}-${item.id || item.message_id}`; }
+
+    function selectItem(item, element) {
+        selectedItems.set(getUniqueId(item), { ...item, element });
+        updateElementSelectionVisuals();
+        updateContextMenuButtons();
+    }
+
+    function toggleSelection(item, element) {
+        const uid = getUniqueId(item);
+        if (selectedItems.has(uid)) selectedItems.delete(uid);
+        else selectedItems.set(uid, { ...item, element });
+        updateElementSelectionVisuals();
+        updateContextMenuButtons();
+    }
+
+    function clearSelection() {
+        selectedItems.clear();
+        updateElementSelectionVisuals();
+        updateContextMenuButtons();
+    }
+    
+    function selectRange(startUid, endUid) {
+        const startIndex = allItems.findIndex(i => getUniqueId(i) === startUid);
+        const endIndex = allItems.findIndex(i => getUniqueId(i) === endUid);
+        if (startIndex === -1 || endIndex === -1) return;
+        const min = Math.min(startIndex, endIndex);
+        const max = Math.max(startIndex, endIndex);
+        for (let i = min; i <= max; i++) {
+            const item = allItems[i];
+            selectedItems.set(getUniqueId(item), item);
+        }
+        updateElementSelectionVisuals();
+        updateContextMenuButtons();
+    }
+
+    function updateElementSelectionVisuals() {
+        document.querySelectorAll('.grid-item.selected, .list-item.selected').forEach(el => el.classList.remove('selected'));
+        selectedItems.forEach((val, key) => {
+            const [type, id] = key.split('-');
+            const selector = `[data-id="${id}"][data-type="${type}"]`;
+            document.querySelectorAll(selector).forEach(el => el.classList.add('selected'));
+        });
+        if (isMultiSelectMode) multiSelectToggleBtn.classList.add('active');
+        else multiSelectToggleBtn.classList.remove('active');
+    }
+
+    function showContextMenu(x, y) {
+        const winWidth = window.innerWidth;
+        const winHeight = window.innerHeight;
+        const menuWidth = contextMenu.offsetWidth;
+        const menuHeight = contextMenu.offsetHeight;
+        if (x + menuWidth > winWidth) x = winWidth - menuWidth - 10;
+        if (y + menuHeight > winHeight) y = winHeight - menuHeight - 10;
+        contextMenu.style.left = `${x}px`;
+        contextMenu.style.top = `${y}px`;
+        contextMenu.classList.add('visible');
+        updateContextMenuButtons();
+    }
+
+    function hideContextMenu() { contextMenu.classList.remove('visible'); }
+
+    function updateContextMenuButtons() {
         const count = selectedItems.size;
-        const hasSelection = count > 0;
-        const singleSelection = count === 1;
-        const firstSelectedItem = hasSelection ? selectedItems.values().next().value : null;
-
-        selectionInfo.textContent = hasSelection ? `已选择 ${count} 个项目` : '';
-        selectionInfo.style.display = hasSelection ? 'block' : 'none';
-        contextMenuSeparatorTop.style.display = hasSelection ? 'block' : 'none';
-    
-        const generalButtons = [createFolderBtn, textEditBtn];
-        const itemSpecificButtons = [openBtn, previewBtn, moveBtn, shareBtn, renameBtn, downloadBtn, deleteBtn, contextMenuSeparator1, lockBtn]; // <-- openBtn 已添加
-    
-        if (isMultiSelectMode) {
-            multiSelectToggleBtn.innerHTML = '<i class="fas fa-times"></i> <span class="button-text">退出多选模式</span>';
-            multiSelectToggleBtn.style.display = 'block';
-        } else {
-            multiSelectToggleBtn.innerHTML = '<i class="fas fa-check-square"></i> <span class="button-text">进入多选模式</span>';
-            multiSelectToggleBtn.style.display = !targetItem ? 'block' : 'none';
+        const firstItem = count > 0 ? selectedItems.values().next().value : null;
+        document.getElementById('selectionInfo').textContent = count > 0 ? `已选择 ${count} 个项目` : '';
+        
+        openBtn.disabled = count !== 1 || firstItem.type !== 'folder';
+        previewBtnContext.disabled = count !== 1 || firstItem.type !== 'file';
+        copyBtn.disabled = count === 0;
+        lockBtn.disabled = count !== 1 || firstItem.type !== 'folder';
+        if (count === 1 && firstItem.type === 'folder') {
+             lockBtn.querySelector('.button-text').textContent = firstItem.is_locked ? '解锁/修改密码' : '加密';
         }
+        moveBtn.disabled = count === 0;
+        shareBtn.disabled = count !== 1;
+        renameBtn.disabled = count !== 1;
+        downloadBtn.disabled = count === 0;
+        deleteBtn.disabled = count === 0;
+        selectAllBtn.querySelector('.button-text').textContent = (count === allItems.length && count > 0) ? '取消全选' : '全选';
+    }
 
-        if (hasSelection) {
-            generalButtons.forEach(btn => btn.style.display = 'none');
-            itemSpecificButtons.forEach(btn => btn.style.display = 'flex');
-            selectAllBtn.style.display = 'block';
-            contextMenuSeparator2.style.display = 'block';
-    
-            const isSingleEditableFile = singleSelection && firstSelectedItem.type === 'file' && isEditableFile(firstSelectedItem.name);
-            textEditBtn.style.display = isSingleEditableFile ? 'flex' : 'none';
-            if (isSingleEditableFile) {
-                textEditBtn.innerHTML = '<i class="fas fa-edit"></i> <span class="button-text">编辑文件</span>';
-                textEditBtn.title = '编辑文字档';
+    // --- 事件监听器 ---
+    function setupEventListeners() {
+        dropZone.addEventListener('click', (e) => {
+            if (!e.target.closest('.grid-item') && !e.target.closest('.list-item')) {
+                 clearSelection();
+                 hideContextMenu();
             }
-            contextMenuSeparator1.style.display = isSingleEditableFile ? 'block' : 'none';
-
-            const containsLockedFolder = Array.from(selectedItems.keys()).some(id => {
-                const itemEl = document.querySelector(`.item-card[data-id="${id}"], .list-item[data-id="${id}"]`);
-                return itemEl && itemEl.dataset.type === 'folder' && (itemEl.dataset.isLocked === 'true' || itemEl.dataset.isLocked === '1');
-            });
-            const isSingleLockedFolder = singleSelection && firstSelectedItem.type === 'folder' && containsLockedFolder;
-            
-            // --- 新增： “打开”按钮的逻辑 ---
-            if(singleSelection){
-                if(firstSelectedItem.type === 'folder'){
-                    openBtn.innerHTML = '<i class="fas fa-folder-open"></i> <span class="button-text">打开</span>';
-                } else {
-                    openBtn.innerHTML = '<i class="fas fa-external-link-alt"></i> <span class="button-text">打开</span>';
-                }
-            }
-            openBtn.disabled = !singleSelection;
-            // --- 逻辑结束 ---
-
-            previewBtn.disabled = !singleSelection || firstSelectedItem.type === 'folder';
-            renameBtn.disabled = !singleSelection;
-            moveBtn.disabled = count === 0 || isSearchMode || containsLockedFolder;
-
-            shareBtn.disabled = !singleSelection || isSingleLockedFolder;
-            downloadBtn.disabled = count === 0 || containsLockedFolder;
-            deleteBtn.disabled = count === 0 || containsLockedFolder;
-            
-            lockBtn.disabled = !singleSelection || firstSelectedItem.type !== 'folder';
-            if(singleSelection && firstSelectedItem.type === 'folder'){
-                 const isLocked = containsLockedFolder;
-                 lockBtn.innerHTML = isLocked ? '<i class="fas fa-unlock"></i> <span class="button-text">管理密码</span>' : '<i class="fas fa-lock"></i> <span class="button-text">加密</span>';
-                 lockBtn.title = isLocked ? '修改或移除密码' : '设定密码';
-            }
-
-        } else {
-            generalButtons.forEach(btn => btn.style.display = 'block');
-            itemSpecificButtons.forEach(btn => btn.style.display = 'none');
-            selectAllBtn.style.display = 'block';
-            contextMenuSeparator2.style.display = 'block';
-            textEditBtn.innerHTML = '<i class="fas fa-file-alt"></i> <span class="button-text">新建文件</span>';
-            textEditBtn.title = '新建文字档';
-        }
-    };
-
-    const updateSortIndicator = () => {
-        listHeader.querySelectorAll('[data-sort]').forEach(el => {
-            el.classList.remove('sort-asc', 'sort-desc');
-            const icon = el.querySelector('.sort-icon');
-            if(icon) icon.remove();
         });
-        const activeHeader = listHeader.querySelector(`[data-sort="${currentSort.key}"]`);
-        if (activeHeader) {
-            activeHeader.classList.add(currentSort.order === 'asc' ? 'sort-asc' : 'sort-desc');
-            const icon = document.createElement('i');
-            icon.className = `fas fa-caret-${currentSort.order === 'asc' ? 'up' : 'down'} sort-icon`;
-            activeHeader.appendChild(icon);
-        }
-    };
-
-    const rerenderSelection = () => {
-        document.querySelectorAll('.item-card, .list-item').forEach(el => {
-            el.classList.toggle('selected', selectedItems.has(el.dataset.id));
+        
+        dropZone.addEventListener('contextmenu', (e) => {
+             e.preventDefault();
+             if (!e.target.closest('.grid-item') && !e.target.closest('.list-item')) {
+                 clearSelection();
+                 showContextMenu(e.pageX, e.pageY);
+             }
         });
-    };
-    const loadFoldersForSelect = async () => {
-        if (foldersLoaded) return;
-        try {
-            const res = await axios.get('/api/folders');
-            const folders = res.data;
-            const folderMap = new Map(folders.map(f => [f.id, { ...f, children: [] }]));
-            const tree = [];
-            folderMap.forEach(f => {
-                if (f.parent_id && folderMap.has(f.parent_id)) folderMap.get(f.parent_id).children.push(f);
-                else tree.push(f);
+
+        document.addEventListener('click', hideContextMenu);
+        
+        viewSwitchBtn.addEventListener('click', () => {
+            currentViewMode = currentViewMode === 'grid' ? 'list' : 'grid';
+            localStorage.setItem('viewMode', currentViewMode);
+            updateViewModeUI();
+        });
+        
+        document.querySelectorAll('.list-header div[data-sort]').forEach(header => {
+            header.addEventListener('click', () => {
+                const field = header.dataset.sort;
+                if (currentSort.field === field) currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+                else { currentSort.field = field; currentSort.direction = 'asc'; }
+                renderItems(allItems);
             });
+        });
 
-            folderSelect.innerHTML = '';
-            const buildOptions = (node, prefix = '') => {
-                const option = document.createElement('option');
-                option.value = node.id;
-                option.textContent = prefix + (node.name === '/' ? '根目录' : node.name);
-                folderSelect.appendChild(option);
-                node.children.sort((a,b) => a.name.localeCompare(b.name)).forEach(child => buildOptions(child, prefix + '　'));
-            };
-            tree.sort((a,b) => a.name.localeCompare(b.name)).forEach(buildOptions);
+        searchForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const query = searchInput.value.trim();
+            if (!query) return;
+            try {
+                const res = await axios.get(`/api/search?q=${encodeURIComponent(query)}`);
+                currentPath = res.data.path;
+                allItems = [...res.data.contents.folders, ...res.data.contents.files];
+                renderBreadcrumb();
+                renderItems(allItems);
+                clearSelection();
+            } catch (err) { alert('搜寻失败'); }
+        });
 
-            foldersLoaded = true;
-        } catch (error) {
-            // console.error('加载资料夾列表失败', error);
-        }
-    };
-    
-    const switchView = (view) => {
-        if (view === 'grid') {
+        createFolderBtn.addEventListener('click', createFolder);
+        textEditBtn.addEventListener('click', () => window.open('/editor', '_blank'));
+        openBtn.addEventListener('click', () => {
+             const item = selectedItems.values().next().value;
+             if(item) loadFolderContents(item.encrypted_id);
+        });
+        previewBtnContext.addEventListener('click', () => previewFile(selectedItems.values().next().value));
+        copyBtn.addEventListener('click', () => { if (selectedItems.size > 0) openMoveCopyModal(true); });
+        moveBtn.addEventListener('click', () => { if (selectedItems.size > 0) openMoveCopyModal(false); });
+        lockBtn.addEventListener('click', () => {
+             const item = selectedItems.values().next().value;
+             if (item.is_locked) promptForPassword(item.id, 'lock_settings');
+             else promptForPassword(item.id, 'set_lock');
+        });
+        shareBtn.addEventListener('click', () => openShareModal(selectedItems.values().next().value));
+        renameBtn.addEventListener('click', () => {
+            const item = selectedItems.values().next().value;
+            const newName = prompt('请输入新名称:', item.name || item.fileName);
+            if (newName && newName !== (item.name || item.fileName)) renameItem(item, newName);
+        });
+        downloadBtn.addEventListener('click', downloadSelected);
+        deleteBtn.addEventListener('click', deleteSelected);
+        selectAllBtn.addEventListener('click', () => {
+            if (selectedItems.size === allItems.length) clearSelection();
+            else { allItems.forEach(item => selectedItems.set(getUniqueId(item), item)); updateElementSelectionVisuals(); updateContextMenuButtons(); }
+        });
+        multiSelectToggleBtn.addEventListener('click', () => { isMultiSelectMode = !isMultiSelectMode; updateElementSelectionVisuals(); });
+
+        closePreviewBtn.addEventListener('click', () => { previewModal.style.display = 'none'; previewModalContent.innerHTML = ''; });
+        window.addEventListener('click', (e) => {
+            if (e.target === previewModal) { previewModal.style.display = 'none'; previewModalContent.innerHTML = ''; }
+            if (e.target === uploadModal) uploadModal.style.display = 'none';
+            if (e.target === moveModal) moveModal.style.display = 'none';
+            if (e.target === shareModal) shareModal.style.display = 'none';
+            if (e.target === passwordModal) passwordModal.style.display = 'none';
+            if (e.target === conflictModal) abortConflictResolution();
+            if (e.target === folderConflictModal) abortConflictResolution();
+        });
+
+        showUploadModalBtn.addEventListener('click', () => {
+             loadFolderOptions();
+             uploadModal.style.display = 'block';
+        });
+        closeUploadModalBtn.addEventListener('click', () => uploadModal.style.display = 'none');
+        
+        fileInput.addEventListener('change', handleFileSelect);
+        folderInput.addEventListener('change', handleFileSelect);
+        uploadForm.addEventListener('submit', (e) => { e.preventDefault(); initiateUploadProcess(); });
+
+        cancelMoveBtn.addEventListener('click', () => moveModal.style.display = 'none');
+        confirmMoveBtn.addEventListener('click', initiateMoveCopyProcess);
+        
+        passwordCancelBtn.addEventListener('click', () => { passwordModal.style.display = 'none'; passwordCallback = null; });
+        passwordForm.addEventListener('submit', (e) => { e.preventDefault(); if (passwordCallback) passwordCallback(); });
+        
+        expiresInSelect.addEventListener('change', () => { customExpiresInput.style.display = expiresInSelect.value === 'custom' ? 'block' : 'none'; });
+        cancelShareBtn.addEventListener('click', () => shareModal.style.display = 'none');
+        closeShareModalBtn.addEventListener('click', () => shareModal.style.display = 'none');
+        confirmShareBtn.addEventListener('click', generateShareLink);
+        copyLinkBtn.addEventListener('click', () => navigator.clipboard.writeText(shareLinkContainer.textContent).then(() => alert('已复制')));
+        
+        logoutBtn.addEventListener('click', () => window.location.href = '/logout');
+        changePasswordBtn.addEventListener('click', changeUserPassword);
+        
+        // 冲突模态框按钮事件代理
+        conflictOptions.addEventListener('click', (e) => {
+            if(e.target.tagName === 'BUTTON') resolveConflict(e.target.dataset.action);
+        });
+        folderConflictOptions.addEventListener('click', (e) => {
+            if(e.target.tagName === 'BUTTON') resolveConflict(e.target.dataset.action);
+        });
+    }
+
+    function updateViewModeUI() {
+        if (currentViewMode === 'grid') {
             itemGrid.style.display = 'grid';
             itemListView.style.display = 'none';
             viewSwitchBtn.innerHTML = '<i class="fas fa-list"></i>';
-            currentView = 'grid';
+            viewSwitchBtn.title = '切换至列表视图';
         } else {
             itemGrid.style.display = 'none';
             itemListView.style.display = 'block';
             viewSwitchBtn.innerHTML = '<i class="fas fa-th"></i>';
-            currentView = 'list';
+            viewSwitchBtn.title = '切换至网格视图';
         }
-        renderItems(currentFolderContents.folders, currentFolderContents.files);
-    };
-
-    async function handleFolderConflict(folderName, totalConflicts) {
-        return new Promise((resolve) => {
-            folderConflictName.textContent = folderName;
-            applyToAllFoldersContainer.style.display = totalConflicts > 1 ? 'block' : 'none';
-            applyToAllFoldersCheckbox.checked = false;
-            folderConflictModal.style.display = 'flex';
-
-            folderConflictOptions.onclick = (e) => {
-                const action = e.target.dataset.action;
-                if (!action) return;
-
-                folderConflictModal.style.display = 'none';
-                folderConflictOptions.onclick = null;
-                resolve({
-                    action,
-                    applyToAll: applyToAllFoldersCheckbox.checked
-                });
-            };
-        });
     }
 
-    async function handleConflict(conflicts, operationType = '档案') {
-        const resolutions = {};
-        let applyToAllAction = null;
-        let aborted = false;
-
-        for (const conflictName of conflicts) {
-            if (applyToAllAction) {
-                resolutions[conflictName] = applyToAllAction;
-                continue;
-            }
-
-            const action = await new Promise((resolve) => {
-                conflictModalTitle.textContent = `${operationType}冲突`;
-                conflictFileName.textContent = conflictName;
-                applyToAllContainer.style.display = conflicts.length > 1 ? 'block' : 'none';
-                applyToAllCheckbox.checked = false;
-                conflictModal.style.display = 'flex';
-
-                conflictOptions.onclick = (e) => {
-                    const chosenAction = e.target.dataset.action;
-                    if (!chosenAction) return;
-
-                    conflictModal.style.display = 'none';
-                    conflictOptions.onclick = null;
-                    
-                    if (applyToAllCheckbox.checked) {
-                        applyToAllAction = chosenAction;
-                    }
-                    resolve(chosenAction);
-                };
-            });
-
-            if (action === 'abort') {
-                aborted = true;
-                break;
-            }
-            resolutions[conflictName] = action;
-        }
-
-        return { aborted, resolutions };
-    }
-    
-    function promptForPassword(title, text, showOldPassword = false, showConfirm = false) {
-        return new Promise((resolve, reject) => {
-            passwordPromise.resolve = resolve;
-            passwordPromise.reject = reject;
-            passwordModalTitle.textContent = title;
-            passwordPromptText.textContent = text;
-            oldPasswordContainer.style.display = showOldPassword ? 'block' : 'none';
-            confirmPasswordContainer.style.display = showConfirm ? 'block' : 'none';
-            passwordInput.value = '';
-            oldPasswordInput.value = '';
-            confirmPasswordInput.value = '';
-            passwordModal.style.display = 'flex';
-            passwordInput.focus();
-        });
-    }
-
-    passwordForm.addEventListener('submit', (e) => {
-        e.preventDefault();
-        const password = passwordInput.value;
-        const oldPassword = oldPasswordInput.value;
-        const confirmPassword = confirmPasswordInput.value;
-        passwordModal.style.display = 'none';
-        passwordPromise.resolve({ password, oldPassword, confirmPassword });
-    });
-
-    passwordCancelBtn.addEventListener('click', () => {
-        passwordModal.style.display = 'none';
-        passwordPromise.resolve({password: null});
-    });
-
-    // --- 事件监听 ---
-    const handleKeyDown = (e) => {
-        const activeElement = document.activeElement;
-        const isItem = activeElement && (activeElement.classList.contains('item-card') || activeElement.classList.contains('list-item'));
-
-        if (!isItem) return;
-
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            handleItemDblClick({ target: activeElement });
-        } else if (e.key === ' ') {
-            e.preventDefault();
-            handleItemClick({ target: activeElement, ctrlKey: true });
-        } else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-            e.preventDefault();
-            
-            const items = Array.from(dropZone.querySelectorAll('.item-card:not([style*="display: none"]), .list-item:not([style*="display: none"])'));
-            if (items.length === 0) return;
-
-            const currentIndex = items.indexOf(activeElement);
-            let nextIndex = currentIndex;
-
-            if (currentView === 'grid') {
-                const style = window.getComputedStyle(itemGrid);
-                const columns = style.getPropertyValue('grid-template-columns').split(' ').length;
-                switch (e.key) {
-                    case 'ArrowUp':
-                        nextIndex = Math.max(0, currentIndex - columns);
-                        break;
-                    case 'ArrowDown':
-                        nextIndex = Math.min(items.length - 1, currentIndex + columns);
-                        break;
-                    case 'ArrowLeft':
-                        nextIndex = Math.max(0, currentIndex - 1);
-                        break;
-                    case 'ArrowRight':
-                        nextIndex = Math.min(items.length - 1, currentIndex + 1);
-                        break;
-                }
-            } else { 
-                switch (e.key) {
-                    case 'ArrowUp':
-                        nextIndex = Math.max(0, currentIndex - 1);
-                        break;
-                    case 'ArrowDown':
-                        nextIndex = Math.min(items.length - 1, currentIndex + 1);
-                        break;
-                }
-            }
-            
-            if (nextIndex !== currentIndex && items[nextIndex]) {
-                items[nextIndex].focus();
-            }
-        }
-    };
-    if (dropZone) {
-        dropZone.addEventListener('keydown', handleKeyDown);
-        
-        // --- *** 关键修正 开始 *** ---
-        dropZone.addEventListener('focusin', (e) => {
-            const target = e.target.closest('.item-card, .list-item');
-            if (target && body.classList.contains('using-keyboard') && !isMultiSelectMode) {
-                selectedItems.clear();
-                selectedItems.set(target.dataset.id, { type: target.dataset.type, name: target.dataset.name, encrypted_id: target.dataset.encryptedFolderId });
-                rerenderSelection();
-                updateContextMenu();
-            }
-        });
-        // --- *** 关键修正 结束 *** ---
-    }
-
-    if (listHeader) {
-        listHeader.addEventListener('click', (e) => {
-            const target = e.target.closest('[data-sort]');
-            if (!target) return;
-
-            const sortKey = target.dataset.sort;
-            if (currentSort.key === sortKey) {
-                currentSort.order = currentSort.order === 'asc' ? 'desc' : 'asc';
-            } else {
-                currentSort.key = sortKey;
-                currentSort.order = 'asc';
-            }
-            renderItems(currentFolderContents.folders, currentFolderContents.files);
-        });
-    }
-
-    if (logoutBtn) {
-        logoutBtn.addEventListener('click', () => {
-            window.location.href = '/logout';
-        });
-    }
-
-    if (changePasswordBtn) {
-        changePasswordBtn.addEventListener('click', async () => {
-            const oldPassword = prompt('请输入您的旧密码：');
-            if (!oldPassword) return;
-
-            const newPassword = prompt('请输入您的新密码 (至少 4 个字元)：');
-            if (!newPassword) return;
-
-            if (newPassword.length < 4) {
-                alert('密码长度至少需要 4 个字元。');
-                return;
-            }
-
-            const confirmPassword = prompt('请再次输入新密码以确认：');
-            if (newPassword !== confirmPassword) {
-                alert('两次输入的密码不一致！');
-                return;
-            }
-
-            try {
-                const res = await axios.post('/api/user/change-password', { oldPassword, newPassword });
-                if (res.data.success) {
-                    alert('密码修改成功！');
-                }
-            } catch (error) {
-                alert('密码修改失败：' + (error.response?.data?.message || '服务器错误'));
-            }
-        });
-    }
-    
-    if (fileInput) {
-        fileInput.addEventListener('change', () => {
-            fileListContainer.innerHTML = '';
-            if (fileInput.files.length > 0) {
-                for (const file of fileInput.files) {
-                    const li = document.createElement('li');
-                    li.textContent = file.name;
-                    fileListContainer.appendChild(li);
-                }
-                uploadSubmitBtn.style.display = 'block';
-                folderInput.value = '';
-            }
-        });
-    }
-    
-    if (folderInput) {
-        folderInput.addEventListener('change', (e) => {
-            const files = e.target.files;
-            if (files.length > 0) {
-                const folderName = files[0].webkitRelativePath.split('/')[0];
-                fileListContainer.innerHTML = `<li>已选择文件夹: <b>${folderName}</b> (包含 ${files.length} 个文件)</li>`;
-                uploadSubmitBtn.style.display = 'block';
-                fileInput.value = '';
-            }
-        });
-    }
-    
-    if (uploadForm) {
-        uploadForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const filesToProcess = folderInput.files.length > 0 ? folderInput.files : fileInput.files;
-            const targetFolderId = folderSelect.value;
-            const allFilesData = Array.from(filesToProcess).map(f => ({
-                relativePath: f.webkitRelativePath || f.name,
-                file: f
-            }));
-            uploadFiles(allFilesData, targetFolderId, false);
-        });
-    }
-
-    if (dropZone) {
-        dropZone.addEventListener('contextmenu', e => {
-            e.preventDefault();
-            const targetItem = e.target.closest('.item-card, .list-item');
-    
-            if (targetItem && !isMultiSelectMode && !e.ctrlKey && !e.metaKey) {
-                if (!selectedItems.has(targetItem.dataset.id)) {
-                    selectedItems.clear();
-                    selectedItems.set(targetItem.dataset.id, {
-                        type: targetItem.dataset.type,
-                        name: targetItem.dataset.name,
-                        encrypted_id: targetItem.dataset.encryptedFolderId
-                    });
-                    rerenderSelection();
-                }
-            } else if (!targetItem) {
-                if (!isMultiSelectMode) {
-                  selectedItems.clear();
-                  rerenderSelection();
-                }
-            }
-    
-            updateContextMenu(targetItem);
-    
-            contextMenu.style.display = 'flex';
-            const { clientX: mouseX, clientY: mouseY } = e;
-            const { x, y } = dropZone.getBoundingClientRect();
-            
-            let menuX = mouseX - x;
-            let menuY = mouseY - y + dropZone.scrollTop;
-    
-            const menuWidth = contextMenu.offsetWidth;
-            const menuHeight = contextMenu.offsetHeight;
-            const dropZoneWidth = dropZone.clientWidth;
-    
-            if (menuX + menuWidth > dropZoneWidth) {
-                menuX = dropZoneWidth - menuWidth - 5;
-            }
-            if (menuY + menuHeight > dropZone.scrollHeight) {
-                 menuY = dropZone.scrollHeight - menuHeight - 5;
-            }
-            if (menuY < dropZone.scrollTop) {
-                menuY = dropZone.scrollTop;
-            }
-
-            contextMenu.style.top = `${menuY}px`;
-            contextMenu.style.left = `${menuX}px`;
-        });
-        
-        window.addEventListener('click', (e) => {
-            if (!contextMenu.contains(e.target)) {
-               contextMenu.style.display = 'none';
-            }
-        });
-
+    function setupDragAndDrop() {
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            dropZone.addEventListener(eventName, (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-            });
+            dropZone.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false);
         });
-
-        ['dragenter', 'dragover'].forEach(eventName => {
-            dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'));
-        });
-
-        ['dragleave', 'drop'].forEach(eventName => {
-            dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'));
-        });
-
-        dropZone.addEventListener('drop', async (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            dropZone.classList.remove('dragover');
-    
-            const items = e.dataTransfer.items;
-            if (!items || items.length === 0) return;
-    
-            const getFileWithRelativePath = (entry) => {
-                return new Promise((resolve, reject) => {
-                    if (entry.isFile) {
-                        entry.file(file => {
-                            const relativePath = entry.fullPath.startsWith('/') ? entry.fullPath.substring(1) : entry.fullPath;
-                            resolve([{
-                                relativePath: relativePath,
-                                file: file
-                            }]);
-                        }, err => reject(err));
-                    } else if (entry.isDirectory) {
-                        const dirReader = entry.createReader();
-                        let allEntries = [];
-                        const readEntries = () => {
-                            dirReader.readEntries(async (entries) => {
-                                if (entries.length === 0) {
-                                    try {
-                                        const filesDataArrays = await Promise.all(allEntries.map(getFileWithRelativePath));
-                                        resolve(filesDataArrays.flat());
-                                    } catch (error) {
-                                        reject(error);
-                                    }
-                                } else {
-                                    allEntries.push(...entries);
-                                    readEntries();
-                                }
-                            }, err => reject(err));
-                        };
-                        readEntries();
-                    } else {
-                        resolve([]);
-                    }
-                });
-            };
-        
-            try {
-                const entries = Array.from(items).map(item => item.webkitGetAsEntry());
-                const filesDataPromises = entries.map(getFileWithRelativePath);
-                const filesDataArrays = await Promise.all(filesDataPromises);
-                const allFilesData = filesDataArrays.flat().filter(Boolean);
-                
-                if (allFilesData.length > 0) {
-                    uploadFiles(allFilesData, currentFolderId, true);
-                } else {
-                    showNotification('找不到可上传的文件。', 'warn');
-                }
-            } catch (error) {
-                showNotification('读取拖放的文件夹时出错。', 'error');
-                console.error(error);
-            }
-        });
+        dropZone.addEventListener('dragenter', highlight, false);
+        dropZone.addEventListener('dragover', highlight, false);
+        dropZone.addEventListener('dragleave', unhighlight, false);
+        dropZone.addEventListener('drop', handleDrop, false);
     }
 
-    if (homeLink) {
-        homeLink.addEventListener('click', (e) => {
-            e.preventDefault();
-            window.history.pushState(null, '', '/');
-            window.location.href = '/';
-        });
-    }
-    const handleItemClick = (e) => {
-        const target = e.target.closest('.item-card, .list-item');
-        if (!target) return;
-        const id = target.dataset.id;
-        const type = target.dataset.type;
-        const name = target.dataset.name;
-        const encrypted_id = target.dataset.encryptedFolderId; // 修正：取得加密ID
+    function preventDefaults(e) { e.preventDefault(); e.stopPropagation(); }
+    function highlight() { dropZoneOverlay.classList.add('active'); }
+    function unhighlight() { dropZoneOverlay.classList.remove('active'); }
 
-        if (isMultiSelectMode || e.ctrlKey || e.metaKey) {
-            if (selectedItems.has(id)) {
-                selectedItems.delete(id);
-            } else {
-                selectedItems.set(id, { type, name, encrypted_id }); // 修正：储存加密ID
-            }
+    function handleDrop(e) {
+        unhighlight();
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            fileInput.files = files; 
+            handleFileSelect({ target: { files: files } });
+            uploadModal.style.display = 'block';
+            loadFolderOptions();
+        }
+    }
+
+    // --- 文件操作逻辑 ---
+    async function createFolder() {
+        const name = prompt('请输入文件夹名称:');
+        if (!name) return;
+        let parentId = currentPath.length > 0 ? currentPath[currentPath.length - 1].id : 1;
+        try {
+            await axios.post('/api/folder', { name, parentId });
+            loadFolderContents(currentEncryptedFolderId);
+        } catch (err) { alert(err.response?.data?.message || '建立失败'); }
+    }
+
+    async function renameItem(item, newName) {
+        try {
+            await axios.post('/rename', { id: item.id || item.message_id, type: item.type, newName });
+            loadFolderContents(currentEncryptedFolderId);
+        } catch (err) { alert(err.response?.data?.message || '重命名失败'); }
+    }
+
+    async function deleteSelected() {
+        if (!confirm(`确定要删除选中的 ${selectedItems.size} 个项目吗？`)) return;
+        const messageIds = [];
+        const folderIds = [];
+        selectedItems.forEach(item => {
+            if (item.type === 'file') messageIds.push(item.message_id);
+            else folderIds.push(item.id);
+        });
+        try {
+            await axios.post('/delete-multiple', { messageIds, folderIds });
+            loadFolderContents(currentEncryptedFolderId);
+            updateQuota();
+        } catch (err) { alert(err.response?.data?.message || '删除失败'); }
+    }
+
+    async function downloadSelected() {
+        const items = Array.from(selectedItems.values());
+        if (items.length === 0) return;
+        if (items.length === 1 && items[0].type === 'file') {
+            window.location.href = `/download/proxy/${items[0].message_id}`;
         } else {
-            selectedItems.clear();
-            selectedItems.set(id, { type, name, encrypted_id }); // 修正：储存加密ID
-        }
-        rerenderSelection();
-        updateContextMenu();
-    };
-
-    const handleItemDblClick = async (e) => {
-        if (isMultiSelectMode) return;
-        const target = e.target.closest('.item-card, .list-item');
-        if (target && target.dataset.type === 'folder') {
-            const folderId = parseInt(target.dataset.id, 10);
-            const isLocked = target.dataset.isLocked === 'true' || target.dataset.isLocked === '1';
-            const encryptedId = target.dataset.encryptedFolderId;
-
-            if (!encryptedId) return;
-
-            if (isLocked) {
-                try {
-                    const { password } = await promptForPassword(`资料夾 "${target.dataset.name}" 已加密`, '请输入密码以存取:');
-                    if (password === null) return;
-                    await axios.post(`/api/folder/${folderId}/verify`, { password });
-                    window.history.pushState(null, '', `/view/${encryptedId}`);
-                    loadFolderContents(encryptedId);
-                } catch (error) {
-                    alert(error.response?.data?.message || '验证失败');
-                }
-            } else {
-                window.history.pushState(null, '', `/view/${encryptedId}`);
-                loadFolderContents(encryptedId);
-            }
-        } else if (target && target.dataset.type === 'file') {
-            if (selectedItems.size !== 1) {
-                selectedItems.clear();
-                selectedItems.set(target.dataset.id, { type: 'file', name: target.dataset.name });
-                rerenderSelection();
-            }
-            previewBtn.click();
-        }
-    };
-    
-    if (itemGrid) {
-        itemGrid.addEventListener('click', handleItemClick);
-        itemGrid.addEventListener('dblclick', handleItemDblClick);
-    }
-    if (itemListBody) {
-        itemListBody.addEventListener('click', handleItemClick);
-        itemListBody.addEventListener('dblclick', handleItemDblClick);
-    }
-    
-    if (viewSwitchBtn) {
-        viewSwitchBtn.addEventListener('click', () => {
-            switchView(currentView === 'grid' ? 'list' : 'grid');
-        });
-    }
-
-    if (multiSelectToggleBtn) {
-        multiSelectToggleBtn.addEventListener('click', () => {
-            isMultiSelectMode = !isMultiSelectMode;
-            document.body.classList.toggle('selection-mode-active', isMultiSelectMode);
-
-            if (!isMultiSelectMode) {
-                selectedItems.clear();
-                rerenderSelection();
-            }
-            updateContextMenu();
-            contextMenu.style.display = 'none';
-        });
-    }
-
-    if (breadcrumb) {
-        breadcrumb.addEventListener('click', e => {
-            e.preventDefault();
-            const link = e.target.closest('a');
-            if (link && link.dataset.encryptedFolderId) {
-                const encryptedId = link.dataset.encryptedFolderId;
-                window.history.pushState(null, '', `/view/${encryptedId}`);
-                loadFolderContents(encryptedId);
-            }
-        });
-    }
-    window.addEventListener('popstate', () => {
-        if (document.getElementById('itemGrid')) {
-            const pathParts = window.location.pathname.split('/');
-            const viewIndex = pathParts.indexOf('view');
-            if (viewIndex !== -1 && pathParts.length > viewIndex + 1) {
-                const encryptedId = pathParts[viewIndex + 1];
-                loadFolderContents(encryptedId);
-            } else {
-                window.location.href = '/';
-            }
-        }
-    });
-    if (createFolderBtn) {
-        createFolderBtn.addEventListener('click', async () => {
-            contextMenu.style.display = 'none';
-            const name = prompt('请输入新资料夾的名称：');
-            if (name && name.trim()) {
-                try {
-                    await axios.post('/api/folder', { name: name.trim(), parentId: currentFolderId });
-                    foldersLoaded = false; 
-                    loadFolderContents(currentEncryptedFolderId);
-                } catch (error) { alert(error.response?.data?.message || '建立失败'); }
-            }
-        });
-    }
-    if (searchForm) {
-        searchForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const query = searchInput.value.trim();
-            if (query) executeSearch(query);
-            else if(isSearchMode) loadFolderContents(currentEncryptedFolderId);
-        });
-    }
-    if (selectAllBtn) {
-        selectAllBtn.addEventListener('click', () => {
-            contextMenu.style.display = 'none';
-            const allVisibleItems = [...currentFolderContents.folders, ...currentFolderContents.files];
-            const allVisibleIds = allVisibleItems.map(item => String(item.id));
-            const isAllSelected = allVisibleItems.length > 0 && allVisibleIds.every(id => selectedItems.has(id));
-            if (isAllSelected) {
-                selectedItems.clear();
-            } else {
-                allVisibleItems.forEach(item => selectedItems.set(String(item.id), { type: item.type, name: item.name, encrypted_id: item.encrypted_id }));
-            }
-            rerenderSelection();
-            updateContextMenu();
-        });
-    }
-    if (showUploadModalBtn) {
-        showUploadModalBtn.addEventListener('click', async () => {
-            await loadFoldersForSelect();
-            folderSelect.value = currentFolderId;
-            uploadNotificationArea.innerHTML = '';
-            uploadForm.reset();
-            fileListContainer.innerHTML = '';
-            uploadSubmitBtn.style.display = 'block';
-            uploadModal.style.display = 'flex';
-        });
-    }
-    if (closeUploadModalBtn) {
-        closeUploadModalBtn.addEventListener('click', () => {
-            uploadModal.style.display = 'none';
-        });
-    }
-    
-    if (shareBtn && shareModal) {
-        const shareOptions = document.getElementById('shareOptions');
-        const shareResult = document.getElementById('shareResult');
-        const expiresInSelect = document.getElementById('expiresInSelect');
-        const customExpiresInput = document.getElementById('customExpiresInput');
-        const confirmShareBtn = document.getElementById('confirmShareBtn');
-        const cancelShareBtn = document.getElementById('cancelShareBtn');
-        const shareLinkContainer = document.getElementById('shareLinkContainer');
-        const copyLinkBtn = document.getElementById('copyLinkBtn');
-        const closeShareModalBtn = document.getElementById('closeShareModalBtn');
-        const sharePasswordInput = document.getElementById('sharePasswordInput');
-    
-        expiresInSelect.addEventListener('change', () => {
-            if (expiresInSelect.value === 'custom') {
-                customExpiresInput.style.display = 'block';
-                const now = new Date();
-                now.setHours(now.getHours() + 1);
-                const year = now.getFullYear();
-                const month = (now.getMonth() + 1).toString().padStart(2, '0');
-                const day = now.getDate().toString().padStart(2, '0');
-                const hours = now.getHours().toString().padStart(2, '0');
-                const minutes = now.getMinutes().toString().padStart(2, '0');
-                customExpiresInput.value = `${year}-${month}-${day}T${hours}:${minutes}`;
-            } else {
-                customExpiresInput.style.display = 'none';
-            }
-        });
-    
-        shareBtn.addEventListener('click', () => {
-            if (shareBtn.disabled) return;
-            contextMenu.style.display = 'none';
-            shareOptions.style.display = 'block';
-            shareResult.style.display = 'none';
-            sharePasswordInput.value = '';
-            expiresInSelect.value = '24h';
-            customExpiresInput.style.display = 'none';
-            shareModal.style.display = 'flex';
-        });
-        cancelShareBtn.addEventListener('click', () => shareModal.style.display = 'none');
-        closeShareModalBtn.addEventListener('click', () => shareModal.style.display = 'none');
-    
-        confirmShareBtn.addEventListener('click', async () => {
-            const [itemId, item] = selectedItems.entries().next().value;
-            const itemType = item.type;
-            const expiresIn = expiresInSelect.value;
-            const password = sharePasswordInput.value;
-            
-            const payload = { itemId, itemType, expiresIn, password };
-    
-            if (expiresIn === 'custom') {
-                if (!customExpiresInput.value) {
-                    alert('请选择一个有效的到期时间！');
-                    return;
-                }
-                payload.customExpiresAt = new Date(customExpiresInput.value).getTime();
-                if (isNaN(payload.customExpiresAt) || payload.customExpiresAt <= Date.now()) {
-                    alert('自订的到期时间必须晚于现在！');
-                    return;
-                }
-            }
-            
-            try {
-                const res = await axios.post('/share', payload);
-                if (res.data.success) {
-                    shareLinkContainer.textContent = res.data.url;
-                    shareOptions.style.display = 'none';
-                    shareResult.style.display = 'block';
-                } else {
-                    alert('创建分享链接失败: ' + res.data.message);
-                }
-            } catch {
-                alert('创建分享链接请求失败');
-            }
-        });
-        copyLinkBtn.addEventListener('click', () => {
-            navigator.clipboard.writeText(shareLinkContainer.textContent).then(() => {
-                copyLinkBtn.textContent = '已复制!';
-                setTimeout(() => { copyLinkBtn.textContent = '复制链接'; }, 2000);
-            });
-        });
-    }
-    
-    if (previewBtn) {
-        previewBtn.addEventListener('click', async () => {
-            if (previewBtn.disabled) return;
-            contextMenu.style.display = 'none';
-            const messageId = selectedItems.keys().next().value;
-            const file = currentFolderContents.files.find(f => String(f.id) === messageId);
-            if (!file) return;
-
-            previewModal.style.display = 'flex';
-            modalContent.innerHTML = '正在加载预览...';
-            const downloadUrl = `/download/proxy/${messageId}`;
-
-            if (file.mimetype && file.mimetype.startsWith('image/')) {
-                modalContent.innerHTML = `<img src="${downloadUrl}" alt="图片预览">`;
-            } else if (file.mimetype && file.mimetype.startsWith('video/')) {
-                modalContent.innerHTML = `<video src="${downloadUrl}" controls autoplay></video>`;
-            } else if (file.mimetype && (file.mimetype.startsWith('text/') || isEditableFile(file.name))) {
-                try {
-                    const res = await axios.get(`/file/content/${messageId}`);
-                    const escapedContent = res.data.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-                    modalContent.innerHTML = `<pre><code>${escapedContent}</code></pre>`;
-                } catch {
-                    modalContent.innerHTML = '无法载入文字内容。';
-                }
-            } else {
-                modalContent.innerHTML = `
-                    <div class="no-preview">
-                        <i class="fas fa-file"></i>
-                        <p>此文件类型不支持预览。</p>
-                        <a href="${downloadUrl}" class="upload-link-btn" download>下载文件</a>
-                    </div>
-                `;
-            }
-        });
-    }
-
-    // --- 新增： “打开”按钮的点击事件处理 ---
-    if (openBtn) {
-        openBtn.addEventListener('click', () => {
-            if (openBtn.disabled) return;
-            contextMenu.style.display = 'none';
-            const [id, item] = selectedItems.entries().next().value;
-            
-            if (item.type === 'folder') {
-                const targetElement = document.querySelector(`.item-card[data-id="${id}"], .list-item[data-id="${id}"]`);
-                if (targetElement) {
-                    handleItemDblClick({ target: targetElement });
-                }
-            } else { // 'file'
-                previewBtn.click();
-            }
-        });
-    }
-    // --- 事件处理结束 ---
-
-    if (renameBtn) {
-        renameBtn.addEventListener('click', async () => {
-             if (renameBtn.disabled) return;
-             contextMenu.style.display = 'none';
-             const [id, item] = selectedItems.entries().next().value;
-             const newName = prompt('请输入新的名称:', item.name);
-             if (newName && newName.trim() && newName !== item.name) {
-                 try {
-                    await axios.post('/rename', {
-                        id: id,
-                        newName: newName.trim(),
-                        type: item.type
-                    });
-                    loadFolderContents(currentEncryptedFolderId);
-                 } catch (error) {
-                     alert('重命名失败: ' + (error.response?.data?.message || '服务器错误'));
-                 }
-             }
-        });
-    }
-    if (downloadBtn) {
-        downloadBtn.addEventListener('click', async () => {
-            if (downloadBtn.disabled) return;
-            contextMenu.style.display = 'none';
-            const messageIds = [];
-            const folderIds = [];
-            selectedItems.forEach((item, id) => {
-                // --- *** 最终修正：移除 parseInt *** ---
-                if (item.type === 'file') messageIds.push(id);
-                else folderIds.push(parseInt(id));
-            });
-            if (messageIds.length === 0 && folderIds.length === 0) return;
-            if (messageIds.length === 1 && folderIds.length === 0) {
-                window.location.href = `/download/proxy/${messageIds[0]}`;
-                return;
-            }
+            const messageIds = items.filter(i => i.type === 'file').map(i => i.message_id);
+            const folderIds = items.filter(i => i.type === 'folder').map(i => i.id);
             try {
                 const response = await axios.post('/api/download-archive', { messageIds, folderIds }, { responseType: 'blob' });
                 const url = window.URL.createObjectURL(new Blob([response.data]));
                 const link = document.createElement('a');
                 link.href = url;
-                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                link.setAttribute('download', `download-${timestamp}.zip`);
+                link.setAttribute('download', 'download.zip');
                 document.body.appendChild(link);
                 link.click();
-                window.URL.revokeObjectURL(url);
-                document.body.removeChild(link);
-            } catch (error) {
-                alert('下载压缩档失败！');
-            }
-        });
-    }
-    if (deleteBtn) {
-        deleteBtn.addEventListener('click', async () => {
-            if (selectedItems.size === 0) return;
-            contextMenu.style.display = 'none';
-            if (!confirm(`确定要删除这 ${selectedItems.size} 个项目吗？\n注意：删除资料夾将会一并删除其所有内容！`)) return;
-            const filesToDelete = [], foldersToDelete = [];
-            selectedItems.forEach((item, id) => {
-                // --- *** 最终修正：移除 parseInt *** ---
-                if (item.type === 'file') filesToDelete.push(id);
-                else foldersToDelete.push(parseInt(id));
-            });
-            try {
-                await axios.post('/delete-multiple', { messageIds: filesToDelete, folderIds: foldersToDelete });
-                loadFolderContents(currentEncryptedFolderId);
-            } catch (error) { alert('删除失败: ' + (error.response?.data?.message || '请重试。')); }
-        });
+                link.remove();
+            } catch (err) { alert('打包下载失败'); }
+        }
     }
 
-    if (moveBtn) {
-        moveBtn.addEventListener('click', async () => {
-            if (selectedItems.size === 0) return;
-            contextMenu.style.display = 'none';
-            try {
-                const res = await axios.get('/api/folders');
-                const folders = res.data;
-                folderTree.innerHTML = '';
+    function previewFile(item) {
+        if (!item || item.type !== 'file') return;
+        const fileExt = item.fileName.split('.').pop().toLowerCase();
+        const mime = item.mimetype || '';
+        previewModalContent.innerHTML = '<div class="loading">加载预览...</div>';
+        previewModal.style.display = 'block';
 
-                const folderMap = new Map(folders.map(f => [f.id, { ...f, children: [] }]));
-                const tree = [];
-                folderMap.forEach(f => {
-                    if (f.parent_id && folderMap.has(f.parent_id)) {
-                        folderMap.get(f.parent_id).children.push(f);
-                    } else {
-                        tree.push(f);
-                    }
-                });
-
-                const disabledFolderIds = new Set();
-                selectedItems.forEach((item, id) => {
-                    if (item.type === 'folder') {
-                        const folderId = parseInt(id);
-                        disabledFolderIds.add(folderId);
-                        const findDescendants = (parentId) => {
-                            const parentNode = folderMap.get(parentId);
-                            if (parentNode && parentNode.children) {
-                                parentNode.children.forEach(child => {
-                                    disabledFolderIds.add(child.id);
-                                    findDescendants(child.id);
-                                });
-                            }
-                        };
-                        findDescendants(folderId);
-                    }
-                });
-
-                const buildTree = (node, prefix = '') => {
-                    const isDisabled = disabledFolderIds.has(node.id) || node.id === currentFolderId;
-
-                    const item = document.createElement('div');
-                    item.className = 'folder-item';
-                    item.dataset.folderId = node.id;
-                    item.dataset.encryptedFolderId = node.encrypted_id; // 修正：添加加密ID
-                    item.textContent = prefix + (node.name === '/' ? '根目录' : node.name);
-
-                    if (isDisabled) {
-                        item.style.color = '#ccc';
-                        item.style.cursor = 'not-allowed';
-                    }
-
-                    folderTree.appendChild(item);
-                    node.children.sort((a,b) => a.name.localeCompare(b.name)).forEach(child => buildTree(child, prefix + '　'));
-                };
-                tree.sort((a,b) => a.name.localeCompare(b.name)).forEach(node => buildTree(node));
-
-                moveModal.style.display = 'flex';
-                moveTargetFolderId = null;
-                moveTargetEncryptedFolderId = null;
-                confirmMoveBtn.disabled = true;
-            } catch { alert('无法获取资料夾列表。'); }
-        });
-    }
-    if (folderTree) {
-        folderTree.addEventListener('click', e => {
-            const target = e.target.closest('.folder-item');
-            if (!target || target.style.cursor === 'not-allowed') return;
-
-            const previouslySelected = folderTree.querySelector('.folder-item.selected');
-            if (previouslySelected) previouslySelected.classList.remove('selected');
-            target.classList.add('selected');
-            moveTargetFolderId = parseInt(target.dataset.folderId);
-            moveTargetEncryptedFolderId = target.dataset.encryptedFolderId; // 修正：储存加密ID
-            confirmMoveBtn.disabled = false;
-        });
-    }
-    
-    if (confirmMoveBtn) {
-        confirmMoveBtn.addEventListener('click', async () => {
-            if (!moveTargetFolderId) return;
-    
-            const resolutions = {};
-            let isAborted = false;
-            let applyToAllFolderAction = null;
-
-            // 修正：更新函数签名以接收加密ID
-            async function resolveConflictsRecursively(itemsToMove, currentTargetFolderId, currentTargetEncryptedFolderId, pathPrefix = '') {
-                if (isAborted) return;
-    
-                const conflictCheckRes = await axios.post('/api/check-move-conflict', {
-                    itemIds: itemsToMove.map(item => item.id), // item.id 是 string 或 int
-                    targetFolderId: currentTargetFolderId
-                });
-                const { fileConflicts, folderConflicts } = conflictCheckRes.data;
-    
-                // 修正：使用加密ID获取目标资料夹内容
-                const destFolderContentsRes = await axios.get(`/api/folder/${currentTargetEncryptedFolderId}`);
-                // 修正：储存加密ID以供递回呼叫
-                const destFolderMap = new Map(destFolderContentsRes.data.contents.folders.map(f => [f.name, { id: f.id, encrypted_id: f.encrypted_id }]));
-    
-                for (const folderName of folderConflicts) {
-                    const fullPath = pathPrefix ? `${pathPrefix}/${folderName}` : folderName;
-                    
-                    let action;
-                    if(applyToAllFolderAction) {
-                        action = applyToAllFolderAction;
-                    } else {
-                        const result = await handleFolderConflict(fullPath, folderConflicts.length);
-                        action = result.action;
-                        if(result.applyToAll) {
-                            applyToAllFolderAction = action;
-                        }
-                    }
-
-                    if (action === 'abort') {
-                        isAborted = true;
-                        return;
-                    }
-                    resolutions[fullPath] = action;
-    
-                    if (action === 'merge') {
-                        const sourceFolder = itemsToMove.find(item => item.name === folderName && item.type === 'folder');
-                        const destSubFolderData = destFolderMap.get(folderName);
-                        if (sourceFolder && destSubFolderData) {
-                            // 修正：使用源子资料夾的加密ID获取其内容
-                            const sourceSubFolderContentsRes = await axios.get(`/api/folder/${sourceFolder.encrypted_id}`);
-                            const subItemsToMove = [...sourceSubFolderContentsRes.data.contents.folders, ...sourceSubFolderContentsRes.data.contents.files].map(item => ({
-                                id: item.id,
-                                name: item.name,
-                                type: item.type,
-                                encrypted_id: item.encrypted_id // 修正：传递加密ID
-                            }));
-                            
-                            if(subItemsToMove.length > 0) {
-                               // 修正：递回呼叫时传递加密ID
-                               await resolveConflictsRecursively(subItemsToMove, destSubFolderData.id, destSubFolderData.encrypted_id, fullPath);
-                            }
-                            if (isAborted) return;
-                        }
-                    }
-                }
-    
-                if (fileConflicts.length > 0) {
-                    const prefixedFileConflicts = fileConflicts.map(name => pathPrefix ? `${pathPrefix}/${name}` : name);
-                    const result = await handleConflict(prefixedFileConflicts, '档案');
-    
-                    if (result.aborted) {
-                        isAborted = true;
-                        return;
-                    }
-                    Object.assign(resolutions, result.resolutions);
-                }
-            }
-    
-            try {
-                // 修正：从 selectedItems 中提取所有必要数据，包括加密ID
-                // --- *** 最终修正：移除 parseInt *** ---
-                const topLevelItems = Array.from(selectedItems.entries()).map(([id, item]) => ({
-                    id: item.type === 'file' ? id : parseInt(id, 10), // 档案ID是string, 资料夹ID是int
-                    type: item.type,
-                    name: item.name,
-                    encrypted_id: item.encrypted_id
-                }));
-                
-                // 修正：初始呼叫，传递加密和未加密的ID
-                await resolveConflictsRecursively(topLevelItems, moveTargetFolderId, moveTargetEncryptedFolderId);
-    
-                if (isAborted) {
-                    moveModal.style.display = 'none';
-                    showNotification('移动操作已取消。', 'info');
-                    return;
-                }
-    
-                const response = await axios.post('/api/move', {
-                    itemIds: topLevelItems.map(item => item.id),
-                    targetFolderId: moveTargetFolderId,
-                    resolutions 
-                });
-    
-                moveModal.style.display = 'none';
-                loadFolderContents(currentEncryptedFolderId);
-                showNotification(response.data.message, 'success');
-    
-            } catch (error) {
-                moveModal.style.display = 'none';
-                alert('操作失败：' + (error.response?.data?.message || '服务器错误'));
-            }
-        });
-    }
-
-    if (closeModal) closeModal.onclick = () => {
-        previewModal.style.display = 'none';
-        modalContent.innerHTML = '';
-    };
-    if (cancelMoveBtn) cancelMoveBtn.addEventListener('click', () => moveModal.style.display = 'none');
-
-    if (textEditBtn) {
-        textEditBtn.addEventListener('click', () => {
-            contextMenu.style.display = 'none';
-            const selectionCount = selectedItems.size;
-            if (selectionCount === 0) {
-                window.open(`/editor?mode=create&folderId=${currentFolderId}`, '_blank');
-            } else if (selectionCount === 1 && isEditableFile(selectedItems.values().next().value.name)) {
-                const fileId = selectedItems.keys().next().value;
-                window.open(`/editor?mode=edit&fileId=${fileId}`, '_blank');
-            }
-        });
-    }
-
-    lockBtn.addEventListener('click', async () => {
-        contextMenu.style.display = 'none';
-        const [id, item] = selectedItems.entries().next().value;
-        const folderId = parseInt(id);
-        const folderName = item.name;
-
-        const folderElement = document.querySelector(`.item-card[data-id="${id}"], .list-item[data-id="${id}"]`);
-        const isLocked = folderElement.dataset.isLocked === 'true' || folderElement.dataset.isLocked === '1';
-
-        if (isLocked) {
-            const action = prompt(`资料夾 "${folderName}" 已加密。\n请输入 "change" 来修改密码，或输入 "unlock" 来移除密码。`);
-            if (action === 'unlock') {
-                const { password } = await promptForPassword(`移除密码`, `请输入 "${folderName}" 的密码以移除加密:`);
-                if (password === null) return;
-                try {
-                    await axios.post(`/api/folder/${folderId}/unlock`, { password });
-                    showNotification('资料夾密码已移除。', 'success');
-                    loadFolderContents(currentEncryptedFolderId);
-                } catch (error) {
-                    alert('密码错误或操作失败。');
-                }
-            } else if (action === 'change') {
-                const { password, oldPassword, confirmPassword } = await promptForPassword(`修改密码`, `为 "${folderName}" 设定新密码:`, true, true);
-                if (password === null) return;
-                if (password !== confirmPassword) {
-                    alert('两次输入的新密码不匹配！');
-                    return;
-                }
-                try {
-                    await axios.post(`/api/folder/${folderId}/lock`, { oldPassword, password });
-                    showNotification('密码修改成功。', 'success');
-                } catch (error) {
-                    alert('操作失败: ' + (error.response?.data?.message || '未知错误'));
-                }
-            }
+        if (isImage(item.fileName)) {
+            previewModalContent.innerHTML = `<img src="/download/proxy/${item.message_id}" class="preview-image" alt="${item.fileName}">`;
+        } else if (mime.startsWith('video/')) {
+            previewModalContent.innerHTML = `
+                <video controls autoplay class="preview-video">
+                    <source src="/download/proxy/${item.message_id}" type="${mime}">
+                    您的浏览器不支持视频播放。
+                </video>`;
+        } else if (mime.startsWith('text/') || ['js','css','html','json','md','txt'].includes(fileExt)) {
+             axios.get(`/file/content/${item.message_id}`).then(res => {
+                 previewModalContent.innerHTML = `<pre class="preview-text">${escapeHtml(res.data)}</pre>`;
+             }).catch(err => {
+                 previewModalContent.innerHTML = '<div class="error">无法加载预览</div>';
+             });
+        } else if (mime === 'application/pdf') {
+             previewModalContent.innerHTML = `<iframe src="/download/proxy/${item.message_id}" class="preview-iframe"></iframe>`;
         } else {
-            const { password, confirmPassword } = await promptForPassword(`加密资料夾`, `为 "${folderName}" 设定一个新密码 (至少4个字元):`, false, true);
-            if (password === null) return;
-            if (password !== confirmPassword) {
-                alert('两次输入的密码不匹配！');
+             previewModalContent.innerHTML = `
+                <div class="no-preview">
+                    <i class="fas fa-file fa-4x"></i>
+                    <p>此文件类型不支持预览</p>
+                    <a href="/download/proxy/${item.message_id}" class="primary-btn">下载文件</a>
+                </div>
+             `;
+        }
+    }
+
+    // --- 移动/复制 逻辑 (含冲突处理) ---
+    function openMoveCopyModal(isCopy) {
+        isCopyOperation = isCopy;
+        moveModalTitle.textContent = isCopy ? "复制到..." : "移动到...";
+        confirmMoveBtn.textContent = isCopy ? "确定复制" : "确定移动";
+        moveTargetFolderId = null;
+        confirmMoveBtn.disabled = true;
+        moveModal.style.display = 'flex';
+        renderFolderTree();
+    }
+    
+    async function renderFolderTree() {
+        folderTree.innerHTML = '<div class="loading">加载文件夹...</div>';
+        try {
+            const res = await axios.get('/api/folders');
+            const folders = res.data;
+            const root = folders.find(f => !f.parent_id);
+            if (!root) { folderTree.innerHTML = '无可用文件夹'; return; }
+            folderTree.innerHTML = buildTreeHtml(folders, root.id);
+            folderTree.querySelectorAll('.folder-tree-item').forEach(el => {
+                el.addEventListener('click', () => {
+                    folderTree.querySelectorAll('.folder-tree-item').forEach(e => e.classList.remove('selected'));
+                    el.classList.add('selected');
+                    moveTargetFolderId = el.dataset.id;
+                    confirmMoveBtn.disabled = false;
+                });
+            });
+        } catch (err) { folderTree.innerHTML = '<div class="error">加载失败</div>'; }
+    }
+    
+    function buildTreeHtml(folders, parentId, level = 0) {
+        const children = folders.filter(f => f.parent_id === parentId);
+        let html = '';
+        if (level === 0) {
+            const root = folders.find(f => f.id === parentId);
+            if (root) html += `<div class="folder-tree-item" style="padding-left: ${level * 20}px" data-id="${root.id}"><i class="fas fa-folder"></i> ${root.name}</div>`;
+        }
+        children.forEach(child => {
+             html += `<div class="folder-tree-item" style="padding-left: ${(level + 1) * 20}px" data-id="${child.id}"><i class="fas fa-folder"></i> ${child.name}</div>`;
+             html += buildTreeHtml(folders, child.id, level + 1);
+        });
+        return html;
+    }
+
+    // 触发移动/复制流程
+    async function initiateMoveCopyProcess() {
+        if (!moveTargetFolderId) return;
+        confirmMoveBtn.disabled = true;
+        
+        const itemIds = Array.from(selectedItems.values()).map(item => item.id || item.message_id);
+        
+        try {
+            // 1. 检查冲突
+            const checkRes = await axios.post('/api/check-move-conflict', { itemIds, targetFolderId: moveTargetFolderId });
+            const { fileConflicts, folderConflicts } = checkRes.data;
+            
+            conflictQueue = [];
+            currentConflictResolutions = {};
+            
+            // 将冲突加入队列
+            if (fileConflicts && fileConflicts.length > 0) {
+                fileConflicts.forEach(name => conflictQueue.push({ type: 'file', name, relativePath: name }));
+            }
+            if (folderConflicts && folderConflicts.length > 0) {
+                folderConflicts.forEach(name => conflictQueue.push({ type: 'folder', name, relativePath: name }));
+            }
+
+            // 开始处理冲突队列
+            processConflictQueue(() => {
+                // 所有冲突解决后，执行实际操作
+                executeMoveOrCopyFinal(itemIds);
+            });
+            
+        } catch (err) {
+            alert('检查冲突失败: ' + err.message);
+            confirmMoveBtn.disabled = false;
+        }
+    }
+    
+    // 执行最终的 API 调用
+    async function executeMoveOrCopyFinal(itemIds) {
+        const endpoint = isCopyOperation ? '/api/copy' : '/api/move';
+        const payload = { 
+            itemIds, 
+            targetFolderId: moveTargetFolderId,
+            resolutions: currentConflictResolutions 
+        };
+        
+        try {
+            confirmMoveBtn.textContent = "处理中...";
+            await axios.post(endpoint, payload);
+            
+            moveModal.style.display = 'none';
+            loadFolderContents(currentEncryptedFolderId);
+            updateQuota();
+            showNotification(isCopyOperation ? '复制成功' : '移动成功', 'success');
+        } catch (err) {
+            alert((isCopyOperation ? '复制' : '移动') + '失败: ' + (err.response?.data?.message || err.message));
+        } finally {
+            confirmMoveBtn.textContent = isCopyOperation ? "确定复制" : "确定移动";
+            confirmMoveBtn.disabled = false;
+        }
+    }
+
+    // --- 上传逻辑 (含冲突处理) ---
+    function handleFileSelect(e) {
+        const files = e.target.files;
+        fileSelectionList.innerHTML = '';
+        if (files.length === 0) {
+            fileSelectionList.innerHTML = '<li>未选择文件</li>';
+            return;
+        }
+        for (let i = 0; i < Math.min(files.length, 10); i++) {
+            const li = document.createElement('li');
+            li.textContent = files[i].name;
+            fileSelectionList.appendChild(li);
+        }
+        if (files.length > 10) {
+            const li = document.createElement('li');
+            li.textContent = `... 以及其他 ${files.length - 10} 个文件`;
+            fileSelectionList.appendChild(li);
+        }
+    }
+    
+    async function loadFolderOptions() {
+        let currentId = currentPath.length > 0 ? currentPath[currentPath.length - 1].id : 1;
+        folderSelect.innerHTML = '';
+        const currentOption = document.createElement('option');
+        currentOption.value = currentId;
+        currentOption.textContent = '当前目录';
+        currentOption.selected = true;
+        folderSelect.appendChild(currentOption);
+    }
+    
+    // 触发上传流程
+    async function initiateUploadProcess() {
+        const files = fileInput.files;
+        const folderFiles = folderInput.files;
+        const targetFolderId = folderSelect.value;
+        const caption = document.getElementById('uploadCaption').value;
+        
+        let allFiles = [];
+        if (files.length > 0) allFiles = [...files];
+        if (folderFiles.length > 0) allFiles = [...allFiles, ...folderFiles];
+        
+        if (allFiles.length === 0) { alert('请选择要上传的文件'); return; }
+
+        uploadSubmitBtn.disabled = true;
+        uploadSubmitBtn.textContent = "检查冲突...";
+
+        // 构造检查列表
+        const filesToCheck = allFiles.map(f => ({
+            name: f.name,
+            relativePath: f.webkitRelativePath || f.name
+        }));
+
+        try {
+            // 1. 检查冲突
+            const checkRes = await axios.post('/api/check-existence', { files: filesToCheck, folderId: targetFolderId });
+            const existingFiles = checkRes.data.files.filter(f => f.exists);
+            
+            conflictQueue = [];
+            currentConflictResolutions = {};
+            
+            existingFiles.forEach(f => {
+                conflictQueue.push({ type: 'file', name: f.name, relativePath: f.relativePath });
+            });
+
+            // 开始处理冲突
+            processConflictQueue(() => {
+                executeUploadFinal(allFiles, targetFolderId, caption);
+            });
+
+        } catch (err) {
+            alert('检查上传冲突失败: ' + err.message);
+            uploadSubmitBtn.disabled = false;
+            uploadSubmitBtn.textContent = "上传";
+        }
+    }
+
+    async function executeUploadFinal(allFiles, targetFolderId, caption) {
+        uploadForm.style.display = 'none';
+        progressArea.style.display = 'block';
+        uploadNotificationArea.innerHTML = '';
+
+        const formData = new FormData();
+        allFiles.forEach(file => {
+            const path = file.webkitRelativePath || file.name;
+            // 如果被跳过，则不添加到 FormData (节省带宽)
+            // 注意：Busboy 是流式处理，如果全量上传但 resolutions 说 skip，服务器会丢弃。
+            // 简单起见，这里全部上传，由服务器根据 query params 决定。
+            formData.append(path, file);
+        });
+        
+        const resolutionsJson = JSON.stringify(currentConflictResolutions);
+        
+        try {
+            const res = await axios.post(`/upload?folderId=${targetFolderId}&caption=${encodeURIComponent(caption)}&resolutions=${encodeURIComponent(resolutionsJson)}`, formData, {
+                headers: { 'Content-Type': 'multipart/form-data' },
+                onUploadProgress: (progressEvent) => {
+                    const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+                    progressBar.style.width = percentCompleted + '%';
+                    progressBar.textContent = percentCompleted + '%';
+                }
+            });
+            
+            if (res.data.success) {
+                uploadNotificationArea.innerHTML = '<div class="success-message">上传成功!</div>';
+                setTimeout(() => {
+                    uploadModal.style.display = 'none';
+                    uploadForm.reset();
+                    uploadForm.style.display = 'block';
+                    progressArea.style.display = 'none';
+                    progressBar.style.width = '0%';
+                    fileSelectionList.innerHTML = '';
+                    uploadSubmitBtn.disabled = false;
+                    uploadSubmitBtn.textContent = "上传";
+                    loadFolderContents(currentEncryptedFolderId);
+                }, 1000);
+            } else { throw new Error(res.data.message); }
+        } catch (err) {
+            uploadNotificationArea.innerHTML = `<div class="error-message">上传失败: ${err.message || '未知错误'}</div>`;
+            uploadForm.style.display = 'block';
+            progressArea.style.display = 'none';
+            uploadSubmitBtn.disabled = false;
+            uploadSubmitBtn.textContent = "上传";
+        }
+    }
+
+    // --- 通用冲突处理队列逻辑 ---
+    function processConflictQueue(onComplete) {
+        if (conflictQueue.length === 0) {
+            onComplete();
+            return;
+        }
+
+        const conflict = conflictQueue[0];
+        
+        // 设置回调：当用户选择操作后，处理下一个或完成
+        currentConflictCallback = (action, applyToAll) => {
+            if (action === 'abort') {
+                abortConflictResolution();
                 return;
             }
-            try {
-                await axios.post(`/api/folder/${folderId}/lock`, { password });
-                showNotification('资料夾已成功加密。', 'success');
-                loadFolderContents(currentEncryptedFolderId);
-            } catch (error) {
-                alert('加密失败: ' + (error.response?.data?.message || '未知错误'));
+
+            // 记录决议
+            currentConflictResolutions[conflict.relativePath] = action;
+            
+            // 处理 "应用到所有"
+            if (applyToAll) {
+                for (let i = 1; i < conflictQueue.length; i++) {
+                    const next = conflictQueue[i];
+                    // 只对同类型的冲突应用
+                    if (next.type === conflict.type) {
+                        currentConflictResolutions[next.relativePath] = action;
+                    }
+                }
+                // 过滤掉已处理的同类型冲突
+                conflictQueue = conflictQueue.filter(c => c.type !== conflict.type);
+                // 当前这个也处理完了，虽然已经在队列头
+            } else {
+                conflictQueue.shift(); // 移除当前已解决的
             }
-        }
-    });
+            
+            // 关闭当前模态框
+            conflictModal.style.display = 'none';
+            folderConflictModal.style.display = 'none';
+            applyToAllCheckbox.checked = false;
+            applyToAllFoldersCheckbox.checked = false;
 
-    window.addEventListener('message', (event) => {
-        if (event.data === 'refresh-files') {
-            loadFolderContents(currentEncryptedFolderId);
-        }
-    });
-    
-    // 初始化
-    if (document.getElementById('itemGrid')) {
-        const pathParts = window.location.pathname.split('/');
-        const viewIndex = pathParts.indexOf('view');
-        let encryptedId;
-        if (viewIndex !== -1 && pathParts.length > viewIndex + 1) {
-            encryptedId = pathParts[viewIndex + 1];
-        }
+            // 递归处理下一个
+            processConflictQueue(onComplete);
+        };
 
-        if (encryptedId) {
-            loadFolderContents(encryptedId);
+        // 显示对应的模态框
+        if (conflict.type === 'file') {
+            conflictFileName.textContent = conflict.name;
+            conflictModal.style.display = 'block';
         } else {
-           // 如果 URL 无效，导航到根目录
-           window.location.href = '/';
+            folderConflictName.textContent = conflict.name;
+            folderConflictModal.style.display = 'block';
         }
     }
+
+    function resolveConflict(action) {
+        if (!currentConflictCallback) return;
+        // 检查是哪个模态框的 "应用到所有" 被选中了
+        let applyToAll = false;
+        if (conflictModal.style.display === 'block') applyToAll = applyToAllCheckbox.checked;
+        if (folderConflictModal.style.display === 'block') applyToAll = applyToAllFoldersCheckbox.checked;
+        
+        currentConflictCallback(action, applyToAll);
+    }
+    
+    function abortConflictResolution() {
+        conflictQueue = [];
+        currentConflictResolutions = {};
+        conflictModal.style.display = 'none';
+        folderConflictModal.style.display = 'none';
+        confirmMoveBtn.disabled = false;
+        confirmMoveBtn.textContent = isCopyOperation ? "确定复制" : "确定移动";
+        uploadSubmitBtn.disabled = false;
+        uploadSubmitBtn.textContent = "上传";
+    }
+
+    // --- 密码/锁/其他 ---
+    function promptForPassword(itemId, action) { 
+        passwordModal.style.display = 'block';
+        passwordForm.reset();
+        oldPasswordContainer.style.display = 'none';
+        confirmPasswordContainer.style.display = 'none';
+        
+        if (action === 'unlock') {
+            passwordModalTitle.textContent = '输入密码解锁';
+            passwordPromptText.textContent = '此文件夹受密码保护。';
+            passwordCallback = async () => {
+                const pwd = passwordInput.value;
+                try {
+                    await axios.post(`/api/folder/${itemId}/verify`, { password: pwd });
+                    passwordModal.style.display = 'none';
+                    loadFolderContents(itemId); 
+                } catch(e) { alert('密码错误'); }
+            };
+        } else if (action === 'set_lock') {
+            passwordModalTitle.textContent = '设置密码';
+            passwordPromptText.textContent = '为文件夹设置新密码。';
+            confirmPasswordContainer.style.display = 'block';
+            passwordCallback = async () => {
+                const pwd = passwordInput.value;
+                const confirm = confirmPasswordInput.value;
+                if (pwd !== confirm) { alert('两次输入密码不一致'); return; }
+                try {
+                    await axios.post(`/api/folder/${itemId}/lock`, { password: pwd }); 
+                    passwordModal.style.display = 'none';
+                    alert('密码已设置');
+                    loadFolderContents(currentEncryptedFolderId);
+                } catch(e) { alert(e.response?.data?.message || '设置失败'); }
+            };
+        } else if (action === 'lock_settings') {
+             passwordModalTitle.textContent = '管理密码';
+             passwordPromptText.textContent = '修改或移除密码。';
+             oldPasswordContainer.style.display = 'block';
+             confirmPasswordContainer.style.display = 'block';
+             passwordCallback = async () => {
+                 const old = oldPasswordInput.value;
+                 const pwd = passwordInput.value;
+                 const confirm = confirmPasswordInput.value;
+                 
+                 // 如果新密码为空，视为解锁（移除密码）
+                 if (!pwd) {
+                     if (!confirm("新密码留空将移除文件夹锁，确定吗？")) return;
+                     try {
+                         await axios.post(`/api/folder/${itemId}/unlock`, { password: old });
+                         passwordModal.style.display = 'none';
+                         alert('密码已移除');
+                         loadFolderContents(currentEncryptedFolderId);
+                     } catch(e) { alert(e.response?.data?.message || '移除失败'); }
+                     return;
+                 }
+                 
+                 if (pwd !== confirm) { alert('两次输入密码不一致'); return; }
+                 try {
+                     await axios.post(`/api/folder/${itemId}/lock`, { password: pwd, oldPassword: old });
+                     passwordModal.style.display = 'none';
+                     alert('密码已修改');
+                 } catch(e) { alert(e.response?.data?.message || '修改失败'); }
+             };
+        }
+    }
+    
+    // --- Share Logic ---
+    function openShareModal(item) {
+        shareModal.style.display = 'block';
+        shareOptions.style.display = 'block';
+        shareResult.style.display = 'none';
+        shareModal.dataset.itemId = item.id || item.message_id;
+        shareModal.dataset.itemType = item.type;
+    }
+    
+    async function generateShareLink() {
+        const itemId = shareModal.dataset.itemId;
+        const itemType = shareModal.dataset.itemType;
+        const expiresIn = expiresInSelect.value;
+        const password = sharePasswordInput.value;
+        let customExpiresAt = null;
+        if (expiresIn === 'custom') {
+            const dateVal = new Date(customExpiresInput.value).getTime();
+            if (isNaN(dateVal)) { alert('无效时间'); return; }
+            customExpiresAt = dateVal;
+        }
+        try {
+            const res = await axios.post('/share', { itemId, itemType, expiresIn, password, customExpiresAt });
+            shareOptions.style.display = 'none';
+            shareResult.style.display = 'block';
+            shareLinkContainer.textContent = res.data.url;
+        } catch(e) { alert('生成失败'); }
+    }
+
+    async function changeUserPassword() {
+        const oldP = prompt('旧密码:');
+        if(!oldP) return;
+        const newP = prompt('新密码:');
+        if(!newP) return;
+        try {
+            await axios.post('/api/user/change-password', { oldPassword: oldP, newPassword: newP });
+            alert('修改成功');
+        } catch(e) { alert('修改失败'); }
+    }
+
+    // --- 辅助函数 ---
+    function escapeHtml(text) {
+        if (!text) return text;
+        return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    }
+
+    function formatBytes(bytes, decimals = 2) {
+        if (!+bytes) return '0 Bytes';
+        const k = 1024;
+        const dm = decimals < 0 ? 0 : decimals;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+    }
+
+    function getFileIconClass(filename) {
+        if (!filename) return 'fa-file';
+        const ext = filename.split('.').pop().toLowerCase();
+        const icons = {
+            'pdf': 'fa-file-pdf', 'doc': 'fa-file-word', 'docx': 'fa-file-word',
+            'xls': 'fa-file-excel', 'xlsx': 'fa-file-excel', 'ppt': 'fa-file-powerpoint', 'pptx': 'fa-file-powerpoint',
+            'jpg': 'fa-file-image', 'jpeg': 'fa-file-image', 'png': 'fa-file-image', 'gif': 'fa-file-image',
+            'mp4': 'fa-file-video', 'mkv': 'fa-file-video', 'avi': 'fa-file-video',
+            'mp3': 'fa-file-audio', 'wav': 'fa-file-audio', 'zip': 'fa-file-archive', 'rar': 'fa-file-archive', '7z': 'fa-file-archive',
+            'txt': 'fa-file-alt', 'js': 'fa-file-code', 'html': 'fa-file-code', 'css': 'fa-file-code'
+        };
+        return icons[ext] || 'fa-file';
+    }
+
+    function isImage(filename) {
+        if (!filename) return false;
+        const ext = filename.split('.').pop().toLowerCase();
+        return ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext);
+    }
+    
+    function showNotification(message, type = 'info') {
+        const div = document.createElement('div');
+        div.className = `notification ${type}`;
+        div.textContent = message;
+        div.style.position = 'fixed';
+        div.style.bottom = '20px';
+        div.style.right = '20px';
+        div.style.backgroundColor = type === 'success' ? '#28a745' : '#17a2b8';
+        div.style.color = '#fff';
+        div.style.padding = '10px 20px';
+        div.style.borderRadius = '5px';
+        div.style.zIndex = '9999';
+        document.body.appendChild(div);
+        setTimeout(() => div.remove(), 3000);
+    }
+
+    init();
 });
