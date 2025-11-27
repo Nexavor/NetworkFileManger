@@ -1,10 +1,11 @@
+// database.js
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcrypt');
 require('dotenv').config();
 
-// 1. 确保数据目录存在
+// 1. 确保数据目录存在 (防止 SQLITE_CANTOPEN 错误)
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) {
     try {
@@ -25,12 +26,12 @@ const db = new sqlite3.Database(dbPath, (err) => {
     createTables();
 });
 
-// 辅助函数：安全地添加列 (如果不存在)
+// 辅助函数：安全地添加列 (关键修复)
 function addColumnIfNotExists(tableName, columnName, columnDef) {
     return new Promise((resolve, reject) => {
         db.all(`PRAGMA table_info(${tableName})`, (err, cols) => {
             if (err) {
-                // 如果表不存在，忽略错误，由 createTables 处理
+                // 如果表不存在，忽略错误，后续 createTables 会创建它
                 return resolve();
             }
             if (!cols.some(c => c.name === columnName)) {
@@ -58,7 +59,7 @@ function createTables() {
         )`, async (err) => {
             if (err) return console.error("建立 users 表失败:", err);
             
-            // 迁移旧数据：检查并添加缺失的列
+            // 迁移旧数据：确保 max_storage_bytes 存在
             await addColumnIfNotExists('users', 'max_storage_bytes', 'INTEGER DEFAULT 1073741824');
             
             createDependentTables();
@@ -86,7 +87,7 @@ function createDependentTables() {
         )`, async (err) => {
             if (err) return console.error("建立 folders 表失败:", err);
 
-            // 迁移旧数据：添加新字段
+            // 迁移旧数据：添加所有缺失的新字段
             await addColumnIfNotExists('folders', 'share_password', 'TEXT');
             await addColumnIfNotExists('folders', 'is_deleted', 'INTEGER DEFAULT 0');
             await addColumnIfNotExists('folders', 'deleted_at', 'INTEGER');
@@ -121,7 +122,7 @@ function createFilesTable() {
         )`, async (err) => {
             if (err) return console.error("建立 files 表失败:", err);
 
-            // 迁移旧数据：添加新字段
+            // 迁移旧数据：添加所有缺失的新字段
             await addColumnIfNotExists('files', 'share_password', 'TEXT');
             await addColumnIfNotExists('files', 'is_deleted', 'INTEGER DEFAULT 0');
             await addColumnIfNotExists('files', 'deleted_at', 'INTEGER');
