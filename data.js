@@ -101,7 +101,7 @@ async function deleteUser(userId) {
     });
 }
 
-// --- 新增：用户配额管理 ---
+// --- 新增：用户配额管理 (保留) ---
 
 async function getUserQuota(userId) {
     const user = await new Promise((resolve, reject) => {
@@ -125,7 +125,7 @@ async function checkQuota(userId, incomingSize) {
     return (quota.used + incomingSize) <= quota.max;
 }
 
-// --- 新增：获取所有用户及其配额信息 ---
+// --- 新增：获取所有用户及其配额信息 (保留) ---
 async function listAllUsersWithQuota() {
     // 获取所有用户及其最大配额
     const users = await new Promise((resolve, reject) => {
@@ -161,7 +161,7 @@ async function listAllUsersWithQuota() {
     }));
 }
 
-// --- 新增：设定用户最大存储空间 ---
+// --- 新增：设定用户最大存储空间 (保留) ---
 function setMaxStorageForUser(userId, maxBytes) {
     return new Promise((resolve, reject) => {
         // 不允许修改管理员的配额
@@ -333,9 +333,9 @@ async function getAllDescendantFolderIds(folderId, userId) {
     while (queue.length > 0) {
         const currentId = queue.shift();
         const sql = `SELECT id FROM folders WHERE parent_id = ? AND user_id = ?`;
-        const children = await new Promise((res, rej) => {
+        const children = await new Promise((resolve, reject) => {
             db.all(sql, [currentId, userId], (err, rows) => {
-                if (err) rej(err);
+                if (err) reject(err);
                 else resolve(rows);
             });
         });
@@ -818,8 +818,15 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
                 if (storage.type === 'local') {
                     const oldFullPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath);
                     const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
-                    await fsp.mkdir(path.dirname(newFullPath), { recursive: true });
-                    await fsp.rename(oldFullPath, newFullPath);
+                    
+                    // --- 修复：增加物理文件存在性检查 ---
+                    if (fsSync.existsSync(oldFullPath)) {
+                        await fs.mkdir(path.dirname(newFullPath), { recursive: true });
+                        await fs.rename(oldFullPath, newFullPath);
+                    } else {
+                        // 物理文件缺失，跳过物理移动，继续数据库更新
+                    }
+                    // --- 修复结束 ---
                 } else if (client) {
                     await client.moveFile(oldRelativePath, newRelativePath);
                 }
@@ -827,7 +834,8 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
                 await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [newRelativePath, file.message_id.toString()], (e) => e ? rej(e) : res()));
 
             } catch (err) {
-                throw new Error(`物理移动文件 ${file.fileName} 失败`);
+                // 如果物理移动失败（非文件缺失），抛出错误以回滚事务
+                throw new Error(`物理移动文件 ${file.fileName} 失败: ${err.message}`);
             }
         }
         
@@ -854,7 +862,7 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
                     await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [updatedFileId, file.message_id.toString()], (e) => e ? rej(e) : res()));
                 }
             } catch (err) {
-                throw new Error(`物理移动文件夹 ${folder.name} 失败`);
+                throw new Error(`物理移动文件夹 ${folder.name} 失败: ${err.message}`);
             }
         }
     }
@@ -1102,13 +1110,19 @@ async function renameFile(messageId, newFileName, userId) {
             if (storage.type === 'local') {
                 const oldFullPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath);
                 const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
-                await fs.rename(oldFullPath, newFullPath);
+                
+                // --- 修复：增加物理文件存在性检查 ---
+                if (fsSync.existsSync(oldFullPath)) {
+                    await fs.rename(oldFullPath, newFullPath);
+                }
+                // --- 修复结束 ---
             } else if (storage.type === 'webdav') {
                 const client = storage.getClient();
                 await client.moveFile(oldRelativePath, newRelativePath);
             }
         } catch(err) {
-            throw new Error(`实体档案重新命名失败`);
+            // 如果 fs.rename 失败，但文件是存在的（如权限问题），仍抛出错误
+            throw new Error(`实体档案重新命名失败: ${err.message}`);
         }
         
         const sql = `UPDATE files SET fileName = ?, file_id = ? WHERE message_id = ? AND user_id = ?`;
@@ -1145,14 +1159,19 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
             if (storage.type === 'local') {
                  const oldFullPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath);
                  const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath);
-                 await fs.mkdir(path.dirname(newFullPath), { recursive: true });
-                 await fs.rename(oldFullPath, newFullPath);
+                 
+                 // --- 修复：增加物理文件存在性检查 ---
+                 if (fsSync.existsSync(oldFullPath)) {
+                    await fs.mkdir(path.dirname(newFullPath), { recursive: true });
+                    await fs.rename(oldFullPath, newFullPath);
+                 }
+                 // --- 修复结束 ---
             } else if (storage.type === 'webdav') {
                 const client = storage.getClient();
                 await client.moveFile(oldRelativePath, newRelativePath);
             }
         } catch(err) {
-            throw new Error(`实体档案移动并重命名失败`);
+            throw new Error(`实体档案移动并重命名失败: ${err.message}`);
         }
         
         const sql = `UPDATE files SET fileName = ?, file_id = ?, folder_id = ? WHERE message_id = ? AND user_id = ?`;
@@ -1199,7 +1218,7 @@ async function renameFolder(folderId, newFolderName, userId) {
 
         } catch(e) {
             if (e.code !== 'ENOENT') {
-                throw new Error("物理资料夹重新命名失败");
+                throw new Error(`物理资料夹重新命名失败: ${e.message}`);
             }
         }
     }
