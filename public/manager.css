@@ -350,7 +350,13 @@ body.selection-mode-active #dropZone {
 .notification.local { margin-bottom: 15px; }
 .notification.success { background-color: #28a745; color: white; }
 .notification.error { background-color: #dc3545; color: white; }
-.header-buttons { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.header-buttons { 
+  display: flex; 
+  flex-wrap: wrap; 
+  gap: 10px; 
+  align-items: center;
+  justify-content: flex-end; /* 确保按钮靠右对齐 */
+}
 #changePasswordBtn { background-color: #ffc107; }
 #logoutBtn { background-color: #dc3545; }
 .upload-options { display: flex; gap: 10px; margin-bottom: 15px; }
@@ -453,7 +459,7 @@ body.selection-mode-active #dropZone {
 
     .editor-header { flex-direction: column; align-items: stretch; }
     .editor-header input[type="text"] { margin-right: 0; margin-bottom: 10px; width: 100%; box-sizing: border-box; }
-    .editor-actions { width: 100%; justify-content: space-between; gap: 10px; }
+    .editor-actions { width: 100%; justify-content: flex-end; gap: 10px; }
     .editor-actions button { flex-grow: 1; margin: 0; padding: 10px 8px; font-size: 14px; }
     #saveStatus { display: none; }
     .editor-container { padding: 5px 0; }
