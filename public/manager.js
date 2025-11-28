@@ -519,7 +519,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 iconHtml = `<img src="/thumbnail/${item.id}" alt="缩图" loading="lazy">`;
             } else if (!isTrashMode && fullFile.mimetype && fullFile.mimetype.startsWith('image/')) {
                  iconHtml = `<img src="/download/proxy/${item.id}" alt="图片" loading="lazy">`;
-            } else {
+            } 
+            // --- 修复：为视频文件增加 HTML5 预览作为缩略图 ---
+            else if (!isTrashMode && fullFile.mimetype && fullFile.mimetype.startsWith('video/')) {
+                 iconHtml = `<video src="/download/proxy/${item.id}#t=0.1" preload="metadata" muted></video>`;
+            }
+            // --- 修复结束 ---
+            else {
                  iconHtml = `<i class="fas ${getFileIconClass(item.mimetype, item.name)}"></i>`;
             }
         } else { 
@@ -691,7 +697,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // ... (sortIndicator, rerenderSelection, loadFoldersForSelect, switchView, handleFolderConflict, handleConflict, promptForPassword 保持不变) ...
+    // ... (updateSortIndicator, rerenderSelection, loadFoldersForSelect, switchView, handleFolderConflict, handleConflict, promptForPassword 保持不变) ...
     
     const updateSortIndicator = () => {
         listHeader.querySelectorAll('[data-sort]').forEach(el => {
@@ -1345,6 +1351,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 modalContent.innerHTML = `<img src="${downloadUrl}" alt="图片预览">`;
             } else if (file.mimetype && file.mimetype.startsWith('video/')) {
                 modalContent.innerHTML = `<video src="${downloadUrl}" controls autoplay></video>`;
+            } else if (file.mimetype && file.mimetype.startsWith('audio/')) {
+                 modalContent.innerHTML = `<audio src="${downloadUrl}" controls autoplay></audio>`;
             } else if (file.mimetype && (file.mimetype.startsWith('text/') || isEditableFile(file.name))) {
                 try {
                     const res = await axios.get(`/file/content/${messageId}`);
