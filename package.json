@@ -8,6 +8,7 @@
   "dependencies": {
     "archiver": "^7.0.1",
     "axios": "^1.6.0",
+    "aws-sdk": "^2.1648.0",
     "bcrypt": "^5.1.1",
     "busboy": "^1.6.0",
     "cookie-parser": "^1.4.6",
