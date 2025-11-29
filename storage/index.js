@@ -2,6 +2,7 @@
 const telegramStorage = require('./telegram');
 const localStorage = require('./local');
 const webdavStorage = require('./webdav');
+const s3Storage = require('./s3'); // 引入 S3 存储模块
 const fs = require('fs');
 const path = require('path');
 
@@ -16,6 +17,10 @@ function readConfig() {
             if (!config.webdav || Array.isArray(config.webdav)) {
                 config.webdav = {}; 
             }
+            // 确保 s3 设定存在且为物件 (新增)
+            if (!config.s3 || Array.isArray(config.s3)) {
+                config.s3 = {}; 
+            }
             // 确保 uploadMode 存在
             if (!config.uploadMode) {
                 config.uploadMode = 'stream';
@@ -25,8 +30,8 @@ function readConfig() {
     } catch (error) {
         // console.error("读取设定档失败:", error);
     }
-    // --- *** 关键修正：将预设值从 'telegram' 改为 'local'，并增加 uploadMode *** ---
-    return { storageMode: 'local', uploadMode: 'stream', webdav: {} }; 
+    // 添加 s3 的默认空配置
+    return { storageMode: 'local', uploadMode: 'stream', webdav: {}, s3: {} }; 
 }
 
 function writeConfig(config) {
@@ -36,10 +41,14 @@ function writeConfig(config) {
         const newConfig = { ...currentConfig, ...config };
         
         fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2));
-        // 如果是 WebDAV 设定变更，则重置客户端以使用新设定
+        
+        // 如果是 WebDAV 或 S3 设定变更，则重置客户端以使用新设定
         if (newConfig.storageMode === 'webdav') {
             webdavStorage.resetClient();
+        } else if (newConfig.storageMode === 's3') { // 新增 S3 重置
+            s3Storage.resetClient();
         }
+        
         return true;
     } catch (error) {
         // console.error("写入设定档失败:", error);
@@ -57,11 +66,14 @@ function getStorage() {
     if (config.storageMode === 'webdav') {
         return webdavStorage;
     }
+    if (config.storageMode === 's3') { // 返回 S3 存储模块 (新增)
+        return s3Storage;
+    }
     return telegramStorage;
 }
 
 function setStorageMode(mode) {
-    if (['local', 'telegram', 'webdav'].includes(mode)) {
+    if (['local', 'telegram', 'webdav', 's3'].includes(mode)) { // 添加 's3'
         const current = readConfig();
         current.storageMode = mode;
         return writeConfig(current);
@@ -69,7 +81,7 @@ function setStorageMode(mode) {
     return false;
 }
 
-// --- 新增：设定上传模式 ---
+// --- 设定上传模式 (保留) ---
 function setUploadMode(mode) {
     if (['stream', 'buffer'].includes(mode)) {
         const current = readConfig();
@@ -82,7 +94,7 @@ function setUploadMode(mode) {
 module.exports = {
     getStorage,
     setStorageMode,
-    setUploadMode, // 导出新函数
+    setUploadMode, 
     readConfig,
     writeConfig
 };
