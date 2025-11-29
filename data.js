@@ -805,59 +805,36 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
     const storage = require('./storage').getStorage();
 
     if (storage.type === 'local' || storage.type === 'webdav' || storage.type === 's3') {
+        const client = storage.type === 'webdav' ? storage.getClient() : null;
         
         const targetPathParts = await getFolderPath(targetFolderId, userId);
-        
-        let targetBasePath = targetPathParts.map(p => p.name).join('/'); // 包含根目录 `/` 的路径，例如 `/user_1/target/path`
-        const userPrefix = `user_${userId}`;
-
-        if (storage.type === 'webdav' || storage.type === 's3') {
-            // WebDAV/S3: targetBasePath 必须是绝对路径，例如 /user_1/target/path
-            // 确保使用 posix.join 来正确处理斜杠
-            const relativePathParts = targetPathParts.slice(1).map(p => p.name);
-            targetBasePath = path.posix.join('/', userPrefix, ...relativePathParts);
-        } else {
-             // Local: targetBasePath 仅为相对路径，例如 `target/path`
-             targetBasePath = targetPathParts.slice(1).map(p => p.name).join('/');
-        }
-
+        // 修正：强制使用绝对路径
+        const targetFullPath = path.posix.join('/', ...targetPathParts.slice(1).map(p => p.name));
 
         const filesToMove = await getFilesByIds(fileIds, userId);
         for (const file of filesToMove) {
             const oldRelativePath = file.file_id;
+            // 修正：强制绝对路径拼接
+            const newRelativePath = path.posix.join(targetFullPath, file.fileName);
             
-            let newRelativePath;
-            if (storage.type === 'local') {
-                // Local 存储相对路径，不含用户ID前缀，不含前导斜杠
-                newRelativePath = path.posix.join(targetBasePath, file.fileName).replace(/^[\/\\]/, '');
-            } else {
-                 // WebDAV/S3 存储绝对路径，包含用户ID前缀和前导斜杠
-                 newRelativePath = path.posix.join(targetBasePath, file.fileName);
-            }
-            
-            const client = storage.type === 'webdav' ? storage.getClient() : null;
-
             try {
                 if (storage.type === 'local') {
-                    const userDir = path.join(UPLOAD_DIR, String(userId));
-                    const oldFullPath = path.join(userDir, oldRelativePath.replace(/^[\/\\]/, ''));
-                    const newFullPath = path.join(userDir, newRelativePath.replace(/^[\/\\]/, ''));
+                    const oldFullPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath.replace(/^[\/\\]/, ''));
+                    const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath.replace(/^[\/\\]/, ''));
                     
                     // --- 修复：增加物理文件存在性检查 ---
                     if (fsSync.existsSync(oldFullPath)) {
                         await fs.mkdir(path.dirname(newFullPath), { recursive: true });
-                        await fsp.rename(oldFullPath, newFullPath);
+                        await fs.rename(oldFullPath, newFullPath);
+                    } else {
+                        // 物理文件缺失，跳过物理移动，继续数据库更新
                     }
                     // --- 修复结束 ---
-                } else if (storage.type === 'webdav' && client) {
-                    // WebDAV 移动需要绝对路径
+                } else if (client) {
                     await client.moveFile(oldRelativePath, newRelativePath);
-                } else if (storage.type === 's3') {
-                     // S3 移动是通过复制+删除实现的，这里简化为只更新 DB
-                     // TODO: 在 S3 存储后端中，如果文件路径改变，需要在 S3 上执行复制和删除操作
                 }
                 
-                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ?, folder_id = ? WHERE message_id = ?', [newRelativePath, targetFolderId, file.message_id.toString()], (e) => e ? rej(e) : res()));
+                await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [newRelativePath, file.message_id.toString()], (e) => e ? rej(e) : res()));
 
             } catch (err) {
                 // 如果物理移动失败（非文件缺失），抛出错误以回滚事务
@@ -868,30 +845,20 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         const foldersToMove = (await getItemsByIds(folderIds, userId)).filter(i => i.type === 'folder');
         for (const folder of foldersToMove) {
             const oldPathParts = await getFolderPath(folder.id, userId);
-            // oldFullPath 现在是绝对路径，例如 /user_1/old/path
-            const oldFullPath = oldPathParts.map(p => p.name).join('/'); 
-            
-            let newFullPath;
-            if (storage.type === 'local') {
-                const localTargetPath = targetPathParts.slice(1).map(p => p.name).join('/');
-                newFullPath = path.posix.join(localTargetPath, folder.name);
-            } else {
-                 // newFullPath 现在是绝对路径，例如 /user_1/target/path/folderName
-                 newFullPath = path.posix.join(targetBasePath, folder.name);
-            }
+            // 修正：强制绝对路径
+            const oldFullPath = path.posix.join('/', ...oldPathParts.slice(1).map(p => p.name));
+            const newFullPath = path.posix.join(targetFullPath, folder.name);
 
             try {
                  if (storage.type === 'local') {
-                    const userDir = path.join(UPLOAD_DIR, String(userId));
-                    const oldAbsPath = path.join(userDir, oldFullPath.replace(/^[\/\\]/, ''));
-                    const newAbsPath = path.join(userDir, newFullPath.replace(/^[\/\\]/, ''));
-
+                    const oldAbsPath = path.join(UPLOAD_DIR, String(userId), oldFullPath.replace(/^[\/\\]/, ''));
+                    const newAbsPath = path.join(UPLOAD_DIR, String(userId), newFullPath.replace(/^[\/\\]/, ''));
                     if (fsSync.existsSync(oldAbsPath)) {
                        await fs.mkdir(path.dirname(newAbsPath), { recursive: true });
-                       await fsp.rename(oldAbsPath, newAbsPath);
+                       await fs.rename(oldAbsPath, newAbsPath);
                     }
-                 } else if (storage.type === 'webdav' && client) {
-                    await client.moveFile(oldFullPath, newFullPath); // oldFullPath/newFullPath are absolute
+                 } else if (client) {
+                    await client.moveFile(oldFullPath, newFullPath);
                  }
 
                 const descendantFiles = await getFilesRecursive(folder.id, userId);
@@ -966,20 +933,12 @@ async function getFolderDeletionData(folderId, userId) {
     function buildPath(fId) {
         let pathParts = [];
         let current = folderMap.get(fId);
-        // 修正: 文件夹路径需要包含用户隔离前缀，用于 WebDAV/S3
-        const isWebdavOrS3 = require('./storage').getStorage().type !== 'local' && require('./storage').getStorage().type !== 'telegram';
-        
         while(current && current.parent_id) {
             pathParts.unshift(current.name);
             current = folderMap.get(current.parent_id);
         }
-        
-        if (isWebdavOrS3) {
-            pathParts.unshift(`user_${userId}`);
-            return path.posix.join('/', ...pathParts);
-        } else {
-            return path.posix.join(...pathParts);
-        }
+        // 修正：返回绝对路径
+        return path.posix.join('/', ...pathParts);
     }
 
     const foldersToDeleteWithPaths = foldersToDeleteIds.map(id => ({
@@ -1151,19 +1110,8 @@ async function renameFile(messageId, newFileName, userId) {
 
     if (storage.type === 'local' || storage.type === 'webdav' || storage.type === 's3') {
         const oldRelativePath = file.file_id;
-        
-        let newRelativePath;
-        if (storage.type === 'local') {
-            const oldRelativeDir = path.posix.dirname(oldRelativePath).replace(/^[\/\\]/, '');
-            newRelativePath = path.posix.join(oldRelativeDir, newFileName).replace(/\\/g, '/');
-        } else {
-            // WebDAV/S3 路径存储在 DB 中时应该包含前导斜杠
-            const oldRelativeDir = path.posix.dirname(oldRelativePath);
-            newRelativePath = path.posix.join(oldRelativeDir, newFileName);
-            if (!newRelativePath.startsWith('/')) {
-                 newRelativePath = '/' + newRelativePath;
-            }
-        }
+        // 修正：确保新路径也是绝对路径，如果旧路径是绝对路径
+        const newRelativePath = path.posix.join(path.posix.dirname(oldRelativePath), newFileName);
 
         try {
             if (storage.type === 'local') {
@@ -1173,7 +1121,7 @@ async function renameFile(messageId, newFileName, userId) {
                 
                 // --- 修复：增加物理文件存在性检查 ---
                 if (fsSync.existsSync(oldFullPath)) {
-                    await fsp.rename(oldFullPath, newFullPath);
+                    await fs.rename(oldFullPath, newFullPath);
                 }
                 // --- 修复结束 ---
             } else if (storage.type === 'webdav') {
@@ -1210,33 +1158,24 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
 
     const storage = require('./storage').getStorage();
     if (storage.type === 'local' || storage.type === 'webdav' || storage.type === 's3') {
+        const targetPathParts = await getFolderPath(targetFolderId, userId);
+        // 修正：强制绝对路径
+        const targetRelativePath = path.posix.join('/', ...targetPathParts.slice(1).map(p => p.name));
+        const newRelativePath = path.posix.join(targetRelativePath, newFileName);
         const oldRelativePath = file.file_id;
         
-        const targetPathParts = await getFolderPath(targetFolderId, userId);
-        const targetBasePath = targetPathParts.map(p => p.name).join('/');
-        
-        let newRelativePath;
-        if (storage.type === 'local') {
-            const localTargetPath = targetPathParts.slice(1).map(p => p.name).join('/');
-            newRelativePath = path.posix.join(localTargetPath, newFileName).replace(/^[\/\\]/, '');
-        } else {
-             // WebDAV/S3 存储绝对路径，直接拼接
-             newRelativePath = path.posix.join(targetBasePath, newFileName);
-             if (!newRelativePath.startsWith('/')) {
-                 newRelativePath = '/' + newRelativePath;
-             }
-        }
-
         try {
             if (storage.type === 'local') {
                  const userDir = path.join(UPLOAD_DIR, String(userId));
                  const oldFullPath = path.join(userDir, oldRelativePath.replace(/^[\/\\]/, ''));
                  const newFullPath = path.join(userDir, newRelativePath.replace(/^[\/\\]/, ''));
                  
+                 // --- 修复：增加物理文件存在性检查 ---
                  if (fsSync.existsSync(oldFullPath)) {
                     await fs.mkdir(path.dirname(newFullPath), { recursive: true });
-                    await fsp.rename(oldFullPath, newFullPath);
+                    await fs.rename(oldFullPath, newFullPath);
                  }
+                 // --- 修复结束 ---
             } else if (storage.type === 'webdav') {
                 const client = storage.getClient();
                 await client.moveFile(oldRelativePath, newRelativePath);
@@ -1266,25 +1205,21 @@ async function renameFolder(folderId, newFolderName, userId) {
 
     if (storage.type === 'local' || storage.type === 'webdav' || storage.type === 's3') {
         const oldPathParts = await getFolderPath(folderId, userId);
-        const oldFullPath = oldPathParts.map(p => p.name).join('/');
-
-        const parentPath = path.posix.dirname(oldFullPath);
-        let newFullPath = path.posix.join(parentPath, newFolderName);
-        // 修正：确保路径以 / 开头，因为 oldFullPath 也以 / 开头
-        if (!newFullPath.startsWith('/')) newFullPath = '/' + newFullPath;
+        // 修正：强制绝对路径
+        const oldFullPath = path.posix.join('/', ...oldPathParts.slice(1).map(p => p.name));
+        const newFullPath = path.posix.join(path.posix.dirname(oldFullPath), newFolderName);
 
         try {
             if (storage.type === 'local') {
                 const userDir = path.join(UPLOAD_DIR, String(userId));
                 const oldAbsPath = path.join(userDir, oldFullPath.replace(/^[\/\\]/, ''));
                 const newAbsPath = path.join(userDir, newFullPath.replace(/^[\/\\]/, ''));
-
                 if (fsSync.existsSync(oldAbsPath)) {
-                    await fsp.rename(oldAbsPath, newAbsPath);
+                    await fs.rename(oldAbsPath, newAbsPath);
                 }
             } else if (storage.type === 'webdav') {
                 const client = storage.getClient();
-                await client.moveFile(oldFullPath, newFullPath); 
+                await client.moveFile(oldFullPath, newFullPath);
             }
 
             const descendantFiles = await getFilesRecursive(folderId, userId);
@@ -1316,32 +1251,30 @@ async function renameAndMoveFolder(folderId, newName, targetFolderId, userId) {
 
     const storage = require('./storage').getStorage();
     if (storage.type === 'local' || storage.type === 'webdav' || storage.type === 's3') {
-        
         const oldPathParts = await getFolderPath(folderId, userId);
-        const oldFullPath = oldPathParts.map(p => p.name).join('/'); 
+        // 修正：强制绝对路径
+        const oldFullPath = path.posix.join('/', ...oldPathParts.slice(1).map(p => p.name));
 
         const targetPathParts = await getFolderPath(targetFolderId, userId);
-        const targetBasePath = targetPathParts.map(p => p.name).join('/');
-
-        let newFullPath = path.posix.join(targetBasePath, newName);
-        // 修正：确保路径以 / 开头，因为 targetBasePath 也以 / 开头
-        if (!newFullPath.startsWith('/')) newFullPath = '/' + newFullPath;
+        // 修正：强制绝对路径
+        const targetBasePath = path.posix.join('/', ...targetPathParts.slice(1).map(p => p.name));
+        const newFullPath = path.posix.join(targetBasePath, newName);
 
         try {
             if (storage.type === 'local') {
                  const userDir = path.join(UPLOAD_DIR, String(userId));
                  const oldAbsPath = path.join(userDir, oldFullPath.replace(/^[\/\\]/, ''));
                  const newAbsPath = path.join(userDir, newFullPath.replace(/^[\/\\]/, ''));
-                 
                  if (fsSync.existsSync(oldAbsPath)) {
                     await fs.mkdir(path.dirname(newAbsPath), { recursive: true });
-                    await fsp.rename(oldAbsPath, newAbsPath);
+                    await fs.rename(oldAbsPath, newAbsPath);
                  }
             } else if (storage.type === 'webdav') {
                 const client = storage.getClient();
-                await client.moveFile(oldFullPath, newFullPath); 
+                await client.moveFile(oldFullPath, newFullPath);
             }
 
+            // 更新所有子文件的路径
             const descendantFiles = await getFilesRecursive(folderId, userId);
             for (const file of descendantFiles) {
                 const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
@@ -1352,6 +1285,7 @@ async function renameAndMoveFolder(folderId, newName, targetFolderId, userId) {
         }
     }
 
+    // 更新数据库中的名称和父ID
     const sql = `UPDATE folders SET name = ?, parent_id = ? WHERE id = ? AND user_id = ?`;
     return new Promise((resolve, reject) => {
         db.run(sql, [newName, targetFolderId, folderId, userId], (err) => err ? reject(err) : resolve({ success: true }));
