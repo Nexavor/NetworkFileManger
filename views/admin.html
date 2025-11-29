@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="/manager.css">
     <style>
-        /* --- 核心布局修改：九宫格（3列响应式）样式 --- */
+        /* --- 核心布局：九宫格（3列响应式）样式 --- */
         .settings-grid-area {
             display: grid;
             /* 设定最小宽度 300px，自动创建 3 列或更多列（九宫格效果），并确保响应式 */
@@ -17,6 +17,31 @@
 
         .setting-card {
             position: relative;
+        }
+        
+        /* --- 修正按钮颜色和样式 --- */
+        /* 确保所有表格内的操作按钮都有样式，并强制文字颜色 */
+        .user-table .actions button,
+        .quota-table .actions button {
+            color: white; /* 确保文字是白色 */
+            font-weight: 500;
+            padding: 5px 10px;
+            border: none;
+            border-radius: 5px;
+            transition: background-color 0.2s;
+        }
+
+        /* 明确为不同操作按钮设定背景色 */
+        .change-pass-btn { 
+            background-color: #ffc107 !important; /* 黄色 (改密码) */
+            color: #212529 !important; /* 强制黑色文字以确保高对比度 */
+        }
+        .delete-user-btn { 
+            background-color: #dc3545 !important; /* 红色 (删除) */
+        }
+        /* 确保 .edit-quota-btn (编辑配额) 默认颜色为蓝色 */
+        .edit-quota-btn {
+            background-color: #007bff !important; 
         }
 
         /* --- 内部表单布局优化 --- */
@@ -60,7 +85,6 @@
             font-size: 12px;
             white-space: nowrap;
         }
-        /* 页面滚动条：由浏览器默认处理 */
     </style>
 </head>
 <body>
