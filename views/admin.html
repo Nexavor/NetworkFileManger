@@ -7,29 +7,40 @@
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="/manager.css">
     <style>
+        /* --- 重构布局样式：提供更宽裕的空间 --- */
         .form-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            align-items: flex-end;
+            /* 调整最小宽度到 250px，确保在大屏幕上有足够的空间 */
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px; /* 增加网格间距 */
+            align-items: flex-start; /* 保持内容顶部对齐 */
         }
-        .form-grid input {
-            margin-top: 0;
+        
+        .form-grid input,
+        .form-grid select {
+            width: 100% !important; /* 强制输入框占据容器宽度 */
+            box-sizing: border-box;
+            margin-top: 5px !important; /* 确保与 label 留有间距 */
         }
+
+        /* 统一按钮的高度，并使其在 grid 中与 input/select 组对齐 */
         .form-grid button {
-            margin-top: 0;
-            height: 42px; /* 与 input 对齐 */
+            margin-top: 25px !important; /* 增加顶部间距，与 label + input 组合高度对齐 */
+            height: 42px; 
+            width: 100%;
         }
-        /* 新增：配额编辑表单的样式 */
+
+        /* 新增：配额编辑表单的样式，避免拥挤 */
         .quota-edit-form {
             display: flex;
             align-items: center;
-            gap: 5px; /* 调整元素间的间距 */
+            gap: 8px; /* 增加元素间间距 */
+            flex-wrap: nowrap;
         }
         .quota-edit-form input {
-            width: 100px !important;
+            width: 80px !important; /* 调整为更合理的固定宽度 */
             padding: 5px !important;
-            margin: 0 5px 0 0 !important;
+            margin: 0 !important;
             box-sizing: border-box;
             height: 30px;
         }
@@ -38,6 +49,8 @@
             height: 30px;
             padding: 5px 10px;
             margin: 0 !important;
+            font-size: 12px;
+            white-space: nowrap; /* 防止按钮文字换行 */
         }
     </style>
 </head>
@@ -61,10 +74,10 @@
             <p>目前储存模式: <b id="current-mode">加载中...</b> | 上传模式: <b id="current-upload-mode">加载中...</b></p>
             <p>警告：切换储存模式不会迁移现有档案。切换后，旧模式下的档案将无法在管理器中存取。</p>
             <hr>
-            <div class="form-grid" style="align-items: center;">
+            <div class="form-grid">
                 <div>
                     <label for="storage-select" style="display:block;margin-bottom:5px;">储存后端：</label>
-                    <select id="storage-select" style="width:100%;margin-top:0;">
+                    <select id="storage-select">
                         <option value="telegram">Telegram</option>
                         <option value="local">本地服务器</option>
                         <option value="webdav">WebDAV</option>
@@ -73,12 +86,14 @@
                 </div>
                 <div>
                     <label for="upload-mode-select" style="display:block;margin-bottom:5px;">上传模式：</label>
-                    <select id="upload-mode-select" style="width:100%;margin-top:0;">
+                    <select id="upload-mode-select">
                         <option value="stream">流式上传 (推荐, 极速)</option>
                         <option value="buffer">缓冲上传 (稳定, 暂存磁盘)</option>
                     </select>
                 </div>
-                <button id="save-btn">储存所有设定</button>
+                <div>
+                    <button id="save-btn" style="margin-top: 25px !important;">储存所有设定</button>
+                </div>
             </div>
             <p id="save-status" style="color: green; margin-top: 10px;"></p>
         </div>
@@ -139,11 +154,20 @@
             <form id="webdav-form">
                 <input type="hidden" id="webdav-id">
                 <div class="form-grid">
-                    <input type="url" id="webdav-url" placeholder="WebDAV URL" required>
-                    <input type="text" id="webdav-username" placeholder="使用者名称" required>
-                    <input type="password" id="webdav-password" placeholder="密码 (留空则不变更)">
-                    <button type="submit" id="save-webdav-btn">储存设定</button>
-                    <button type="button" id="clear-webdav-form-btn" style="background-color: #6c757d;">清除表单</button>
+                    <div>
+                        <label for="webdav-url">WebDAV URL:</label>
+                        <input type="url" id="webdav-url" placeholder="WebDAV URL" required>
+                    </div>
+                    <div>
+                        <label for="webdav-username">使用者名称:</label>
+                        <input type="text" id="webdav-username" placeholder="使用者名称" required>
+                    </div>
+                    <div>
+                        <label for="webdav-password">密码:</label>
+                        <input type="password" id="webdav-password" placeholder="密码 (留空则不变更)">
+                    </div>
+                    <button type="submit" id="save-webdav-btn" style="margin-top: 25px !important;">储存设定</button>
+                    <button type="button" id="clear-webdav-form-btn" style="background-color: #6c757d; margin-top: 25px !important;">清除表单</button>
                 </div>
             </form>
         </div>
@@ -173,9 +197,17 @@
             <h2>使用者管理</h2>
             <form id="add-user-form">
                 <div class="form-grid">
-                    <input type="text" id="new-username" placeholder="新用户名" required>
-                    <input type="password" id="new-password" placeholder="新密码 (至少4位)" required>
-                    <button type="submit">新增使用者</button>
+                    <div>
+                        <label for="new-username">新用户名:</label>
+                        <input type="text" id="new-username" placeholder="新用户名" required>
+                    </div>
+                    <div>
+                        <label for="new-password">新密码:</label>
+                        <input type="password" id="new-password" placeholder="新密码 (至少4位)" required>
+                    </div>
+                    <div>
+                        <button type="submit" style="margin-top: 25px !important;">新增使用者</button>
+                    </div>
                 </div>
             </form>
             <table class="user-table">
@@ -312,6 +344,7 @@
                 webdavForm.reset();
                 webdavIdInput.value = '';
                 saveWebdavBtn.textContent = '储存设定';
+                webdavPasswordInput.placeholder = "密码 (留空则不变更)";
             }
 
             async function loadWebdavSettings() {
@@ -353,6 +386,11 @@
                     const payload = { url, username, password };
                     if (id) payload.id = id;
                     
+                    // 如果密码为空，不发送 password 字段，让后端保留旧密码
+                    if (password.trim() === '') {
+                        delete payload.password;
+                    }
+
                     await axios.post('/api/admin/webdav', payload);
                     alert('WebDAV 设定已储存!');
                     clearWebdavForm();
@@ -374,7 +412,7 @@
                          webdavUrlInput.value = config.url;
                          webdavUsernameInput.value = config.username;
                          webdavPasswordInput.value = ''; // Don't show old password
-                         webdavPasswordInput.placeholder = "密码 (留空则不变更)";
+                         webdavPasswordInput.placeholder = "已设定（留空则不变更）";
                          saveWebdavBtn.textContent = '更新设定';
                      }
                 }
