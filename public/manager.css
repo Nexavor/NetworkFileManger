@@ -1,5 +1,3 @@
-// public/manager.css
-
 :root {
   --primary-color: #007bff;
   --success-color: #28a745;
@@ -12,7 +10,7 @@
 html, body {
   height: 100%;
   margin: 0;
-  /* --- 修正: 移除 overflow: hidden; 允许页面滚动 --- */
+  /* 修正: 移除 overflow: hidden; 允许页面滚动 */
   overflow: auto; 
 }
 body {
@@ -29,8 +27,7 @@ body {
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  /* 移除 height: 100%; 以允许内容自由增长和滚动 */
-  /* height: 100%; */
+  /* 移除 height: 100%; 允许内容自由增长 */
   width: 100%;
 }
 .main-header, .breadcrumb {
@@ -298,6 +295,22 @@ body.selection-mode-active #dropZone {
     width: 100%; height: 100%; overflow: auto; background-color: rgba(248, 249, 250, 0.95);
     align-items: center; justify-content: center;
 }
+/* --- 新增：确保所有按钮都有基准样式，防止白色 --- */
+.modal-content button {
+    padding: 10px 15px;
+    border-radius: 5px;
+    cursor: pointer;
+    border: 1px solid #ccc;
+    background-color: #f8f9fa; /* 基准颜色：浅灰/白 */
+    color: var(--text-color);
+    transition: background-color 0.2s;
+    font-size: 16px;
+}
+.modal-content button:hover {
+    background-color: #e9ecef;
+}
+/* --- 结束新增 --- */
+
 #uploadModal { z-index: 1001; }
 #conflictModal, #folderConflictModal { z-index: 1002; }
 .modal-content { margin: auto; display: block; max-width: 90%; max-height: 90%; }
