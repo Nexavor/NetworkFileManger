@@ -432,6 +432,9 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
 
     if (!fileName) return res.status(400).json({ success: false, message: '档名无效' });
 
+    // --- 确保 tempFilePath 作用域在 finally 块中可见 ---
+    let tempFilePath = null; 
+
     try {
         // 配额检查
         const byteLength = Buffer.byteLength(content, 'utf8');
@@ -440,7 +443,7 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
             return res.status(413).json({ success: false, message: '空间不足，无法保存文件。' });
         }
 
-        const tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.txt`);
+        tempFilePath = path.join(TMP_DIR, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.txt`);
         await fsp.writeFile(tempFilePath, content, 'utf8');
         
         if (mode === 'edit' && fileId) {
@@ -463,20 +466,49 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
             } else {
                 const newRelativePath = path.posix.join(path.posix.dirname(originalFile.file_id), fileName);
                 const fileStream = fs.createReadStream(tempFilePath); 
+                
+                // --- 统一处理 local/webdav/s3 的物理操作，以支持重命名和内容更新 ---
                 if (originalFile.storage_type === 'local') {
                     const newFullPath = path.join(__dirname, 'data', 'uploads', String(userId), newRelativePath);
                     await fsp.mkdir(path.dirname(newFullPath), { recursive: true });
+                    
+                    // 1. 复制内容到新文件
                     await fsp.copyFile(tempFilePath, newFullPath); 
+                    
+                    // 2. 如果文件名或路径改变，删除旧文件
                     if (originalFile.file_id !== newRelativePath && fs.existsSync(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id))) {
                          await fsp.unlink(path.join(__dirname, 'data', 'uploads', String(userId), originalFile.file_id));
                     }
                 } else if (originalFile.storage_type === 'webdav') {
                     const client = storage.getClient();
+                    // WebDAV 的 putFileContents 可以接受流并执行写入/覆盖
                     await client.putFileContents(newRelativePath, fileStream, { overwrite: true });
+                    
+                    // 如果文件名改变，删除旧文件
                     if (originalFile.file_id !== newRelativePath) {
                         await client.deleteFile(originalFile.file_id);
                     }
+                } else if (originalFile.storage_type === 's3') {
+                    // S3 的上传逻辑（相当于覆盖或移动+删除旧Key）
+                    const s3Storage = require('./storage/s3');
+                    const s3Client = s3Storage.getClient();
+                    const s3Config = storageManager.readConfig().s3;
+
+                    const uploadParams = {
+                        Bucket: s3Config.bucket,
+                        Key: newRelativePath,
+                        Body: fs.createReadStream(tempFilePath),
+                        ContentType: 'text/plain',
+                    };
+                    await s3Client.upload(uploadParams).promise();
+
+                    // 如果文件名改变，删除旧 Key
+                    if (originalFile.file_id !== newRelativePath) {
+                        await s3Client.deleteObject({ Bucket: s3Config.bucket, Key: originalFile.file_id }).promise();
+                    }
                 }
+                // --- 统一处理结束 ---
+                
                 const stats = await fsp.stat(tempFilePath);
                 await data.updateFile(numericFileId, { fileName, size: stats.size, date: Date.now(), file_id: newRelativePath }, userId);
                 return res.json({ success: true, fileId: fileId });
@@ -484,6 +516,8 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
         } else if (mode === 'create' && folderId) {
             const conflict = await data.checkFullConflict(fileName, folderId, userId);
             if (conflict) return res.status(409).json({ success: false, message: '同名冲突' });
+            
+            // 使用文件流进行上传，以便适应各种存储后端
             const fileStream = fs.createReadStream(tempFilePath);
             const result = await storage.upload(fileStream, fileName, 'text/plain', userId, folderId);
             res.json({ success: true, fileId: result.fileId });
@@ -493,8 +527,9 @@ app.post('/api/text-file', requireLogin, async (req, res) => {
     } catch (error) {
         res.status(500).json({ success: false, message: '错误: ' + error.message });
     } finally {
-        // if (fs.existsSync(tempFilePath)) await fsp.unlink(tempFilePath).catch(()=>{}); // tempFilePath 定义在 try 块外更安全，但在上面逻辑中已定义在 try 外
-        // 这里需要修正作用域，tempFilePath 定义在 try 外面才行
+        if (tempFilePath && fs.existsSync(tempFilePath)) {
+            await fsp.unlink(tempFilePath).catch(() => {});
+        }
     }
 });
 
@@ -606,7 +641,7 @@ app.post('/api/folder', requireLogin, async (req, res) => {
         }
         const result = await data.createFolder(name, parentId, userId);
         const storage = storageManager.getStorage();
-        if (storage.type === 'local' || storage.type === 'webdav') {
+        if (storage.type === 'local' || storage.type === 'webdav' || storage.type === 's3') {
             const newFolderPathParts = await data.getFolderPath(result.id, userId);
             const newFullPath = path.posix.join(...newFolderPathParts.slice(1).map(p => p.name));
             if (storage.type === 'local') {
@@ -614,6 +649,18 @@ app.post('/api/folder', requireLogin, async (req, res) => {
                 await fsp.mkdir(newLocalPath, { recursive: true });
             } else if (storage.type === 'webdav' && storage.createDirectory) {
                 await storage.createDirectory(newFullPath);
+            } else if (storage.type === 's3') {
+                // S3 不需要预创建目录，但我们仍然需要确保 Key 路径正确
+                const s3Storage = require('./storage/s3');
+                const s3Client = s3Storage.getClient();
+                const s3Config = storageManager.readConfig().s3;
+                const key = path.posix.join(`user_${userId}`, newFullPath, '/').replace(/\\/g, '/').replace(/^\//, '');
+
+                await s3Client.putObject({
+                    Bucket: s3Config.bucket,
+                    Key: key,
+                    Body: '',
+                }).promise();
             }
         }
         res.json(result);
@@ -833,11 +880,13 @@ app.get('/thumbnail/:message_id', requireLogin, async (req, res) => {
             return res.status(403).send('权限不足');
         }
         const [fileInfo] = await data.getFilesByIds([messageId], req.session.userId);
-        if (fileInfo && fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
-            const storage = storageManager.getStorage();
-            const link = await storage.getUrl(fileInfo.thumb_file_id);
+        const storage = storageManager.getStorage();
+        
+        if (fileInfo && fileInfo.thumb_file_id && (fileInfo.storage_type === 'telegram' || fileInfo.storage_type === 's3')) {
+            const link = await storage.getUrl(fileInfo.thumb_file_id, fileInfo.user_id);
             if (link) return res.redirect(link);
         }
+
         const placeholder = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
         res.writeHead(200, { 'Content-Type': 'image/gif', 'Content-Length': placeholder.length });
         res.end(placeholder);
@@ -848,51 +897,91 @@ async function handleFileStream(req, res, fileInfo) {
     const storage = storageManager.getStorage();
     const range = req.headers.range;
     const totalSize = fileInfo.size;
-
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Content-Type', fileInfo.mimetype || 'application/octet-stream');
     
-    if (range && totalSize) {
-        const parts = range.replace(/bytes=/, "").split("-");
-        const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+    // 如果是 S3 或 local 存储，我们可以直接流式传输
+    if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav' || fileInfo.storage_type === 's3') {
+        try {
+            res.setHeader('Accept-Ranges', 'bytes');
+            res.setHeader('Content-Type', fileInfo.mimetype || 'application/octet-stream');
+            res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
+
+            let options = {};
+            
+            if (range && totalSize) {
+                const parts = range.replace(/bytes=/, "").split("-");
+                const start = parseInt(parts[0], 10);
+                const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+                
+                if (start >= totalSize) {
+                    res.status(416).send('Requested range not satisfiable\n' + start + ' >= ' + totalSize);
+                    return;
+                }
+                
+                const chunksize = (end - start) + 1;
+                res.writeHead(206, { 'Content-Range': `bytes ${start}-${end}/${totalSize}`, 'Content-Length': chunksize });
+                options = { start, end };
+            } else {
+                res.setHeader('Content-Length', totalSize || -1);
+            }
+
+            const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id, options);
+            stream.pipe(res);
+            
+            stream.on('error', (err) => {
+                 console.error('File stream error:', err);
+                 if (!res.headersSent) res.status(500).end('流读取失败');
+            });
+            
+        } catch (error) {
+            console.error('Error handling local/webdav/s3 stream:', error);
+            if (!res.headersSent) res.status(500).send('无法获取文件流');
+        }
+
+    } else if (fileInfo.storage_type === 'telegram') {
+        // Telegram 必须先获取 URL，然后通过 axios 代理或重定向
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Content-Type', fileInfo.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
         
-        if (start >= totalSize) {
-            res.status(416).send('Requested range not satisfiable\n' + start + ' >= ' + totalSize);
+        const link = await storage.getUrl(fileInfo.file_id);
+        if (!link) {
+            res.status(404).send('无法获取文件链接');
             return;
         }
 
-        const chunksize = (end - start) + 1;
-        res.writeHead(206, { 'Content-Range': `bytes ${start}-${end}/${totalSize}`, 'Content-Length': chunksize });
+        let headers = {};
+        if (range) {
+            headers['Range'] = range;
+        }
+        
+        try {
+            const response = await axios({ method: 'get', url: link, responseType: 'stream', headers: headers });
 
-        if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
-            const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id, { start, end });
-            stream.pipe(res);
-        } else if (fileInfo.storage_type === 'telegram') {
-            const link = await storage.getUrl(fileInfo.file_id);
-            if (link) {
-                const response = await axios({ method: 'get', url: link, responseType: 'stream', headers: { 'Range': `bytes=${start}-${end}` } });
-                response.data.pipe(res);
+            if (range && totalSize) {
+                 const parts = range.replace(/bytes=/, "").split("-");
+                 const start = parseInt(parts[0], 10);
+                 const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+                 const chunksize = (end - start) + 1;
+                 res.writeHead(206, { 'Content-Range': `bytes ${start}-${end}/${totalSize}`, 'Content-Length': chunksize });
             } else {
-                res.status(404).send('无法获取文件链接');
+                 res.setHeader('Content-Length', totalSize || -1);
+            }
+
+            response.data.pipe(res);
+            response.data.on('error', (err) => {
+                 console.error('Telegram stream proxy error:', err);
+                 if (!res.headersSent) res.status(500).end('下载流中断');
+            });
+
+        } catch (error) {
+            if (error.response && error.response.status === 416) {
+                res.status(416).send('Requested range not satisfiable');
+            } else {
+                if (!res.headersSent) res.status(500).send('下载代理失败');
             }
         }
     } else {
-        res.setHeader('Content-Length', totalSize || -1);
-        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileInfo.fileName)}`);
-
-        if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
-            const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
-            stream.pipe(res);
-        } else if (fileInfo.storage_type === 'telegram') {
-            const link = await storage.getUrl(fileInfo.file_id);
-            if (link) {
-                const response = await axios({ method: 'get', url: link, responseType: 'stream' });
-                response.data.pipe(res);
-            } else {
-                res.status(404).send('无法获取文件链接');
-            }
-        }
+        res.status(500).send('不支持的存储类型');
     }
 }
 
@@ -924,15 +1013,22 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
         }
         const storage = storageManager.getStorage();
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
+        
+        if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav' || fileInfo.storage_type === 's3') {
             const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
             stream.pipe(res);
+            stream.on('error', (err) => {
+                 console.error('Content stream error:', err);
+                 if (!res.headersSent) res.status(500).end('无法读取文件内容');
+            });
         } else if (fileInfo.storage_type === 'telegram') {
             const link = await storage.getUrl(fileInfo.file_id);
             if (link) {
                 const response = await axios.get(link, { responseType: 'text' });
                 res.send(response.data);
             } else { res.status(404).send('无法获取文件链接'); }
+        } else {
+             res.status(500).send('不支持的存储类型');
         }
     } catch (error) {
         res.status(500).send('无法获取文件内容');
@@ -989,7 +1085,7 @@ app.post('/api/download-archive', requireLogin, async (req, res) => {
 
         const processFile = async (file) => {
             try {
-                if (file.storage_type === 'local' || file.storage_type === 'webdav') {
+                if (file.storage_type === 'local' || file.storage_type === 'webdav' || file.storage_type === 's3') {
                     const stream = await storage.stream(file.file_id, userId);
                     await new Promise((resolve, reject) => {
                         stream.on('end', resolve);
@@ -1325,6 +1421,43 @@ app.delete('/api/admin/webdav/:id', requireAdmin, (req, res) => {
     }
 });
 
+// --- 新增：S3 配置路由 (Admin) ---
+app.get('/api/admin/s3', requireAdmin, (req, res) => {
+    const config = storageManager.readConfig();
+    const s3Config = config.s3 || {};
+    // 隐藏秘密密钥，只返回其他配置
+    const { secretAccessKey, ...safeConfig } = s3Config;
+    res.json({ success: true, s3: safeConfig });
+});
+
+app.post('/api/admin/s3', requireAdmin, (req, res) => {
+    const { endpoint, region, bucket, accessKeyId, secretAccessKey } = req.body;
+    if (!region || !bucket || !accessKeyId) {
+        return res.status(400).json({ success: false, message: '缺少必要的 S3 参数 (Region, Bucket, Access Key ID)' });
+    }
+    const config = storageManager.readConfig();
+    
+    // 保留旧配置中的秘密密钥（如果未提供新密码）
+    const oldSecretKey = (config.s3 && config.s3.secretAccessKey) ? config.s3.secretAccessKey : '';
+    
+    config.s3 = {
+        endpoint: endpoint || undefined,
+        region,
+        bucket,
+        accessKeyId,
+        // 如果提供了新密钥，则使用新密钥，否则保留旧密钥
+        secretAccessKey: secretAccessKey || oldSecretKey 
+    };
+    
+    if (storageManager.writeConfig(config)) {
+        res.json({ success: true, message: 'S3 存储配置已储存' });
+    } else {
+        res.status(500).json({ success: false, message: '写入配置失败' });
+    }
+});
+// --- 新增 S3 配置路由结束 ---
+
+
 app.get('/share/auth/:itemType/:token', shareSession, (req, res) => {
     const { itemType, token } = req.params;
     res.render('share-password', { itemType, token, error: req.query.error || null });
@@ -1367,13 +1500,16 @@ app.get('/share/view/file/:token', shareSession, async (req, res) => {
             let textContent = null;
             if (fileInfo.mimetype && fileInfo.mimetype.startsWith('text/')) {
                 const storage = storageManager.getStorage();
-                if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav') {
+                if (fileInfo.storage_type === 'local' || fileInfo.storage_type === 'webdav' || fileInfo.storage_type === 's3') {
+                    // 使用 stream，并等待其结束以获取完整内容
                     const stream = await storage.stream(fileInfo.file_id, fileInfo.user_id);
                      textContent = await new Promise((resolve, reject) => {
                         let data = '';
                         stream.on('data', chunk => data += chunk);
                         stream.on('end', () => resolve(data));
                         stream.on('error', err => reject(err));
+                        // 确保流不会被卡住
+                        stream.on('close', () => resolve(data));
                     });
                 } else if (fileInfo.storage_type === 'telegram') {
                     const link = await storage.getUrl(fileInfo.file_id);
@@ -1453,11 +1589,13 @@ app.get('/share/thumbnail/:folderToken/:fileId', shareSession, async (req, res) 
             return res.status(403).send('权限不足');
         }
         const fileInfo = await data.findFileInSharedFolder(BigInt(fileId), folderToken);
-        if (fileInfo && fileInfo.storage_type === 'telegram' && fileInfo.thumb_file_id) {
-            const storage = storageManager.getStorage();
-            const link = await storage.getUrl(fileInfo.thumb_file_id);
+        const storage = storageManager.getStorage();
+        
+        if (fileInfo && fileInfo.thumb_file_id && (fileInfo.storage_type === 'telegram' || fileInfo.storage_type === 's3')) {
+            const link = await storage.getUrl(fileInfo.thumb_file_id, fileInfo.user_id);
             if (link) return res.redirect(link);
         }
+
         const placeholder = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
         res.writeHead(200, { 'Content-Type': 'image/gif', 'Content-Length': placeholder.length });
         res.end(placeholder);
