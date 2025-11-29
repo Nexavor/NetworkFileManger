@@ -122,7 +122,7 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
                 thumb_file_id: null,
                 date: Date.now(),
             }, folderId, userId, 's3');
-            return { success: true, message: '上传成功', fileId: dbResult.fileId });
+            return { success: true, message: '上传成功', fileId: dbResult.fileId };
         }
 
     } catch (error) {
