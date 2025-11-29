@@ -90,7 +90,7 @@ async function getFolderPath(folderId, userId) {
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
-async function upload(fileStream, fileName, mimetype, userId, folderId, caption = '', existingItem = null) {
+async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, caption = '', existingItem = null) {
     const FUNC_NAME = 'upload';
     log('INFO', FUNC_NAME, `开始处理文件: "${fileName}"`);
     
@@ -112,8 +112,8 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             }
 
             // 如果传入的是流，绑定错误处理
-            if (fileStream && typeof fileStream.on === 'function') {
-                fileStream.on('error', err => {
+            if (fileStreamOrBuffer && typeof fileStreamOrBuffer.on === 'function') {
+                fileStreamOrBuffer.on('error', err => {
                     log('ERROR', FUNC_NAME, `输入流错误 "${fileName}":`, err);
                     reject(new Error(`Stream Error: ${err.message}`));
                 });
@@ -125,9 +125,9 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
             
             // --- 关键修正：自动检测并设置 Content-Length ---
             // 如果传入的是本地文件流 (fs.ReadStream)，自动获取文件大小
-            if (fileStream && fileStream.path && typeof fileStream.path === 'string') {
+            if (fileStreamOrBuffer && fileStreamOrBuffer.path && typeof fileStreamOrBuffer.path === 'string') {
                 try {
-                    const fsStats = fs.statSync(fileStream.path);
+                    const fsStats = fs.statSync(fileStreamOrBuffer.path);
                     options.contentLength = fsStats.size;
                     log('DEBUG', FUNC_NAME, `检测到本地文件流，设置 Content-Length: ${fsStats.size}`);
                 } catch (e) {
@@ -135,7 +135,7 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
                 }
             }
 
-            const success = await client.putFileContents(remotePath, fileStream, options);
+            const success = await client.putFileContents(remotePath, fileStreamOrBuffer, options);
 
             if (!success) {
                 throw new Error('WebDAV putFileContents 返回 false');
@@ -173,8 +173,8 @@ async function upload(fileStream, fileName, mimetype, userId, folderId, caption 
 
         } catch (error) {
             log('ERROR', FUNC_NAME, `流程失败 for "${fileName}": ${error.message}`);
-            if (fileStream && typeof fileStream.resume === 'function') {
-                fileStream.resume();
+            if (fileStreamOrBuffer && typeof fileStreamOrBuffer.resume === 'function') {
+                fileStreamOrBuffer.resume();
             }
             
             // 发生错误时，尝试清理可能存在的 0KB 残留文件
@@ -218,24 +218,33 @@ async function remove(files, folders, userId) {
     return results;
 }
 
-async function stream(file_id, userId) {
+// 修正: 统一函数签名，接受 options 参数。移除不必要的 leading slash。
+async function stream(file_id, userId, options = {}) {
     const webdavConfig = getWebdavConfig();
     const streamClient = createClient(webdavConfig.url, {
         username: webdavConfig.username,
         password: webdavConfig.password
     });
-    return streamClient.createReadStream(path.posix.join('/', file_id));
+    
+    // 修正: 确保路径是 POSIX 风格，并移除任何前导斜杠
+    const remotePath = file_id.replace(/\\/g, '/').replace(/^\//, ''); 
+    
+    return streamClient.createReadStream(remotePath, options);
 }
 
+// 修正: 移除不必要的 leading slash。
 async function getUrl(file_id, userId) {
     const client = getClient();
-    return client.getFileDownloadLink(path.posix.join('/', file_id));
+    // 修正: 确保路径是 POSIX 风格，并移除任何前导斜杠
+    const remotePath = file_id.replace(/\\/g, '/').replace(/^\//, '');
+    return client.getFileDownloadLink(remotePath);
 }
 
 async function createDirectory(fullPath) {
     const client = getClient();
     try {
-        const remotePath = path.posix.join('/', fullPath);
+        // 修正: 确保路径是 POSIX 风格，并移除任何前导斜杠
+        const remotePath = fullPath.replace(/\\/g, '/').replace(/^\//, '');
         if (await client.exists(remotePath)) return true;
         await client.createDirectory(remotePath, { recursive: true });
         return true;
