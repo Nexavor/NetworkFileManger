@@ -87,6 +87,7 @@ async function getFolderPath(folderId, userId) {
     if (folderId === userRoot.id) return '/';
     
     const pathParts = await data.getFolderPath(folderId, userId);
+    // 确保返回的是绝对路径
     return '/' + pathParts.slice(1).map(p => p.name).join('/');
 }
 
@@ -105,6 +106,7 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             });
 
             const folderPath = await getFolderPath(folderId, userId);
+            // remotePath 始终以 '/' 开头
             remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
             
             if (folderPath && folderPath !== "/") {
@@ -152,7 +154,7 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
                 log('INFO', FUNC_NAME, `更新数据库 (覆盖): ${existingItem.id}`);
                 await data.updateFile(existingItem.id, {
                     mimetype: mimetype,
-                    file_id: remotePath,
+                    file_id: remotePath, // 存储带前导斜杠的路径
                     size: stats.size,
                     date: Date.now(),
                 }, userId);
@@ -165,7 +167,7 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
                     fileName,
                     mimetype,
                     size: stats.size,
-                    file_id: remotePath,
+                    file_id: remotePath, // 存储带前导斜杠的路径
                     date: Date.now(),
                 }, folderId, userId, 'webdav');
                 resolve({ success: true, message: '上传成功', fileId: dbResult.fileId });
@@ -194,15 +196,15 @@ async function remove(files, folders, userId) {
     const results = { success: true, errors: [] };
     const allItemsToDelete = [];
     files.forEach(file => {
+        // file.file_id 应该已经是 WebDAV 绝对路径（以 / 开头）
         let p = file.file_id.startsWith('/') ? file.file_id : '/' + file.file_id;
         allItemsToDelete.push({ path: path.posix.normalize(p), type: 'file' });
     });
     folders.forEach(folder => {
-        if (folder.path && folder.path !== '/') {
-            let p = folder.path.startsWith('/') ? folder.path : '/' + folder.path;
-            if (!p.endsWith('/')) { p += '/'; }
-            allItemsToDelete.push({ path: p, type: 'folder' });
-        }
+        // folder.path 是 WebDAV 绝对路径
+        let p = folder.path.startsWith('/') ? folder.path : '/' + folder.path;
+        if (!p.endsWith('/')) { p += '/'; }
+        allItemsToDelete.push({ path: p, type: 'folder' });
     });
     allItemsToDelete.sort((a, b) => b.path.length - a.path.length);
     for (const item of allItemsToDelete) {
@@ -218,7 +220,7 @@ async function remove(files, folders, userId) {
     return results;
 }
 
-// 修正: 统一函数签名，接受 options 参数。移除不必要的 leading slash。
+// 修正: 统一函数签名，接受 options 参数。
 async function stream(file_id, userId, options = {}) {
     const webdavConfig = getWebdavConfig();
     const streamClient = createClient(webdavConfig.url, {
@@ -226,27 +228,32 @@ async function stream(file_id, userId, options = {}) {
         password: webdavConfig.password
     });
     
-    // 修正: 确保路径是 POSIX 风格，并移除任何前导斜杠
-    const remotePath = file_id.replace(/\\/g, '/').replace(/^\//, ''); 
-    
-    return streamClient.createReadStream(remotePath, options);
+    // 修正: 确保路径是 POSIX 风格，并且保留前导斜杠，如果缺少则添加。
+    const remotePath = file_id.replace(/\\/g, '/'); 
+    const finalRemotePath = remotePath.startsWith('/') ? remotePath : '/' + remotePath;
+
+    return streamClient.createReadStream(finalRemotePath, options);
 }
 
 // 修正: 移除不必要的 leading slash。
 async function getUrl(file_id, userId) {
     const client = getClient();
-    // 修正: 确保路径是 POSIX 风格，并移除任何前导斜杠
-    const remotePath = file_id.replace(/\\/g, '/').replace(/^\//, '');
-    return client.getFileDownloadLink(remotePath);
+    // 修正: 确保路径是 POSIX 风格，并且保留前导斜杠，如果缺少则添加。
+    const remotePath = file_id.replace(/\\/g, '/');
+    const finalRemotePath = remotePath.startsWith('/') ? remotePath : '/' + remotePath;
+
+    return client.getFileDownloadLink(finalRemotePath);
 }
 
 async function createDirectory(fullPath) {
     const client = getClient();
     try {
-        // 修正: 确保路径是 POSIX 风格，并移除任何前导斜杠
-        const remotePath = fullPath.replace(/\\/g, '/').replace(/^\//, '');
-        if (await client.exists(remotePath)) return true;
-        await client.createDirectory(remotePath, { recursive: true });
+        // 修正: 确保路径是 POSIX 风格，并保留前导斜杠，如果缺少则添加。
+        const remotePath = fullPath.replace(/\\/g, '/');
+        const finalRemotePath = remotePath.startsWith('/') ? remotePath : '/' + remotePath;
+        
+        if (await client.exists(finalRemotePath)) return true;
+        await client.createDirectory(finalRemotePath, { recursive: true });
         return true;
     } catch (e) {
         if (e.response && (e.response.status === 405 || e.response.status === 501)) return true;
