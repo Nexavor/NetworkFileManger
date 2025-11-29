@@ -7,50 +7,82 @@
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="/manager.css">
     <style>
-        /* --- 重构布局样式：提供更宽裕的空间 --- */
+        /* --- 核心布局：实现 2 列网格布局 --- */
+        .settings-grid-area {
+            display: grid;
+            grid-template-columns: 1fr 1fr; /* 默认两列，各占一半宽度 */
+            gap: 20px; /* 增加卡片间距 */
+            /* 确保在小屏幕上退化为单列 */
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            transition: transform 0.3s ease;
+        }
+
+        .setting-card {
+            transition: all 0.3s ease, z-index 0s;
+            position: relative;
+        }
+
+        /* 鼠标激活/获得焦点时的效果：跨越所有列 */
+        .setting-card.active-focus {
+            grid-column: 1 / -1; /* 占据整个网格的宽度 */
+            transform: scale(1.02); /* 轻微放大，强调焦点 */
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+            z-index: 10; /* 浮于其他卡片之上 */
+        }
+
+        /* --- 内部表单布局优化 (保留和微调) --- */
         .form-grid {
             display: grid;
-            /* 调整最小宽度到 250px，确保在大屏幕上有足够的空间 */
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px; /* 增加网格间距 */
-            align-items: flex-start; /* 保持内容顶部对齐 */
+            gap: 20px;
+            align-items: flex-start;
         }
         
         .form-grid input,
         .form-grid select {
-            width: 100% !important; /* 强制输入框占据容器宽度 */
+            width: 100% !important;
             box-sizing: border-box;
-            margin-top: 5px !important; /* 确保与 label 留有间距 */
+            margin-top: 5px !important;
         }
 
-        /* 统一按钮的高度，并使其在 grid 中与 input/select 组对齐 */
         .form-grid button {
-            margin-top: 25px !important; /* 增加顶部间距，与 label + input 组合高度对齐 */
+            margin-top: 25px !important;
             height: 42px; 
             width: 100%;
         }
 
-        /* 新增：配额编辑表单的样式，避免拥挤 */
         .quota-edit-form {
             display: flex;
             align-items: center;
-            gap: 8px; /* 增加元素间间距 */
+            gap: 8px;
             flex-wrap: nowrap;
         }
         .quota-edit-form input {
-            width: 80px !important; /* 调整为更合理的固定宽度 */
+            width: 80px !important;
             padding: 5px !important;
             margin: 0 !important;
             box-sizing: border-box;
             height: 30px;
         }
-        /* 保证按钮的宽度和高度 */
         .quota-edit-form button {
             height: 30px;
             padding: 5px 10px;
             margin: 0 !important;
             font-size: 12px;
-            white-space: nowrap; /* 防止按钮文字换行 */
+            white-space: nowrap;
+        }
+        /* 小屏幕适配：在屏幕宽度小于 768px 时，所有卡片都退化为单列 */
+        @media (max-width: 768px) {
+            .settings-grid-area {
+                grid-template-columns: 1fr;
+            }
+            .setting-card.active-focus {
+                /* 在小屏幕上不应用 grid-column: 1 / -1; 保持单列流 */
+                grid-column: auto;
+            }
+            .form-grid {
+                 grid-template-columns: 1fr; /* 确保表单也是单列 */
+            }
         }
     </style>
 </head>
@@ -61,167 +93,172 @@
             <a href="/" class="upload-link-btn"><i class="fas fa-arrow-left"></i> 返回文件管理器</a>
         </header>
 
-        <div class="setting-card">
-            <h2>高级功能</h2>
-            <a href="/scan" class="upload-link-btn" style="background-color: #6f42c1;">
-                <i class="fas fa-search-plus"></i> 文件扫描与汇入
-            </a>
-            <p style="margin-top: 10px;">将伺服器上已存在但未被数据库追踪的文件扫描并汇入系统。</p>
-        </div>
+        <div class="settings-grid-area" id="settings-grid-area"> 
 
-        <div class="setting-card">
-            <h2>储存设定</h2>
-            <p>目前储存模式: <b id="current-mode">加载中...</b> | 上传模式: <b id="current-upload-mode">加载中...</b></p>
-            <p>警告：切换储存模式不会迁移现有档案。切换后，旧模式下的档案将无法在管理器中存取。</p>
-            <hr>
-            <div class="form-grid">
-                <div>
-                    <label for="storage-select" style="display:block;margin-bottom:5px;">储存后端：</label>
-                    <select id="storage-select">
-                        <option value="telegram">Telegram</option>
-                        <option value="local">本地服务器</option>
-                        <option value="webdav">WebDAV</option>
-                        <option value="s3">S3 存储 (兼容 AWS/MinIO)</option>
-                    </select>
-                </div>
-                <div>
-                    <label for="upload-mode-select" style="display:block;margin-bottom:5px;">上传模式：</label>
-                    <select id="upload-mode-select">
-                        <option value="stream">流式上传 (推荐, 极速)</option>
-                        <option value="buffer">缓冲上传 (稳定, 暂存磁盘)</option>
-                    </select>
-                </div>
-                <div>
-                    <button id="save-btn" style="margin-top: 25px !important;">储存所有设定</button>
-                </div>
+            <div class="setting-card">
+                <h2>高级功能</h2>
+                <a href="/scan" class="upload-link-btn" style="background-color: #6f42c1;">
+                    <i class="fas fa-search-plus"></i> 文件扫描与汇入
+                </a>
+                <p style="margin-top: 10px;">将伺服器上已存在但未被数据库追踪的文件扫描并汇入系统。</p>
             </div>
-            <p id="save-status" style="color: green; margin-top: 10px;"></p>
-        </div>
 
-        <div class="setting-card" id="s3-settings-card" style="display: none;">
-            <h2>S3 存储配置 (AWS/MinIO/兼容)</h2>
-            <p>此设定只有在储存模式设定为 "S3 存储" 时才会生效。</p>
-            <form id="s3-form" style="margin-top: 20px;">
+            <div class="setting-card">
+                <h2>储存设定</h2>
+                <p>目前储存模式: <b id="current-mode">加载中...</b> | 上传模式: <b id="current-upload-mode">加载中...</b></p>
+                <p>警告：切换储存模式不会迁移现有档案。切换后，旧模式下的档案将无法在管理器中存取。</p>
+                <hr>
                 <div class="form-grid">
                     <div>
-                        <label for="s3-endpoint">Endpoint URL (可选，用于 MinIO 等):</label>
-                        <input type="url" id="s3-endpoint" placeholder="例如: https://s3.example.com" value="">
+                        <label for="storage-select" style="display:block;margin-bottom:5px;">储存后端：</label>
+                        <select id="storage-select">
+                            <option value="telegram">Telegram</option>
+                            <option value="local">本地服务器</option>
+                            <option value="webdav">WebDAV</option>
+                            <option value="s3">S3 存储 (兼容 AWS/MinIO)</option>
+                        </select>
                     </div>
                     <div>
-                        <label for="s3-region">Region (区域):</label>
-                        <input type="text" id="s3-region" placeholder="例如: ap-northeast-1" required>
+                        <label for="upload-mode-select" style="display:block;margin-bottom:5px;">上传模式：</label>
+                        <select id="upload-mode-select">
+                            <option value="stream">流式上传 (推荐, 极速)</option>
+                            <option value="buffer">缓冲上传 (稳定, 暂存磁盘)</option>
+                        </select>
                     </div>
                     <div>
-                        <label for="s3-bucket">Bucket Name (存储桶名称):</label>
-                        <input type="text" id="s3-bucket" placeholder="存储桶名称" required>
+                        <button id="save-btn" style="margin-top: 25px !important;">储存所有设定</button>
                     </div>
                 </div>
-                <div class="form-grid" style="margin-top: 15px;">
-                    <div>
-                        <label for="s3-access-key">Access Key ID (访问密钥):</label>
-                        <input type="text" id="s3-access-key" placeholder="Access Key ID">
+                <p id="save-status" style="color: green; margin-top: 10px;"></p>
+            </div>
+
+            <div class="setting-card" id="s3-settings-card" style="display: none;">
+                <h2>S3 存储配置 (AWS/MinIO/兼容)</h2>
+                <p>此设定只有在储存模式设定为 "S3 存储" 时才会生效。</p>
+                <form id="s3-form" style="margin-top: 20px;">
+                    <div class="form-grid">
+                        <div>
+                            <label for="s3-endpoint">Endpoint URL (可选，用于 MinIO 等):</label>
+                            <input type="url" id="s3-endpoint" placeholder="例如: https://s3.example.com" value="">
+                        </div>
+                        <div>
+                            <label for="s3-region">Region (区域):</label>
+                            <input type="text" id="s3-region" placeholder="例如: ap-northeast-1" required>
+                        </div>
+                        <div>
+                            <label for="s3-bucket">Bucket Name (存储桶名称):</label>
+                            <input type="text" id="s3-bucket" placeholder="存储桶名称" required>
+                        </div>
                     </div>
-                    <div>
-                        <label for="s3-secret-key">Secret Access Key (秘密密钥):</label>
-                        <input type="password" id="s3-secret-key" placeholder="Secret Access Key (留空则不变更)">
+                    <div class="form-grid" style="margin-top: 15px;">
+                        <div>
+                            <label for="s3-access-key">Access Key ID (访问密钥):</label>
+                            <input type="text" id="s3-access-key" placeholder="Access Key ID">
+                        </div>
+                        <div>
+                            <label for="s3-secret-key">Secret Access Key (秘密密钥):</label>
+                            <input type="password" id="s3-secret-key" placeholder="Secret Access Key (留空则不变更)">
+                        </div>
+                        <div>
+                           </div>
                     </div>
-                </div>
-                <div style="text-align: right; margin-top: 15px;">
-                    <button type="submit" id="save-s3-btn" class="upload-link-btn">储存 S3 配置</button>
-                </div>
-            </form>
-        </div>
-        
-        <div class="setting-card" id="webdav-settings-card" style="display: none;">
-            <h2>系统共用 WebDAV 设定</h2>
-            <p>此设定将应用于所有使用者。只有在储存模式设定为 "WebDAV" 时才会生效。</p>
+                    <div style="text-align: right; margin-top: 15px;">
+                        <button type="submit" id="save-s3-btn" class="upload-link-btn">储存 S3 配置</button>
+                    </div>
+                </form>
+            </div>
             
-            <div class="table-container">
-                <table class="user-table" id="webdav-table">
-                    <thead>
-                        <tr>
-                            <th>URL</th>
-                            <th>使用者名称</th>
-                            <th>操作</th>
-                        </tr>
-                    </thead>
-                    <tbody id="webdav-table-body">
-                        </tbody>
-                </table>
+            <div class="setting-card" id="webdav-settings-card" style="display: none;">
+                <h2>系统共用 WebDAV 设定</h2>
+                <p>此设定将应用于所有使用者。只有在储存模式设定为 "WebDAV" 时才会生效。</p>
+                
+                <div class="table-container">
+                    <table class="user-table" id="webdav-table">
+                        <thead>
+                            <tr>
+                                <th>URL</th>
+                                <th>使用者名称</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="webdav-table-body">
+                            </tbody>
+                    </table>
+                </div>
+
+                <h3 style="margin-top: 20px;">新增或编辑 WebDAV 设定</h3>
+                <form id="webdav-form">
+                    <input type="hidden" id="webdav-id">
+                    <div class="form-grid">
+                        <div>
+                            <label for="webdav-url">WebDAV URL:</label>
+                            <input type="url" id="webdav-url" placeholder="WebDAV URL" required>
+                        </div>
+                        <div>
+                            <label for="webdav-username">使用者名称:</label>
+                            <input type="text" id="webdav-username" placeholder="使用者名称" required>
+                        </div>
+                        <div>
+                            <label for="webdav-password">密码:</label>
+                            <input type="password" id="webdav-password" placeholder="密码 (留空则不变更)">
+                        </div>
+                        <button type="submit" id="save-webdav-btn" style="margin-top: 25px !important;">储存设定</button>
+                        <button type="button" id="clear-webdav-form-btn" style="background-color: #6c757d; margin-top: 25px !important;">清除表单</button>
+                    </div>
+                </form>
             </div>
 
-            <h3 style="margin-top: 20px;">新增或编辑 WebDAV 设定</h3>
-            <form id="webdav-form">
-                <input type="hidden" id="webdav-id">
-                <div class="form-grid">
-                    <div>
-                        <label for="webdav-url">WebDAV URL:</label>
-                        <input type="url" id="webdav-url" placeholder="WebDAV URL" required>
-                    </div>
-                    <div>
-                        <label for="webdav-username">使用者名称:</label>
-                        <input type="text" id="webdav-username" placeholder="使用者名称" required>
-                    </div>
-                    <div>
-                        <label for="webdav-password">密码:</label>
-                        <input type="password" id="webdav-password" placeholder="密码 (留空则不变更)">
-                    </div>
-                    <button type="submit" id="save-webdav-btn" style="margin-top: 25px !important;">储存设定</button>
-                    <button type="button" id="clear-webdav-form-btn" style="background-color: #6c757d; margin-top: 25px !important;">清除表单</button>
+            <div class="setting-card">
+                <h2>使用者配额管理</h2>
+                <p>设定普通使用者的最大储存空间（0 GB 表示无限，预设 1 GB）。</p>
+
+                <div class="table-container">
+                    <table class="user-table" id="quota-table">
+                        <thead>
+                            <tr>
+                                <th>使用者名称</th>
+                                <th>身份</th>
+                                <th>已用空间</th>
+                                <th>最大空间 (GB)</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="quota-table-body">
+                        </tbody>
+                    </table>
                 </div>
-            </form>
-        </div>
+            </div>
 
-        <div class="setting-card">
-            <h2>使用者配额管理</h2>
-            <p>设定普通使用者的最大储存空间（0 GB 表示无限，预设 1 GB）。</p>
-
-            <div class="table-container">
-                <table class="user-table" id="quota-table">
+            <div class="setting-card">
+                <h2>使用者管理</h2>
+                <form id="add-user-form">
+                    <div class="form-grid">
+                        <div>
+                            <label for="new-username">新用户名:</label>
+                            <input type="text" id="new-username" placeholder="新用户名" required>
+                        </div>
+                        <div>
+                            <label for="new-password">新密码:</label>
+                            <input type="password" id="new-password" placeholder="新密码 (至少4位)" required>
+                        </div>
+                        <div>
+                            <button type="submit" style="margin-top: 25px !important;">新增使用者</button>
+                        </div>
+                    </div>
+                </form>
+                <table class="user-table">
                     <thead>
                         <tr>
                             <th>使用者名称</th>
-                            <th>身份</th>
-                            <th>已用空间</th>
-                            <th>最大空间 (GB)</th>
                             <th>操作</th>
                         </tr>
                     </thead>
-                    <tbody id="quota-table-body">
+                    <tbody id="user-table-body">
                     </tbody>
                 </table>
             </div>
-        </div>
 
-        <div class="setting-card">
-            <h2>使用者管理</h2>
-            <form id="add-user-form">
-                <div class="form-grid">
-                    <div>
-                        <label for="new-username">新用户名:</label>
-                        <input type="text" id="new-username" placeholder="新用户名" required>
-                    </div>
-                    <div>
-                        <label for="new-password">新密码:</label>
-                        <input type="password" id="new-password" placeholder="新密码 (至少4位)" required>
-                    </div>
-                    <div>
-                        <button type="submit" style="margin-top: 25px !important;">新增使用者</button>
-                    </div>
-                </div>
-            </form>
-            <table class="user-table">
-                <thead>
-                    <tr>
-                        <th>使用者名称</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody id="user-table-body">
-                </tbody>
-            </table>
-        </div>
-    </div>
+        </div> </div>
     <script src="/vendor/axios/axios.min.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
@@ -259,6 +296,10 @@
 
             // --- 配额管理 DOM 元素 (省略未修改的) ---
             const quotaTableBody = document.getElementById('quota-table-body');
+            
+            // --- 新增：网格区域和卡片列表 ---
+            const settingsGridArea = document.getElementById('settings-grid-area');
+            const settingCards = document.querySelectorAll('.setting-card');
 
             // --- 字节格式化工具函数 (保留) ---
             const formatBytes = (bytes, decimals = 2) => {
@@ -274,6 +315,37 @@
             const bytesToGB = (bytes) => (bytes / 1073741824); // 1GB = 1073741824 Bytes
             const GBToBytes = (gb) => Math.round(parseFloat(gb) * 1073741824);
             const DEFAULT_MAX_GB = bytesToGB(1073741824).toFixed(2); 
+
+            // --- 新增：焦点控制函数 ---
+            function activateFocus(card) {
+                if (window.innerWidth <= 768) return; // 小屏幕禁用此功能
+                settingCards.forEach(c => c.classList.remove('active-focus'));
+                card.classList.add('active-focus');
+            }
+
+            function removeFocus() {
+                settingCards.forEach(c => c.classList.remove('active-focus'));
+            }
+
+            // --- 绑定焦点事件 ---
+            settingCards.forEach(card => {
+                // 使用 mouseenter 和 mouseleave 模拟 hover 行为
+                card.addEventListener('mouseenter', () => activateFocus(card));
+                // 使用 setTimeout 延迟 removeFocus，以避免在卡片内的表单元素获得焦点时立即收缩
+                card.addEventListener('mouseleave', () => setTimeout(removeFocus, 300));
+
+                // 确保在卡片内的元素获得焦点时，卡片保持展开状态（提高表单可用性）
+                card.addEventListener('focusin', () => activateFocus(card));
+                // 确保在卡片内的元素失去焦点时，如果鼠标不在卡片上，则收缩
+                card.addEventListener('focusout', (e) => {
+                    // 如果焦点移到了卡片之外
+                    if (!card.contains(e.relatedTarget)) {
+                        setTimeout(removeFocus, 300);
+                    }
+                });
+            });
+            // --- 焦点控制函数结束 ---
+
 
             async function loadCurrentSettings() {
                 try {
