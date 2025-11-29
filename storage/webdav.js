@@ -10,7 +10,7 @@ const FILE_NAME = 'storage/webdav.js';
 let client = null;
 const creatingDirs = new Set();
 
-// --- 日志辅助函数 (带时间戳) ---
+// --- 日志辅助函数 ---
 const log = (level, func, message, ...args) => {
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] [WEBDAV:${level}] [${func}] - ${message}`, ...args);
@@ -41,19 +41,23 @@ function resetClient() {
     client = null;
 }
 
+// 确保远程目录存在
 async function ensureDirectoryExists(fullPath) {
     const FUNC_NAME = 'ensureDirectoryExists';
-    if (!fullPath || fullPath === "/") return;
+    // 规范化路径，移除多余斜杠
+    const normalizedPath = path.posix.normalize(fullPath);
+    if (!normalizedPath || normalizedPath === "/") return;
     
-    while (creatingDirs.has(fullPath)) {
+    while (creatingDirs.has(normalizedPath)) {
         await new Promise(resolve => setTimeout(resolve, 50));
     }
     
-    creatingDirs.add(fullPath);
+    creatingDirs.add(normalizedPath);
 
     try {
         const client = getClient();
-        const pathParts = fullPath.split('/').filter(p => p);
+        // 将路径拆分并逐级检查
+        const pathParts = normalizedPath.split('/').filter(p => p);
         let currentPath = '';
 
         for (const part of pathParts) {
@@ -64,6 +68,7 @@ async function ensureDirectoryExists(fullPath) {
                 try {
                     await client.createDirectory(currentPath);
                 } catch (e) {
+                    // 忽略特定错误代码 (405 Method Not Allowed, 501 Not Implemented 往往意味着目录已存在或父目录问题)
                     if (e.response && (e.response.status !== 405 && e.response.status !== 501)) {
                          log('WARN', FUNC_NAME, `创建目录可能失败: ${e.message}`);
                     }
@@ -71,10 +76,11 @@ async function ensureDirectoryExists(fullPath) {
             }
         }
     } finally {
-        creatingDirs.delete(fullPath);
+        creatingDirs.delete(normalizedPath);
     }
 }
 
+// 获取不带任何强制前缀的纯净路径
 async function getFolderPath(folderId, userId) {
     const userRoot = await new Promise((resolve, reject) => {
         db.get("SELECT id FROM folders WHERE user_id = ? AND parent_id IS NULL", [userId], (err, row) => {
@@ -84,22 +90,16 @@ async function getFolderPath(folderId, userId) {
         });
     });
 
+    // 如果是根目录，返回 '/'
+    if (folderId === userRoot.id) return '/';
+    
+    // 获取文件夹层级数组
     const pathParts = await data.getFolderPath(folderId, userId);
     
-    // 从路径数组中提取相对路径（跳过第一个根目录 '/'）
+    // 拼接路径：去掉第一个 root，剩下的用 / 连接
+    // 结果类似 "/我的文档/工作"
     const relativePath = pathParts.slice(1).map(p => p.name).join('/');
-    
-    // 构造 WebDAV 绝对路径： /user_{userId}/<relative/path>
-    const userPrefix = `user_${userId}`;
-    let finalPath;
-    if (relativePath) {
-         finalPath = path.posix.join('/', userPrefix, relativePath);
-    } else {
-         // 如果是根目录，只返回 /user_{userId}
-         finalPath = path.posix.join('/', userPrefix);
-    }
-
-    return finalPath;
+    return '/' + relativePath;
 }
 
 async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, caption = '', existingItem = null) {
@@ -116,17 +116,22 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
                 password: webdavConfig.password
             });
 
-            // 使用修正后的 getFolderPath 获取路径，例如 /user_1/folder/subfolder
-            const folderPath = await getFolderPath(folderId, userId); 
+            // 1. 获取目标文件夹路径 (绝对路径，基于 WebDAV 根)
+            let folderPath = await getFolderPath(folderId, userId);
             
-            // 构造远程文件绝对路径，例如 /user_1/folder/subfolder/fileName
+            // 2. 规范化路径
+            folderPath = path.posix.normalize(folderPath);
+            if (!folderPath.startsWith('/')) folderPath = '/' + folderPath;
+
+            // 3. 拼接完整文件路径
+            // path.posix.join 会自动处理多余的斜杠
             remotePath = path.posix.join(folderPath, fileName);
             
-            if (folderPath && folderPath !== path.posix.join('/', `user_${userId}`)) {
+            // 4. 确保目录存在 (除了根目录)
+            if (folderPath && folderPath !== "/") {
                 await ensureDirectoryExists(folderPath);
             }
 
-            // 如果传入的是流，绑定错误处理
             if (fileStreamOrBuffer && typeof fileStreamOrBuffer.on === 'function') {
                 fileStreamOrBuffer.on('error', err => {
                     log('ERROR', FUNC_NAME, `输入流错误 "${fileName}":`, err);
@@ -138,8 +143,6 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             
             let options = { overwrite: true };
             
-            // --- 关键修正：自动检测并设置 Content-Length ---
-            // 如果传入的是本地文件流 (fs.ReadStream)，自动获取文件大小
             if (fileStreamOrBuffer && fileStreamOrBuffer.path && typeof fileStreamOrBuffer.path === 'string') {
                 try {
                     const fsStats = fs.statSync(fileStreamOrBuffer.path);
@@ -157,30 +160,27 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             }
             
             const stats = await client.stat(remotePath);
-            log('DEBUG', FUNC_NAME, `上传后检查: "${fileName}", Size: ${stats.size}`);
             
             if (stats.size === 0) {
                 throw new Error('上传验证失败: 远端文件大小为 0 字节');
             }
 
             if (existingItem) {
-                log('INFO', FUNC_NAME, `更新数据库 (覆盖): ${existingItem.id}`);
                 await data.updateFile(existingItem.id, {
                     mimetype: mimetype,
-                    file_id: remotePath, // 存储带前导斜杠的路径
+                    file_id: remotePath, // 直接存储 WebDAV 上的绝对路径
                     size: stats.size,
                     date: Date.now(),
                 }, userId);
                 resolve({ success: true, message: '覆盖成功', fileId: existingItem.id });
             } else {
                 const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
-                log('INFO', FUNC_NAME, `写入数据库 (新增): ${messageId}`);
                 const dbResult = await data.addFile({
                     message_id: messageId,
                     fileName,
                     mimetype,
                     size: stats.size,
-                    file_id: remotePath, // 存储带前导斜杠的路径
+                    file_id: remotePath, // 直接存储 WebDAV 上的绝对路径
                     date: Date.now(),
                 }, folderId, userId, 'webdav');
                 resolve({ success: true, message: '上传成功', fileId: dbResult.fileId });
@@ -191,11 +191,8 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             if (fileStreamOrBuffer && typeof fileStreamOrBuffer.resume === 'function') {
                 fileStreamOrBuffer.resume();
             }
-            
-            // 发生错误时，尝试清理可能存在的 0KB 残留文件
             if (client && remotePath) {
                 try {
-                    log('INFO', FUNC_NAME, `清理残留文件: "${remotePath}"`);
                     await client.deleteFile(remotePath);
                 } catch (e) { }
             }
@@ -208,26 +205,27 @@ async function remove(files, folders, userId) {
     const client = getClient();
     const results = { success: true, errors: [] };
     const allItemsToDelete = [];
+    
+    // 直接使用数据库中的 file_id (它是绝对路径)
     files.forEach(file => {
-        // file.file_id 应该已经是 WebDAV 绝对路径（以 /user_XX/ 开头）
-        let p = file.file_id.replace(/\\/g, '/');
-        if (!p.startsWith('/')) p = '/' + p; // 确保是绝对路径
-        allItemsToDelete.push({ path: path.posix.normalize(p), type: 'file' });
+        let p = path.posix.normalize(file.file_id);
+        allItemsToDelete.push({ path: p, type: 'file' });
     });
+    
+    // 文件夹 path 也是绝对路径
     folders.forEach(folder => {
-        // folder.path 是 WebDAV 绝对路径
-        let p = folder.path.replace(/\\/g, '/');
-        if (!p.startsWith('/')) p = '/' + p; // 确保是绝对路径
+        let p = path.posix.normalize(folder.path);
+        // 确保文件夹路径以 / 结尾 (WebDAV 规范建议，尽管 deleteFile 可能不需要)
         if (!p.endsWith('/')) { p += '/'; }
         allItemsToDelete.push({ path: p, type: 'folder' });
     });
-    // 对路径进行排序，先删除子目录，再删除父目录
+    
     allItemsToDelete.sort((a, b) => b.path.length - a.path.length); 
+    
     for (const item of allItemsToDelete) {
         try {
             await client.deleteFile(item.path);
         } catch (error) {
-            // 忽略 404 (文件不存在) 的错误
             if (!(error.response && error.response.status === 404)) {
                 results.errors.push(`删除失败 [${item.path}]: ${error.message}`);
                 results.success = false;
@@ -237,6 +235,7 @@ async function remove(files, folders, userId) {
     return results;
 }
 
+// 修正: 完全信任 file_id，不做任何路径前缀假设
 async function stream(file_id, userId, options = {}) {
     const webdavConfig = getWebdavConfig();
     const streamClient = createClient(webdavConfig.url, {
@@ -244,54 +243,27 @@ async function stream(file_id, userId, options = {}) {
         password: webdavConfig.password
     });
     
-    // Determine the absolute remote path
-    const remotePath = file_id.replace(/\\/g, '/'); 
-    let finalRemotePath;
-
-    // 修正: 检查 file_id 是否包含用户前缀。如果不包含，则假设它是旧格式，手动添加前缀。
-    if (remotePath.includes(`/user_${userId}/`)) {
-        finalRemotePath = remotePath;
-    } else {
-        // 假设它是旧格式，例如 `/共享/文件.txt`。
-        const relativePathWithoutLeadingSlash = remotePath.replace(/^\//, '');
-        finalRemotePath = path.posix.join('/', `user_${userId}`, relativePathWithoutLeadingSlash);
-    }
-    // 确保 finalRemotePath 仍然以 / 开头
-    if (!finalRemotePath.startsWith('/')) finalRemotePath = '/' + finalRemotePath;
-
-    return streamClient.createReadStream(finalRemotePath, options);
+    // 确保是 POSIX 路径。如果 DB 里存的是 /共享/a.txt，这里就是 /共享/a.txt
+    // WebDAV 客户端通常接受带前导斜杠的路径
+    const remotePath = file_id.replace(/\\/g, '/');
+    
+    log('INFO', 'stream', `请求文件流: ${remotePath}`);
+    return streamClient.createReadStream(remotePath, options);
 }
 
+// 修正: 完全信任 file_id
 async function getUrl(file_id, userId) {
     const client = getClient();
-    
-    // Determine the absolute remote path
     const remotePath = file_id.replace(/\\/g, '/');
-    let finalRemotePath;
-
-    // 修正: 检查 file_id 是否包含用户前缀。如果不包含，则假设它是旧格式，手动添加前缀。
-    if (remotePath.includes(`/user_${userId}/`)) {
-        finalRemotePath = remotePath;
-    } else {
-        // 假设它是旧格式，例如 `/共享/文件.txt`。
-        const relativePathWithoutLeadingSlash = remotePath.replace(/^\//, '');
-        finalRemotePath = path.posix.join('/', `user_${userId}`, relativePathWithoutLeadingSlash);
-    }
-    // 确保 finalRemotePath 仍然以 / 开头
-    if (!finalRemotePath.startsWith('/')) finalRemotePath = '/' + finalRemotePath;
-    
-    return client.getFileDownloadLink(finalRemotePath);
+    return client.getFileDownloadLink(remotePath);
 }
 
 async function createDirectory(fullPath) {
     const client = getClient();
     try {
-        // 修正: 确保路径是 POSIX 风格，并保留前导斜杠，如果缺少则添加。
         const remotePath = fullPath.replace(/\\/g, '/');
-        const finalRemotePath = remotePath.startsWith('/') ? remotePath : '/' + remotePath;
-        
-        if (await client.exists(finalRemotePath)) return true;
-        await client.createDirectory(finalRemotePath, { recursive: true });
+        if (await client.exists(remotePath)) return true;
+        await client.createDirectory(remotePath, { recursive: true });
         return true;
     } catch (e) {
         if (e.response && (e.response.status === 405 || e.response.status === 501)) return true;
