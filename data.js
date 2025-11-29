@@ -12,20 +12,16 @@ const UPLOAD_DIR = path.resolve(__dirname, 'data', 'uploads');
 const creatingFolders = new Set();
 
 // --- (Helper 1: 定义所有文件栏位) ---
-// 避免在每个查询中重复输入 "SELECT *"
 const ALL_FILE_COLUMNS = `
     fileName, mimetype, file_id, thumb_file_id, date, size, folder_id, user_id, storage_type, is_deleted, deleted_at
 `;
 // --- (Helper 2: 定义读取 message_id 的安全方式) ---
-// 这会强制 SQLite 在 node-sqlite3 驱动程式取得它之前，
-// 就将 BIGINT 转换为 TEXT (字串)。
 const SAFE_SELECT_MESSAGE_ID = `CAST(message_id AS TEXT) AS message_id`;
 const SAFE_SELECT_ID_AS_TEXT = `CAST(message_id AS TEXT) AS id`;
 
 
 function createUser(username, hashedPassword) {
     return new Promise((resolve, reject) => {
-        // 修改：插入默认存储配额 (1GB = 1073741824 bytes)
         const sql = `INSERT INTO users (username, password, is_admin, max_storage_bytes) VALUES (?, ?, 0, 1073741824)`;
         db.run(sql, [username, hashedPassword], function(err) {
             if (err) return reject(err);
@@ -36,7 +32,6 @@ function createUser(username, hashedPassword) {
 
 function findUserByName(username) {
     return new Promise((resolve, reject) => {
-        // --- 修正: 移除重复的 SELECT 关键字 ---
         db.get("SELECT * FROM users WHERE username = ?", [username], (err, row) => {
             if (err) return reject(err);
             resolve(row);
@@ -88,9 +83,7 @@ async function deleteUser(userId) {
     try {
         await fs.rm(userUploadDir, { recursive: true, force: true });
     } catch (error) {
-        if (error.code !== 'ENOENT') {
-            // 在生产环境中，可以考虑将此错误记录到专门的日志文件
-        }
+        if (error.code !== 'ENOENT') { }
     }
     
     return new Promise((resolve, reject) => {
@@ -102,7 +95,7 @@ async function deleteUser(userId) {
     });
 }
 
-// --- 新增：用户配额管理 (保留) ---
+// --- 用户配额管理 ---
 
 async function getUserQuota(userId) {
     const user = await new Promise((resolve, reject) => {
@@ -110,13 +103,11 @@ async function getUserQuota(userId) {
     });
 
     const usage = await new Promise((resolve, reject) => {
-        // 统计该用户所有文件的总大小 (包括回收站中的文件)
-        // 如果只想统计未删除的，可以加上 AND is_deleted = 0
         db.get("SELECT SUM(size) as total_size FROM files WHERE user_id = ?", [userId], (err, row) => err ? reject(err) : resolve(row));
     });
 
     return {
-        max: user ? (user.max_storage_bytes || 1073741824) : 1073741824, // 默认 1GB
+        max: user ? (user.max_storage_bytes || 1073741824) : 1073741824,
         used: usage && usage.total_size ? usage.total_size : 0
     };
 }
@@ -126,24 +117,18 @@ async function checkQuota(userId, incomingSize) {
     return (quota.used + incomingSize) <= quota.max;
 }
 
-// --- 新增：获取所有用户及其配额信息 (保留) ---
 async function listAllUsersWithQuota() {
-    // 获取所有用户及其最大配额
     const users = await new Promise((resolve, reject) => {
-        // 增加 is_admin 和 max_storage_bytes 字段
         const sql = `SELECT id, username, is_admin, max_storage_bytes FROM users ORDER BY is_admin DESC, username ASC`;
         db.all(sql, [], (err, rows) => err ? reject(err) : resolve(rows));
     });
 
-    // 批量获取每个用户的已用空间
     const userIds = users.map(u => u.id);
     if (userIds.length === 0) {
         return [];
     }
     const placeholders = userIds.map(() => '?').join(',');
     
-    // 使用 GROUP BY 聚合每个用户的总大小
-    // 注意：这里统计的是所有文件，包括回收站中的文件
     const usageSql = `SELECT user_id, SUM(size) as total_size FROM files WHERE user_id IN (${placeholders}) GROUP BY user_id`;
     
     const usageData = await new Promise((resolve, reject) => {
@@ -152,20 +137,17 @@ async function listAllUsersWithQuota() {
     
     const usageMap = new Map(usageData.map(row => [row.user_id, row.total_size]));
 
-    // 组合数据
     return users.map(user => ({
         id: user.id,
         username: user.username,
         is_admin: user.is_admin,
-        max_storage_bytes: user.max_storage_bytes || 1073741824, // 默认 1GB
+        max_storage_bytes: user.max_storage_bytes || 1073741824, 
         used_storage_bytes: usageMap.get(user.id) || 0
     }));
 }
 
-// --- 新增：设定用户最大存储空间 (保留) ---
 function setMaxStorageForUser(userId, maxBytes) {
     return new Promise((resolve, reject) => {
-        // 不允许修改管理员的配额
         const sql = `UPDATE users SET max_storage_bytes = ? WHERE id = ? AND is_admin = 0`; 
         db.run(sql, [maxBytes, userId], function(err) {
             if (err) return reject(err);
@@ -179,23 +161,17 @@ function setMaxStorageForUser(userId, maxBytes) {
 function searchItems(query, userId) {
     return new Promise((resolve, reject) => {
         const searchQuery = `%${query}%`;
-
-        // 此 CTE (Common Table Expression) 递归地建立每个资料夾的祖先路径，
-        // 并确定路径中是否有任何一个资料夾被加密或被删除。
         const baseQuery = `
             WITH RECURSIVE folder_ancestry(id, parent_id, is_locked, is_deleted) AS (
-                -- 基底查询: 选出该使用者的所有资料夾，并标记其自身的加密和删除状态
                 SELECT id, parent_id, (password IS NOT NULL) as is_locked, is_deleted
                 FROM folders
                 WHERE user_id = ?
                 UNION ALL
-                -- 递归步骤: 向上查找父资料夹，并继承其状态
                 SELECT fa.id, f.parent_id, (fa.is_locked OR (f.password IS NOT NULL)), (fa.is_deleted OR f.is_deleted)
                 FROM folders f
                 JOIN folder_ancestry fa ON f.id = fa.parent_id
                 WHERE f.user_id = ?
             ),
-            -- 聚合结果: 对每个资料夾ID，只要其路径上有任一加密或删除，最终状态就是加密/删除
             folder_status AS (
                 SELECT id, MAX(is_locked) as is_path_locked, MAX(is_deleted) as is_path_deleted
                 FROM folder_ancestry
@@ -203,7 +179,6 @@ function searchItems(query, userId) {
             )
         `;
 
-        // 查询未被加密且未被删除路径下的文件，且文件本身未被删除
         const sqlFiles = baseQuery + `
             SELECT 
                 ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS},
@@ -217,7 +192,6 @@ function searchItems(query, userId) {
             ORDER BY f.date DESC;
         `;
         
-        // 查询未被加密且未被删除路径下的资料夾，且资料夹本身未被删除
         const sqlFolders = baseQuery + `
             SELECT 
                 f.id, 
@@ -253,7 +227,6 @@ async function isFileAccessible(fileId, userId, unlockedFolders = []) {
         return false; 
     }
 
-    // 如果文件本身在回收站中，则不可访问（除非是恢复操作，但那是另一套逻辑）
     if (file.is_deleted) {
         return false;
     }
@@ -278,7 +251,6 @@ async function isFileAccessible(fileId, userId, unlockedFolders = []) {
         const info = folderInfos.get(folder.id);
         if (!info) continue;
         
-        // 如果路径上有文件夹被删除了，文件也不可访问
         if (info.is_deleted) return false;
 
         if (info.is_locked && !unlockedFolders.includes(folder.id)) {
@@ -313,7 +285,6 @@ function getItemsByIds(itemIds, userId) {
 
 function getChildrenOfFolder(folderId, userId) {
     return new Promise((resolve, reject) => {
-        // 修改：只获取未删除的子项
         const sql = `
             SELECT id, name, 'folder' as type FROM folders WHERE parent_id = ? AND user_id = ? AND is_deleted = 0
             UNION ALL
@@ -364,7 +335,6 @@ function getFolderDetails(folderId, userId) {
 
 function getFolderContents(folderId, userId) {
     return new Promise((resolve, reject) => {
-        // 修改：增加 is_deleted = 0 过滤
         const sqlFolders = `SELECT id, name, parent_id, 'folder' as type, password IS NOT NULL as is_locked FROM folders WHERE parent_id = ? AND user_id = ? AND is_deleted = 0 ORDER BY name ASC`;
         const sqlFiles = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS}, ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, 'file' as type FROM files WHERE folder_id = ? AND user_id = ? AND is_deleted = 0 ORDER BY name ASC`;
         
@@ -381,12 +351,10 @@ function getFolderContents(folderId, userId) {
     });
 }
 
-// --- 新增：获取回收站内容 ---
+// --- 回收站 ---
 function getTrashContents(userId) {
     return new Promise((resolve, reject) => {
-        // 查询已删除的文件夹
         const sqlFolders = `SELECT id, name, deleted_at, 'folder' as type FROM folders WHERE user_id = ? AND is_deleted = 1 ORDER BY deleted_at DESC`;
-        // 查询已删除的文件
         const sqlFiles = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${SAFE_SELECT_ID_AS_TEXT}, fileName as name, size, deleted_at, 'file' as type FROM files WHERE user_id = ? AND is_deleted = 1 ORDER BY deleted_at DESC`;
 
         let contents = { folders: [], files: [] };
@@ -402,7 +370,6 @@ function getTrashContents(userId) {
     });
 }
 
-// --- 新增：软删除 (移入回收站) ---
 async function softDeleteItems(fileIds = [], folderIds = [], userId) {
     const now = Date.now();
     return new Promise((resolve, reject) => {
@@ -413,14 +380,12 @@ async function softDeleteItems(fileIds = [], folderIds = [], userId) {
             if (fileIds.length > 0) {
                 const stringFileIds = fileIds.map(id => id.toString());
                 const place = stringFileIds.map(() => '?').join(',');
-                // 标记文件为删除，并记录时间
                 const sql = `UPDATE files SET is_deleted = 1, deleted_at = ? WHERE message_id IN (${place}) AND user_id = ?`;
                 promises.push(new Promise((res, rej) => db.run(sql, [now, ...stringFileIds, userId], (e) => e ? rej(e) : res())));
             }
 
             if (folderIds.length > 0) {
                 const place = folderIds.map(() => '?').join(',');
-                // 标记文件夹为删除，并记录时间
                 const sql = `UPDATE folders SET is_deleted = 1, deleted_at = ? WHERE id IN (${place}) AND user_id = ?`;
                 promises.push(new Promise((res, rej) => db.run(sql, [now, ...folderIds, userId], (e) => e ? rej(e) : res())));
             }
@@ -432,7 +397,6 @@ async function softDeleteItems(fileIds = [], folderIds = [], userId) {
     });
 }
 
-// --- 新增：还原回收站项目 ---
 async function restoreItems(fileIds = [], folderIds = [], userId) {
     return new Promise((resolve, reject) => {
         db.serialize(() => {
@@ -459,11 +423,9 @@ async function restoreItems(fileIds = [], folderIds = [], userId) {
     });
 }
 
-// --- 新增：清理过期回收站项目 ---
 async function cleanupTrash(retentionDays = 30) {
     const cutoffDate = Date.now() - (retentionDays * 24 * 60 * 60 * 1000);
     
-    // 查找过期的文件 (is_deleted = 1 且 deleted_at < cutoff)
     const expiredFilesSql = `SELECT ${SAFE_SELECT_MESSAGE_ID}, user_id FROM files WHERE is_deleted = 1 AND deleted_at < ?`;
     const expiredFoldersSql = `SELECT id, user_id FROM folders WHERE is_deleted = 1 AND deleted_at < ?`;
 
@@ -471,7 +433,6 @@ async function cleanupTrash(retentionDays = 30) {
         const files = await new Promise((res, rej) => db.all(expiredFilesSql, [cutoffDate], (e, r) => e ? rej(e) : res(r)));
         const folders = await new Promise((res, rej) => db.all(expiredFoldersSql, [cutoffDate], (e, r) => e ? rej(e) : res(r)));
         
-        // 按用户分组执行物理删除 (Storage模块可能需要userId)
         const itemsByUser = {};
         
         files.forEach(f => {
@@ -586,12 +547,35 @@ async function findFolderBySharePath(shareToken, pathSegments = []) {
     });
 }
 
+// 修正：createFolder 处理 UNIQUE 错误，自动尝试恢复已删除文件夹
 function createFolder(name, parentId, userId) {
     const sql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
     return new Promise((resolve, reject) => {
         db.run(sql, [name, parentId, userId], function (err) {
             if (err) {
-                if (err.message.includes('UNIQUE')) return reject(new Error('同目录下已存在同名资料夹。'));
+                // 如果遇到唯一性约束错误
+                if (err.message.includes('UNIQUE')) {
+                    // 检查是否存在（无论是否被删除）
+                    db.get("SELECT id, is_deleted FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?", [name, parentId, userId], (err2, row) => {
+                        if (err2) return reject(err); // 返回原始错误
+                        if (row) {
+                            if (row.is_deleted) {
+                                // 恢复已删除的文件夹
+                                db.run("UPDATE folders SET is_deleted = 0 WHERE id = ?", [row.id], (err3) => {
+                                    if (err3) return reject(err3);
+                                    resolve({ success: true, id: row.id, restored: true });
+                                });
+                            } else {
+                                // 文件夹已存在且未删除，视为成功 (幂等性)
+                                resolve({ success: true, id: row.id, existed: true });
+                            }
+                        } else {
+                            // 极罕见情况：报错但查不到，直接抛出
+                            return reject(err); 
+                        }
+                    });
+                    return;
+                }
                 return reject(err);
             }
             resolve({ success: true, id: this.lastID });
@@ -630,7 +614,6 @@ async function findFolderByPath(startFolderId, pathParts, userId) {
 
 function getAllFolders(userId) {
     return new Promise((resolve, reject) => {
-        // 修改：只获取未删除的文件夹
         const sql = "SELECT id, name, parent_id FROM folders WHERE user_id = ? AND is_deleted = 0 ORDER BY parent_id, name ASC";
         db.all(sql, [userId], (err, rows) => {
             if (err) {
@@ -808,13 +791,11 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         const client = storage.type === 'webdav' ? storage.getClient() : null;
         
         const targetPathParts = await getFolderPath(targetFolderId, userId);
-        // 修正：强制使用绝对路径
         const targetFullPath = path.posix.join('/', ...targetPathParts.slice(1).map(p => p.name));
 
         const filesToMove = await getFilesByIds(fileIds, userId);
         for (const file of filesToMove) {
             const oldRelativePath = file.file_id;
-            // 修正：强制绝对路径拼接
             const newRelativePath = path.posix.join(targetFullPath, file.fileName);
             
             try {
@@ -822,14 +803,10 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
                     const oldFullPath = path.join(UPLOAD_DIR, String(userId), oldRelativePath.replace(/^[\/\\]/, ''));
                     const newFullPath = path.join(UPLOAD_DIR, String(userId), newRelativePath.replace(/^[\/\\]/, ''));
                     
-                    // --- 修复：增加物理文件存在性检查 ---
                     if (fsSync.existsSync(oldFullPath)) {
                         await fs.mkdir(path.dirname(newFullPath), { recursive: true });
                         await fs.rename(oldFullPath, newFullPath);
-                    } else {
-                        // 物理文件缺失，跳过物理移动，继续数据库更新
                     }
-                    // --- 修复结束 ---
                 } else if (client) {
                     await client.moveFile(oldRelativePath, newRelativePath);
                 }
@@ -837,7 +814,6 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
                 await new Promise((res, rej) => db.run('UPDATE files SET file_id = ? WHERE message_id = ?', [newRelativePath, file.message_id.toString()], (e) => e ? rej(e) : res()));
 
             } catch (err) {
-                // 如果物理移动失败（非文件缺失），抛出错误以回滚事务
                 throw new Error(`物理移动文件 ${file.fileName} 失败: ${err.message}`);
             }
         }
@@ -845,7 +821,6 @@ async function moveItems(fileIds = [], folderIds = [], targetFolderId, userId) {
         const foldersToMove = (await getItemsByIds(folderIds, userId)).filter(i => i.type === 'folder');
         for (const folder of foldersToMove) {
             const oldPathParts = await getFolderPath(folder.id, userId);
-            // 修正：强制绝对路径
             const oldFullPath = path.posix.join('/', ...oldPathParts.slice(1).map(p => p.name));
             const newFullPath = path.posix.join(targetFullPath, folder.name);
 
@@ -909,9 +884,6 @@ async function getFolderDeletionData(folderId, userId) {
     let foldersToDeleteIds = [folderId];
 
     async function findContentsRecursive(currentFolderId) {
-        // 注意：这里也需要找到 is_deleted=1 的文件，因为这是物理删除
-        // 但如果是用户触发的软删除操作，通常只针对未删除的文件
-        // 不过如果是 unifiedDelete (物理删除)，则需要找到所有文件
         const sqlFiles = `SELECT ${SAFE_SELECT_MESSAGE_ID}, ${ALL_FILE_COLUMNS} FROM files WHERE folder_id = ? AND user_id = ?`;
         const files = await new Promise((res, rej) => db.all(sqlFiles, [currentFolderId, userId], (err, rows) => err ? rej(err) : res(rows)));
         filesToDelete.push(...files);
@@ -937,7 +909,6 @@ async function getFolderDeletionData(folderId, userId) {
             pathParts.unshift(current.name);
             current = folderMap.get(current.parent_id);
         }
-        // 修正：返回绝对路径
         return path.posix.join('/', ...pathParts);
     }
 
@@ -1110,7 +1081,6 @@ async function renameFile(messageId, newFileName, userId) {
 
     if (storage.type === 'local' || storage.type === 'webdav' || storage.type === 's3') {
         const oldRelativePath = file.file_id;
-        // 修正：确保新路径也是绝对路径，如果旧路径是绝对路径
         const newRelativePath = path.posix.join(path.posix.dirname(oldRelativePath), newFileName);
 
         try {
@@ -1119,17 +1089,14 @@ async function renameFile(messageId, newFileName, userId) {
                 const oldFullPath = path.join(userDir, oldRelativePath.replace(/^[\/\\]/, ''));
                 const newFullPath = path.join(userDir, newRelativePath.replace(/^[\/\\]/, ''));
                 
-                // --- 修复：增加物理文件存在性检查 ---
                 if (fsSync.existsSync(oldFullPath)) {
                     await fs.rename(oldFullPath, newFullPath);
                 }
-                // --- 修复结束 ---
             } else if (storage.type === 'webdav') {
                 const client = storage.getClient();
                 await client.moveFile(oldRelativePath, newRelativePath);
             }
         } catch(err) {
-            // 如果 fs.rename 失败，但文件是存在的（如权限问题），仍抛出错误
             throw new Error(`实体档案重新命名失败: ${err.message}`);
         }
         
@@ -1159,7 +1126,6 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
     const storage = require('./storage').getStorage();
     if (storage.type === 'local' || storage.type === 'webdav' || storage.type === 's3') {
         const targetPathParts = await getFolderPath(targetFolderId, userId);
-        // 修正：强制绝对路径
         const targetRelativePath = path.posix.join('/', ...targetPathParts.slice(1).map(p => p.name));
         const newRelativePath = path.posix.join(targetRelativePath, newFileName);
         const oldRelativePath = file.file_id;
@@ -1170,12 +1136,10 @@ async function renameAndMoveFile(messageId, newFileName, targetFolderId, userId)
                  const oldFullPath = path.join(userDir, oldRelativePath.replace(/^[\/\\]/, ''));
                  const newFullPath = path.join(userDir, newRelativePath.replace(/^[\/\\]/, ''));
                  
-                 // --- 修复：增加物理文件存在性检查 ---
                  if (fsSync.existsSync(oldFullPath)) {
                     await fs.mkdir(path.dirname(newFullPath), { recursive: true });
                     await fs.rename(oldFullPath, newFullPath);
                  }
-                 // --- 修复结束 ---
             } else if (storage.type === 'webdav') {
                 const client = storage.getClient();
                 await client.moveFile(oldRelativePath, newRelativePath);
@@ -1205,7 +1169,6 @@ async function renameFolder(folderId, newFolderName, userId) {
 
     if (storage.type === 'local' || storage.type === 'webdav' || storage.type === 's3') {
         const oldPathParts = await getFolderPath(folderId, userId);
-        // 修正：强制绝对路径
         const oldFullPath = path.posix.join('/', ...oldPathParts.slice(1).map(p => p.name));
         const newFullPath = path.posix.join(path.posix.dirname(oldFullPath), newFolderName);
 
@@ -1252,11 +1215,9 @@ async function renameAndMoveFolder(folderId, newName, targetFolderId, userId) {
     const storage = require('./storage').getStorage();
     if (storage.type === 'local' || storage.type === 'webdav' || storage.type === 's3') {
         const oldPathParts = await getFolderPath(folderId, userId);
-        // 修正：强制绝对路径
         const oldFullPath = path.posix.join('/', ...oldPathParts.slice(1).map(p => p.name));
 
         const targetPathParts = await getFolderPath(targetFolderId, userId);
-        // 修正：强制绝对路径
         const targetBasePath = path.posix.join('/', ...targetPathParts.slice(1).map(p => p.name));
         const newFullPath = path.posix.join(targetBasePath, newName);
 
@@ -1274,7 +1235,6 @@ async function renameAndMoveFolder(folderId, newName, targetFolderId, userId) {
                 await client.moveFile(oldFullPath, newFullPath);
             }
 
-            // 更新所有子文件的路径
             const descendantFiles = await getFilesRecursive(folderId, userId);
             for (const file of descendantFiles) {
                 const updatedFileId = file.file_id.replace(oldFullPath, newFullPath);
@@ -1285,7 +1245,6 @@ async function renameAndMoveFolder(folderId, newName, targetFolderId, userId) {
         }
     }
 
-    // 更新数据库中的名称和父ID
     const sql = `UPDATE folders SET name = ?, parent_id = ? WHERE id = ? AND user_id = ?`;
     return new Promise((resolve, reject) => {
         db.run(sql, [newName, targetFolderId, folderId, userId], (err) => err ? reject(err) : resolve({ success: true }));
@@ -1432,7 +1391,6 @@ async function getConflictingItems(itemsToMove, destinationFolderId, userId) {
 
 function checkFullConflict(name, folderId, userId) {
     return new Promise((resolve, reject) => {
-        // 修改：增加 is_deleted = 0 过滤
         const sql = `
             SELECT name FROM (
                 SELECT name FROM folders WHERE name = ? AND parent_id = ? AND user_id = ? AND is_deleted = 0
@@ -1449,7 +1407,6 @@ function checkFullConflict(name, folderId, userId) {
 
 function findFileInFolder(fileName, folderId, userId) {
     return new Promise((resolve, reject) => {
-        // 修改：增加 is_deleted = 0 过滤
         const sql = `SELECT ${SAFE_SELECT_MESSAGE_ID} FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ? AND is_deleted = 0`;
         db.get(sql, [fileName, folderId, userId], (err, row) => {
             if (err) return reject(err);
@@ -1460,7 +1417,6 @@ function findFileInFolder(fileName, folderId, userId) {
 
 function findItemInFolder(name, folderId, userId) {
     return new Promise((resolve, reject) => {
-        // 修改：增加 is_deleted = 0 过滤
         const sql = `
             SELECT id, name, 'folder' as type FROM folders WHERE name = ? AND parent_id = ? AND user_id = ? AND is_deleted = 0
             UNION ALL
@@ -1521,6 +1477,7 @@ async function findOrCreateFolderByPath(fullPath, userId) {
         if (folder) {
             parentId = folder.id;
         } else {
+            // 修正：这里调用增强版 createFolder，它会自动处理软删除恢复
             const result = await createFolder(part, parentId, userId);
             parentId = result.id;
         }
@@ -1528,6 +1485,7 @@ async function findOrCreateFolderByPath(fullPath, userId) {
     return parentId;
 }
 
+// 修正：resolvePathToFolderId 处理 UNIQUE 错误，自动尝试恢复已删除文件夹
 async function resolvePathToFolderId(startFolderId, pathParts, userId) {
     let currentParentId = startFolderId;
 
@@ -1544,18 +1502,44 @@ async function resolvePathToFolderId(startFolderId, pathParts, userId) {
         try {
             const foundId = await new Promise((resolve, reject) => {
                 db.serialize(() => {
-                    const selectSql = `SELECT id FROM folders WHERE name = ? AND parent_id = ? AND user_id = ? AND is_deleted = 0`;
+                    // 查询包含已删除的记录
+                    const selectSql = `SELECT id, is_deleted FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
                     db.get(selectSql, [part, currentParentId, userId], (err, row) => {
-                        if (err) {
-                            return reject(err);
-                        }
+                        if (err) return reject(err);
+                        
                         if (row) {
-                            return resolve(row.id);
+                            if (row.is_deleted) {
+                                // 恢复
+                                db.run("UPDATE folders SET is_deleted = 0 WHERE id = ?", [row.id], (err2) => {
+                                    if(err2) return reject(err2);
+                                    resolve(row.id);
+                                });
+                            } else {
+                                resolve(row.id);
+                            }
+                            return;
                         }
                         
                         const insertSql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
                         db.run(insertSql, [part, currentParentId, userId], function(err) {
                             if (err) {
+                                // 处理并发下的 UNIQUE 错误
+                                if (err.message.includes('UNIQUE')) {
+                                    // 再次尝试查询 (递归一次即可)
+                                    db.get(selectSql, [part, currentParentId, userId], (retryErr, retryRow) => {
+                                        if (retryErr) return reject(retryErr);
+                                        if (retryRow) {
+                                            if (retryRow.is_deleted) {
+                                                db.run("UPDATE folders SET is_deleted = 0 WHERE id = ?", [retryRow.id], (e) => e ? reject(e) : resolve(retryRow.id));
+                                            } else {
+                                                resolve(retryRow.id);
+                                            }
+                                        } else {
+                                            reject(err);
+                                        }
+                                    });
+                                    return;
+                                }
                                 return reject(err);
                             }
                             resolve(this.lastID);
