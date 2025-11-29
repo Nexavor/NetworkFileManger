@@ -74,3 +74,7 @@ node reset_admin_password.js
 ```bash
 node unlock_folder.js
  ```
+若遇安装失败，尝试执行以下指令来强制清除所有 npm 快取。
+```Bash
+npm cache clean --force
+```
