@@ -1,4 +1,5 @@
 // server.js
+
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
@@ -90,7 +91,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(express.json({ limit: '50mb' }));
 app.use(cookieParser()); 
 
-// --- 自动登入中间件 ---
+// --- 自动登入中间件 (已修复) ---
 async function checkRememberMeCookie(req, res, next) {
     if (req.session.loggedIn) {
         return next();
@@ -106,10 +107,12 @@ async function checkRememberMeCookie(req, res, next) {
                 req.session.isAdmin = !!user.is_admin;
                 req.session.unlockedFolders = [];
                 
-                // --- 修正: 使用原子操作 rollAuthToken 解决竞争条件 ---
+                // --- 修正: 使用原子操作 rollAuthToken 解决竞争条件 (滚动 Token 机制) ---
                 const newRememberToken = crypto.randomBytes(64).toString('hex');
                 const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
                 
+                // 呼叫原子操作 rollAuthToken
+                // 此函数会在单个数据库事务中尝试删除旧令牌并创建新令牌。
                 const rollResult = await data.rollAuthToken(
                     rememberToken, 
                     user.id, 
@@ -140,6 +143,7 @@ async function checkRememberMeCookie(req, res, next) {
                 res.clearCookie('remember_me', { path: '/' });
             }
         } catch (err) {
+            // 此处通常捕获数据库锁定错误
             console.error('Check remember token error:', err);
             res.clearCookie('remember_me', { path: '/' });
         }
@@ -191,6 +195,7 @@ app.post('/login', async (req, res) => {
                 const rememberToken = crypto.randomBytes(64).toString('hex');
                 const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
                 try {
+                    // 如果勾选了“保持登录”，建立一个长期有效的 token
                     await data.createAuthToken(user.id, rememberToken, expiresAt);
                     res.cookie('remember_me', rememberToken, {
                         path: '/',
@@ -200,6 +205,8 @@ app.post('/login', async (req, res) => {
                     });
                     req.session.cookie.maxAge = 30 * 24 * 60 * 60 * 1000;
                 } catch (tokenError) {
+                    // 如果 token 创建失败（例如数据库锁定），记录错误，但不阻止登录
+                    console.error('Login token creation failed:', tokenError);
                     req.session.cookie.expires = false;
                     req.session.cookie.maxAge = null;
                 }
@@ -212,6 +219,8 @@ app.post('/login', async (req, res) => {
             res.status(401).send('帐号或密码错误');
         }
     } catch(error) {
+        // 捕获数据库错误，返回 500
+        console.error('Login process failed:', error); 
         res.status(500).send('登入时发生错误');
     }
 });
@@ -622,13 +631,13 @@ app.get('/api/folder/:encryptedId', requireLogin, async (req, res) => {
     try {
         const folderIdStr = decrypt(req.params.encryptedId);
         if (!folderIdStr) {
-            return res.status(400).json({ success: false, message: '无效的资料夹 ID' });
+            return res.status(400).json({ success: false, message: '无效的资料夾 ID' });
         }
         const folderId = parseInt(folderIdStr, 10);
         const userId = req.session.userId;
         const folderDetails = await data.getFolderDetails(folderId, userId);
         if (!folderDetails) {
-            return res.status(404).json({ success: false, message: '找不到资料夹' });
+            return res.status(404).json({ success: false, message: '找不到资料夾' });
         }
         if (folderDetails.is_locked && !req.session.unlockedFolders.includes(folderId)) {
             const folderPath = await data.getFolderPath(folderId, userId);
@@ -638,7 +647,7 @@ app.get('/api/folder/:encryptedId', requireLogin, async (req, res) => {
         const path = await data.getFolderPath(folderId, userId);
         res.json({ contents, path: path.map(p => ({ ...p, encrypted_id: encrypt(p.id) })) });
     } catch (error) {
-        res.status(500).json({ success: false, message: '读取资料夹内容失败。' });
+        res.status(500).json({ success: false, message: '读取资料夾内容失败。' });
     }
 });
 
@@ -646,12 +655,12 @@ app.post('/api/folder', requireLogin, async (req, res) => {
     const { name, parentId } = req.body;
     const userId = req.session.userId;
     if (!name || !parentId) {
-        return res.status(400).json({ success: false, message: '缺少资料夹名称或父 ID。' });
+        return res.status(400).json({ success: false, message: '缺少资料夾名称或父 ID。' });
     }
     try {
         const conflict = await data.checkFullConflict(name, parentId, userId);
         if (conflict) {
-            return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
+            return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
         }
         const result = await data.createFolder(name, parentId, userId);
         const storage = storageManager.getStorage();
@@ -679,7 +688,7 @@ app.post('/api/folder', requireLogin, async (req, res) => {
         }
         res.json(result);
     } catch (error) {
-         res.status(500).json({ success: false, message: error.message || '处理资料夹时发生错误。' });
+         res.status(500).json({ success: false, message: error.message || '处理资料夾时发生错误。' });
     }
 });
 
@@ -693,7 +702,7 @@ app.post('/api/folder/:id/lock', requireLogin, async (req, res) => {
         }
         const folder = await data.getFolderDetails(id, userId);
         if (!folder) {
-            return res.status(404).json({ success: false, message: '找不到资料夹。' });
+            return res.status(404).json({ success: false, message: '找不到资料夾。' });
         }
         if (folder.is_locked) {
             if (!oldPassword) {
@@ -729,7 +738,7 @@ app.post('/api/folder/:id/unlock', requireLogin, async (req, res) => {
         if (req.session.unlockedFolders) {
             req.session.unlockedFolders = req.session.unlockedFolders.filter(folderId => folderId !== parseInt(id));
         }
-        res.json({ success: true, message: '资料夹已成功解锁（移除密码）。' });
+        res.json({ success: true, message: '资料夾已成功解锁（移除密码）。' });
     } catch (error) {
         res.status(500).json({ success: false, message: '操作失败：' + error.message });
     }
