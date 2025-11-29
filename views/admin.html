@@ -7,27 +7,17 @@
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="/manager.css">
     <style>
-        /* --- 核心布局：实现 2 列网格布局 --- */
+        /* --- 核心布局修改：固定为最大化（单列宽幅） --- */
         .settings-grid-area {
             display: grid;
-            grid-template-columns: 1fr 1fr; /* 默认两列，各占一半宽度 */
-            gap: 20px; /* 增加卡片间距 */
-            /* 确保在小屏幕上退化为单列 */
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            transition: transform 0.3s ease;
+            /* 强制单列布局，使每个卡片占据容器全部宽度（实现“最大化窗口”） */
+            grid-template-columns: 1fr; 
+            gap: 20px; /* 卡片间距 */
         }
 
         .setting-card {
-            transition: all 0.3s ease, z-index 0s;
+            /* 移除动态样式 */
             position: relative;
-        }
-
-        /* 鼠标激活/获得焦点时的效果：跨越所有列 */
-        .setting-card.active-focus {
-            grid-column: 1 / -1; /* 占据整个网格的宽度 */
-            transform: scale(1.02); /* 轻微放大，强调焦点 */
-            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
-            z-index: 10; /* 浮于其他卡片之上 */
         }
 
         /* --- 内部表单布局优化 (保留和微调) --- */
@@ -71,19 +61,7 @@
             font-size: 12px;
             white-space: nowrap;
         }
-        /* 小屏幕适配：在屏幕宽度小于 768px 时，所有卡片都退化为单列 */
-        @media (max-width: 768px) {
-            .settings-grid-area {
-                grid-template-columns: 1fr;
-            }
-            .setting-card.active-focus {
-                /* 在小屏幕上不应用 grid-column: 1 / -1; 保持单列流 */
-                grid-column: auto;
-            }
-            .form-grid {
-                 grid-template-columns: 1fr; /* 确保表单也是单列 */
-            }
-        }
+        /* 页面滚动条：默认浏览器行为会在内容溢出时自动添加滚动条，无需额外 CSS */
     </style>
 </head>
 <body>
@@ -297,9 +275,9 @@
             // --- 配额管理 DOM 元素 (省略未修改的) ---
             const quotaTableBody = document.getElementById('quota-table-body');
             
-            // --- 新增：网格区域和卡片列表 ---
-            const settingsGridArea = document.getElementById('settings-grid-area');
-            const settingCards = document.querySelectorAll('.setting-card');
+            // --- 移除焦点控制相关的 DOM 元素 ---
+            // const settingsGridArea = document.getElementById('settings-grid-area');
+            // const settingCards = document.querySelectorAll('.setting-card');
 
             // --- 字节格式化工具函数 (保留) ---
             const formatBytes = (bytes, decimals = 2) => {
@@ -316,35 +294,10 @@
             const GBToBytes = (gb) => Math.round(parseFloat(gb) * 1073741824);
             const DEFAULT_MAX_GB = bytesToGB(1073741824).toFixed(2); 
 
-            // --- 新增：焦点控制函数 ---
-            function activateFocus(card) {
-                if (window.innerWidth <= 768) return; // 小屏幕禁用此功能
-                settingCards.forEach(c => c.classList.remove('active-focus'));
-                card.classList.add('active-focus');
-            }
-
-            function removeFocus() {
-                settingCards.forEach(c => c.classList.remove('active-focus'));
-            }
-
-            // --- 绑定焦点事件 ---
-            settingCards.forEach(card => {
-                // 使用 mouseenter 和 mouseleave 模拟 hover 行为
-                card.addEventListener('mouseenter', () => activateFocus(card));
-                // 使用 setTimeout 延迟 removeFocus，以避免在卡片内的表单元素获得焦点时立即收缩
-                card.addEventListener('mouseleave', () => setTimeout(removeFocus, 300));
-
-                // 确保在卡片内的元素获得焦点时，卡片保持展开状态（提高表单可用性）
-                card.addEventListener('focusin', () => activateFocus(card));
-                // 确保在卡片内的元素失去焦点时，如果鼠标不在卡片上，则收缩
-                card.addEventListener('focusout', (e) => {
-                    // 如果焦点移到了卡片之外
-                    if (!card.contains(e.relatedTarget)) {
-                        setTimeout(removeFocus, 300);
-                    }
-                });
-            });
-            // --- 焦点控制函数结束 ---
+            // --- 移除焦点控制函数和监听器 ---
+            // function activateFocus(card) { ... }
+            // function removeFocus() { ... }
+            // settingCards.forEach(card => { ... });
 
 
             async function loadCurrentSettings() {
