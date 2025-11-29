@@ -27,7 +27,8 @@ body {
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  /* 移除 height: 100%; 允许内容自由增长 */
+  /* 修正: 恢复 height: 100% 以填充 body 的高度 */
+  height: 100%; 
   width: 100%;
 }
 .main-header, .breadcrumb {
@@ -361,6 +362,8 @@ body.selection-mode-active #dropZone {
     box-sizing: border-box;
     z-index: 20;
     margin-top: 10px;
+    /* 修正: 确保进度条在垂直方向上不会被挤压 */
+    flex-shrink: 0;
 }
 .notification { padding: 12px 20px; border-radius: 5px; z-index: 1000; font-weight: bold; background-color: #e9ecef; color: var(--text-color); }
 .notification.global { position: fixed; top: 20px; right: 20px; }
