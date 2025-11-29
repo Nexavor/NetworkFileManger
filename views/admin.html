@@ -33,7 +33,7 @@
 
         /* 明确为不同操作按钮设定背景色 */
         .change-pass-btn { 
-            background-color: #ffc107 !important; /* 黄色 (改密码) */
+            background-color: #ffc107 !important; /* 黄色 (修改密码) */
             color: #212529 !important; /* 强制黑色文字以确保高对比度 */
         }
         .delete-user-btn { 
@@ -546,7 +546,7 @@
                             <tr>
                                 <td>${user.username}</td>
                                 <td class="actions">
-                                    <button class="change-pass-btn" data-userid="${user.id}" data-username="${user.username}">改密码</button>
+                                    <button class="change-pass-btn" data-userid="${user.id}" data-username="${user.username}">修改密码</button>
                                     <button class="delete-user-btn" data-userid="${user.id}" data-username="${user.username}">删除</button>
                                 </td>
                             </tr>
@@ -749,3 +749,4 @@
     </script>
 </body>
 </html>
+
