@@ -36,7 +36,7 @@ function createUser(username, hashedPassword) {
 
 function findUserByName(username) {
     return new Promise((resolve, reject) => {
-        db.get("SELECT * FROM users WHERE username = ?", [username], (err, row) => {
+        db.get("SELECT SELECT * FROM users WHERE username = ?", [username], (err, row) => {
             if (err) return reject(err);
             resolve(row);
         });
@@ -448,7 +448,7 @@ async function restoreItems(fileIds = [], folderIds = [], userId) {
             if (folderIds.length > 0) {
                 const place = folderIds.map(() => '?').join(',');
                 const sql = `UPDATE folders SET is_deleted = 0, deleted_at = NULL WHERE id IN (${place}) AND user_id = ?`;
-                promises.push(new Promise((res, rej) => db.run(sql, [...folderIds, userId], (e) => e ? rej(e) : res())));
+                promises.push(new Promise((res, rej) => db.run(sql, [now, ...folderIds, userId], (e) => e ? rej(e) : res())));
             }
 
             Promise.all(promises)
@@ -1239,7 +1239,7 @@ async function renameAndMoveFolder(folderId, newName, targetFolderId, userId) {
 
     const storage = require('./storage').getStorage();
     if (storage.type === 'local' || storage.type === 'webdav') {
-        const oldPathParts = await getFolderPath(folderId, userId);
+        const oldPathParts = await getFolderPath(folder.id, userId);
         const oldFullPath = path.posix.join(...oldPathParts.slice(1).map(p => p.name));
 
         const targetPathParts = await getFolderPath(targetFolderId, userId);
@@ -1579,6 +1579,46 @@ function findAuthToken(token) {
     });
 }
 
+// --- 新增：安全滚动认证令牌（解决竞争条件） ---
+async function rollAuthToken(oldToken, newUserId, newExpiresAt, newRememberToken) {
+    return new Promise((resolve, reject) => {
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION;");
+            
+            // 1. 尝试原子性地删除旧令牌
+            // 如果成功删除，则 this.changes > 0
+            db.run("DELETE FROM auth_tokens WHERE token = ?", [oldToken], function(err) {
+                if (err) {
+                    db.run("ROLLBACK;");
+                    return reject(err);
+                }
+                
+                // 检查旧令牌是否实际被删除 (避免竞争条件)
+                if (this.changes === 0) {
+                    // 如果旧令牌已被其他并发请求删除，则回滚并报告竞争失败。
+                    db.run("ROLLBACK;", () => resolve({ success: true, rolled: false, reason: "竞争条件：令牌已被消耗" }));
+                    return;
+                }
+                
+                // 2. 插入新令牌
+                const sql = `INSERT INTO auth_tokens (user_id, token, expires_at) VALUES (?, ?, ?)`;
+                db.run(sql, [newUserId, newRememberToken, newExpiresAt], function(err) {
+                    if (err) {
+                        db.run("ROLLBACK;");
+                        return reject(err);
+                    }
+                    db.run("COMMIT;", (commitErr) => {
+                        if (commitErr) return reject(commitErr);
+                        // 成功滚动，返回新令牌
+                        resolve({ success: true, rolled: true, newRememberToken });
+                    });
+                });
+            });
+        });
+    });
+}
+// --- 修正结束 ---
+
 function deleteAuthToken(token) {
     return new Promise((resolve, reject) => {
         const sql = `DELETE FROM auth_tokens WHERE token = ?`;
@@ -1659,6 +1699,7 @@ module.exports = {
     findFolderBySharePath,
     createAuthToken,
     findAuthToken,
+    rollAuthToken, // <-- 新增导出
     deleteAuthToken,
     deleteExpiredAuthTokens,
     getUserQuota,
