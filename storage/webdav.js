@@ -89,13 +89,14 @@ async function getFolderPath(folderId, userId) {
     // 从路径数组中提取相对路径（跳过第一个根目录 '/'）
     const relativePath = pathParts.slice(1).map(p => p.name).join('/');
     
-    // 构造 WebDAV 绝对路径：/user_{userId}/<relative/path>
+    // 构造 WebDAV 绝对路径： /user_{userId}/<relative/path>
+    const userPrefix = `user_${userId}`;
     let finalPath;
     if (relativePath) {
-         finalPath = path.posix.join('/', `user_${userId}`, relativePath);
+         finalPath = path.posix.join('/', userPrefix, relativePath);
     } else {
          // 如果是根目录，只返回 /user_{userId}
-         finalPath = path.posix.join('/', `user_${userId}`);
+         finalPath = path.posix.join('/', userPrefix);
     }
 
     return finalPath;
@@ -208,12 +209,12 @@ async function remove(files, folders, userId) {
     const results = { success: true, errors: [] };
     const allItemsToDelete = [];
     files.forEach(file => {
-        // file.file_id 应该已经是 WebDAV 绝对路径（以 / 开头）
+        // file.file_id 应该已经是 WebDAV 绝对路径（以 /user_XX/ 开头）
         let p = file.file_id.replace(/\\/g, '/');
         if (!p.startsWith('/')) p = '/' + p; // 确保是绝对路径
         allItemsToDelete.push({ path: path.posix.normalize(p), type: 'file' });
     });
-    folders.forEach(async folder => {
+    folders.forEach(folder => {
         // folder.path 是 WebDAV 绝对路径
         let p = folder.path.replace(/\\/g, '/');
         if (!p.startsWith('/')) p = '/' + p; // 确保是绝对路径
@@ -243,19 +244,42 @@ async function stream(file_id, userId, options = {}) {
         password: webdavConfig.password
     });
     
-    // 修正: 确保路径是 POSIX 风格，并且保留前导斜杠，如果缺少则添加。
+    // Determine the absolute remote path
     const remotePath = file_id.replace(/\\/g, '/'); 
-    const finalRemotePath = remotePath.startsWith('/') ? remotePath : '/' + remotePath;
+    let finalRemotePath;
+
+    // 修正: 检查 file_id 是否包含用户前缀。如果不包含，则假设它是旧格式，手动添加前缀。
+    if (remotePath.includes(`/user_${userId}/`)) {
+        finalRemotePath = remotePath;
+    } else {
+        // 假设它是旧格式，例如 `/共享/文件.txt`。
+        const relativePathWithoutLeadingSlash = remotePath.replace(/^\//, '');
+        finalRemotePath = path.posix.join('/', `user_${userId}`, relativePathWithoutLeadingSlash);
+    }
+    // 确保 finalRemotePath 仍然以 / 开头
+    if (!finalRemotePath.startsWith('/')) finalRemotePath = '/' + finalRemotePath;
 
     return streamClient.createReadStream(finalRemotePath, options);
 }
 
 async function getUrl(file_id, userId) {
     const client = getClient();
-    // 修正: 确保路径是 POSIX 风格，并且保留前导斜杠，如果缺少则添加。
+    
+    // Determine the absolute remote path
     const remotePath = file_id.replace(/\\/g, '/');
-    const finalRemotePath = remotePath.startsWith('/') ? remotePath : '/' + remotePath;
+    let finalRemotePath;
 
+    // 修正: 检查 file_id 是否包含用户前缀。如果不包含，则假设它是旧格式，手动添加前缀。
+    if (remotePath.includes(`/user_${userId}/`)) {
+        finalRemotePath = remotePath;
+    } else {
+        // 假设它是旧格式，例如 `/共享/文件.txt`。
+        const relativePathWithoutLeadingSlash = remotePath.replace(/^\//, '');
+        finalRemotePath = path.posix.join('/', `user_${userId}`, relativePathWithoutLeadingSlash);
+    }
+    // 确保 finalRemotePath 仍然以 / 开头
+    if (!finalRemotePath.startsWith('/')) finalRemotePath = '/' + finalRemotePath;
+    
     return client.getFileDownloadLink(finalRemotePath);
 }
 
