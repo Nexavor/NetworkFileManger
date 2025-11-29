@@ -1,5 +1,4 @@
 // server.js
-
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
@@ -107,18 +106,33 @@ async function checkRememberMeCookie(req, res, next) {
                 req.session.isAdmin = !!user.is_admin;
                 req.session.unlockedFolders = [];
                 
-                // 滚动 Token 机制
-                await data.deleteAuthToken(rememberToken);
+                // --- 修正: 使用原子操作 rollAuthToken 解决竞争条件 ---
                 const newRememberToken = crypto.randomBytes(64).toString('hex');
                 const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
-                await data.createAuthToken(user.id, newRememberToken, expiresAt);
                 
-                res.cookie('remember_me', newRememberToken, {
-                    path: '/',
-                    httpOnly: true,
-                    secure: req.protocol === 'https',
-                    maxAge: 30 * 24 * 60 * 60 * 1000 
-                });
+                const rollResult = await data.rollAuthToken(
+                    rememberToken, 
+                    user.id, 
+                    expiresAt, 
+                    newRememberToken
+                );
+
+                if (rollResult.rolled) {
+                    // 只有成功滚动（即未遇到竞争）的请求才设置新 Cookie
+                    res.cookie('remember_me', rollResult.newRememberToken, {
+                        path: '/',
+                        httpOnly: true,
+                        secure: req.protocol === 'https',
+                        maxAge: 30 * 24 * 60 * 60 * 1000 
+                    });
+                }
+                
+                // 确保 session maxAge 被延长，无论是否滚动成功
+                if (req.session.cookie.maxAge !== 30 * 24 * 60 * 60 * 1000) {
+                     req.session.cookie.maxAge = 30 * 24 * 60 * 60 * 1000;
+                }
+                // --- 修正结束 ---
+
             } else if (tokenData) {
                 await data.deleteAuthToken(rememberToken);
                 res.clearCookie('remember_me', { path: '/' });
@@ -608,13 +622,13 @@ app.get('/api/folder/:encryptedId', requireLogin, async (req, res) => {
     try {
         const folderIdStr = decrypt(req.params.encryptedId);
         if (!folderIdStr) {
-            return res.status(400).json({ success: false, message: '无效的资料夾 ID' });
+            return res.status(400).json({ success: false, message: '无效的资料夹 ID' });
         }
         const folderId = parseInt(folderIdStr, 10);
         const userId = req.session.userId;
         const folderDetails = await data.getFolderDetails(folderId, userId);
         if (!folderDetails) {
-            return res.status(404).json({ success: false, message: '找不到资料夾' });
+            return res.status(404).json({ success: false, message: '找不到资料夹' });
         }
         if (folderDetails.is_locked && !req.session.unlockedFolders.includes(folderId)) {
             const folderPath = await data.getFolderPath(folderId, userId);
@@ -624,7 +638,7 @@ app.get('/api/folder/:encryptedId', requireLogin, async (req, res) => {
         const path = await data.getFolderPath(folderId, userId);
         res.json({ contents, path: path.map(p => ({ ...p, encrypted_id: encrypt(p.id) })) });
     } catch (error) {
-        res.status(500).json({ success: false, message: '读取资料夾内容失败。' });
+        res.status(500).json({ success: false, message: '读取资料夹内容失败。' });
     }
 });
 
@@ -632,12 +646,12 @@ app.post('/api/folder', requireLogin, async (req, res) => {
     const { name, parentId } = req.body;
     const userId = req.session.userId;
     if (!name || !parentId) {
-        return res.status(400).json({ success: false, message: '缺少资料夾名称或父 ID。' });
+        return res.status(400).json({ success: false, message: '缺少资料夹名称或父 ID。' });
     }
     try {
         const conflict = await data.checkFullConflict(name, parentId, userId);
         if (conflict) {
-            return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夾。' });
+            return res.status(409).json({ success: false, message: '同目录下已存在同名档案或资料夹。' });
         }
         const result = await data.createFolder(name, parentId, userId);
         const storage = storageManager.getStorage();
@@ -665,7 +679,7 @@ app.post('/api/folder', requireLogin, async (req, res) => {
         }
         res.json(result);
     } catch (error) {
-         res.status(500).json({ success: false, message: error.message || '处理资料夾时发生错误。' });
+         res.status(500).json({ success: false, message: error.message || '处理资料夹时发生错误。' });
     }
 });
 
@@ -715,7 +729,7 @@ app.post('/api/folder/:id/unlock', requireLogin, async (req, res) => {
         if (req.session.unlockedFolders) {
             req.session.unlockedFolders = req.session.unlockedFolders.filter(folderId => folderId !== parseInt(id));
         }
-        res.json({ success: true, message: '资料夾已成功解锁（移除密码）。' });
+        res.json({ success: true, message: '资料夹已成功解锁（移除密码）。' });
     } catch (error) {
         res.status(500).json({ success: false, message: '操作失败：' + error.message });
     }
