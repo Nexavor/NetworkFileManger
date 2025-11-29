@@ -84,11 +84,21 @@ async function getFolderPath(folderId, userId) {
         });
     });
 
-    if (folderId === userRoot.id) return '/';
-    
     const pathParts = await data.getFolderPath(folderId, userId);
-    // 确保返回的是绝对路径
-    return '/' + pathParts.slice(1).map(p => p.name).join('/');
+    
+    // 从路径数组中提取相对路径（跳过第一个根目录 '/'）
+    const relativePath = pathParts.slice(1).map(p => p.name).join('/');
+    
+    // 构造 WebDAV 绝对路径：/user_{userId}/<relative/path>
+    let finalPath;
+    if (relativePath) {
+         finalPath = path.posix.join('/', `user_${userId}`, relativePath);
+    } else {
+         // 如果是根目录，只返回 /user_{userId}
+         finalPath = path.posix.join('/', `user_${userId}`);
+    }
+
+    return finalPath;
 }
 
 async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, caption = '', existingItem = null) {
@@ -105,11 +115,13 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
                 password: webdavConfig.password
             });
 
-            const folderPath = await getFolderPath(folderId, userId);
-            // remotePath 始终以 '/' 开头
-            remotePath = (folderPath === '/' ? '' : folderPath) + '/' + fileName;
+            // 使用修正后的 getFolderPath 获取路径，例如 /user_1/folder/subfolder
+            const folderPath = await getFolderPath(folderId, userId); 
             
-            if (folderPath && folderPath !== "/") {
+            // 构造远程文件绝对路径，例如 /user_1/folder/subfolder/fileName
+            remotePath = path.posix.join(folderPath, fileName);
+            
+            if (folderPath && folderPath !== path.posix.join('/', `user_${userId}`)) {
                 await ensureDirectoryExists(folderPath);
             }
 
@@ -197,20 +209,24 @@ async function remove(files, folders, userId) {
     const allItemsToDelete = [];
     files.forEach(file => {
         // file.file_id 应该已经是 WebDAV 绝对路径（以 / 开头）
-        let p = file.file_id.startsWith('/') ? file.file_id : '/' + file.file_id;
+        let p = file.file_id.replace(/\\/g, '/');
+        if (!p.startsWith('/')) p = '/' + p; // 确保是绝对路径
         allItemsToDelete.push({ path: path.posix.normalize(p), type: 'file' });
     });
-    folders.forEach(folder => {
+    folders.forEach(async folder => {
         // folder.path 是 WebDAV 绝对路径
-        let p = folder.path.startsWith('/') ? folder.path : '/' + folder.path;
+        let p = folder.path.replace(/\\/g, '/');
+        if (!p.startsWith('/')) p = '/' + p; // 确保是绝对路径
         if (!p.endsWith('/')) { p += '/'; }
         allItemsToDelete.push({ path: p, type: 'folder' });
     });
-    allItemsToDelete.sort((a, b) => b.path.length - a.path.length);
+    // 对路径进行排序，先删除子目录，再删除父目录
+    allItemsToDelete.sort((a, b) => b.path.length - a.path.length); 
     for (const item of allItemsToDelete) {
         try {
             await client.deleteFile(item.path);
         } catch (error) {
+            // 忽略 404 (文件不存在) 的错误
             if (!(error.response && error.response.status === 404)) {
                 results.errors.push(`删除失败 [${item.path}]: ${error.message}`);
                 results.success = false;
@@ -220,7 +236,6 @@ async function remove(files, folders, userId) {
     return results;
 }
 
-// 修正: 统一函数签名，接受 options 参数。
 async function stream(file_id, userId, options = {}) {
     const webdavConfig = getWebdavConfig();
     const streamClient = createClient(webdavConfig.url, {
@@ -235,7 +250,6 @@ async function stream(file_id, userId, options = {}) {
     return streamClient.createReadStream(finalRemotePath, options);
 }
 
-// 修正: 移除不必要的 leading slash。
 async function getUrl(file_id, userId) {
     const client = getClient();
     // 修正: 确保路径是 POSIX 风格，并且保留前导斜杠，如果缺少则添加。
