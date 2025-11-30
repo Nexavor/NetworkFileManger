@@ -879,6 +879,7 @@ function deleteSingleFolder(folderId, userId) {
     });
 }
 
+// 修复：在获取待删除文件夹数据时，忽略 is_deleted 标志，确保能获取到已删除文件夹的完整路径
 async function getFolderDeletionData(folderId, userId) {
     let filesToDelete = [];
     let foldersToDeleteIds = [folderId];
@@ -899,12 +900,21 @@ async function getFolderDeletionData(folderId, userId) {
 
     await findContentsRecursive(folderId);
 
-    const allUserFolders = await getAllFolders(userId);
+    // 获取所有用户文件夹，不在此处过滤 is_deleted，以便构建回收站中文件夹的路径
+    const allUserFolders = await new Promise((resolve, reject) => {
+        const sql = "SELECT id, name, parent_id FROM folders WHERE user_id = ?";
+        db.all(sql, [userId], (err, rows) => err ? reject(err) : resolve(rows));
+    });
+    
     const folderMap = new Map(allUserFolders.map(f => [f.id, f]));
     
     function buildPath(fId) {
         let pathParts = [];
         let current = folderMap.get(fId);
+        
+        // 安全检查：如果文件夹在数据库中不存在（极其罕见），返回 null 以避免生成错误路径
+        if (!current) return null;
+
         while(current && current.parent_id) {
             pathParts.unshift(current.name);
             current = folderMap.get(current.parent_id);
@@ -912,10 +922,10 @@ async function getFolderDeletionData(folderId, userId) {
         return path.posix.join('/', ...pathParts);
     }
 
-    const foldersToDeleteWithPaths = foldersToDeleteIds.map(id => ({
-        id: id,
-        path: buildPath(id)
-    }));
+    const foldersToDeleteWithPaths = foldersToDeleteIds.map(id => {
+        const p = buildPath(id);
+        return p ? { id: id, path: p } : null;
+    }).filter(item => item !== null);
 
     return { files: filesToDelete, folders: foldersToDeleteWithPaths };
 }
