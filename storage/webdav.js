@@ -8,7 +8,8 @@ const path = require('path');
 
 const FILE_NAME = 'storage/webdav.js';
 let client = null;
-const creatingDirs = new Set();
+// 修改：使用 Map 存储正在进行的 Promise，而不是 Set
+const creatingDirs = new Map(); 
 
 // --- 日志辅助函数 ---
 const log = (level, func, message, ...args) => {
@@ -42,68 +43,83 @@ function resetClient() {
 }
 
 // --- 路径规范化 ---
-// 确保路径始终以 / 开头，符合 WebDAV 绝对路径标准
 function normalizePath(p) {
     if (!p) return '/';
-    // 统一使用正斜杠
     let normalized = p.replace(/\\/g, '/');
-    // 解析 . 和 ..
     normalized = path.posix.normalize(normalized);
-    // 强制以 / 开头
     if (!normalized.startsWith('/')) {
         normalized = '/' + normalized;
     }
-    // 移除末尾的 / (除非是根目录)
     if (normalized.length > 1 && normalized.endsWith('/')) {
         normalized = normalized.slice(0, -1);
     }
     return normalized;
 }
 
+// 核心修复：防止并发创建目录时的竞争条件
 async function ensureDirectoryExists(fullPath) {
     const FUNC_NAME = 'ensureDirectoryExists';
     const remotePath = normalizePath(fullPath);
     
     if (remotePath === "/") return;
     
-    if (creatingDirs.has(remotePath)) return;
-    creatingDirs.add(remotePath);
+    // 如果已经有正在进行的创建任务，则等待它完成
+    if (creatingDirs.has(remotePath)) {
+        // log('DEBUG', FUNC_NAME, `等待目录创建: ${remotePath}`);
+        return creatingDirs.get(remotePath);
+    }
 
-    try {
-        const client = getClient();
-        const parts = remotePath.split('/').filter(p => p);
-        let current = '';
+    // 创建一个新的 Promise 任务
+    const creationPromise = (async () => {
+        try {
+            const client = getClient();
+            const parts = remotePath.split('/').filter(p => p);
+            let current = '';
 
-        for (const part of parts) {
-            current += '/' + part;
-            const exists = await client.exists(current);
-            if (!exists) {
-                log('INFO', FUNC_NAME, `创建目录: "${current}"`);
-                try {
-                    await client.createDirectory(current);
-                } catch (e) {
-                    // 忽略特定错误 (405 Method Not Allowed)
-                    if (e.response && e.response.status !== 405) {
-                        log('WARN', FUNC_NAME, `创建目录可能有误: ${e.message}`);
+            for (const part of parts) {
+                current += '/' + part;
+                // 再次检查 Map，防止父级目录并发冲突 (虽然 WebDAV 客户端通常能处理)
+                // 但这里我们主要依赖外部的 exists 检查
+                
+                // 优化：只有当 WebDAV 服务器返回目录不存在时才尝试创建
+                // 注意：高并发下 client.exists 也可能产生额外开销，但在本逻辑中
+                // 同一路径的并发已被 Promise 合并，所以是安全的。
+                const exists = await client.exists(current);
+                if (!exists) {
+                    log('INFO', FUNC_NAME, `创建目录: "${current}"`);
+                    try {
+                        await client.createDirectory(current);
+                    } catch (e) {
+                        // 忽略 405 (Method Not Allowed - 通常意味着已存在)
+                        if (e.response && e.response.status !== 405) {
+                            // 记录警告但不抛出，尝试继续上传
+                            log('WARN', FUNC_NAME, `创建目录可能有误 (可能是并发导致已存在): ${e.message}`);
+                        }
                     }
                 }
             }
+        } finally {
+            // 任务完成后（无论成功失败），从 Map 中移除
+            creatingDirs.delete(remotePath);
         }
-    } finally {
-        creatingDirs.delete(remotePath);
-    }
+    })();
+
+    // 将 Promise 存入 Map
+    creatingDirs.set(remotePath, creationPromise);
+    
+    // 等待执行
+    return creationPromise;
 }
 
 async function getFolderPath(folderId, userId) {
     const pathParts = await data.getFolderPath(folderId, userId);
-    // 强制使用绝对路径构建
     const fullPath = path.posix.join('/', ...pathParts.slice(1).map(p => p.name));
     return normalizePath(fullPath);
 }
 
 async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, caption = '', existingItem = null) {
     const FUNC_NAME = 'upload';
-    log('INFO', FUNC_NAME, `开始上传: "${fileName}"`);
+    // log('INFO', FUNC_NAME, `开始上传: "${fileName}"`);
     
     return new Promise(async (resolve, reject) => {
         let remotePath = ''; 
@@ -111,9 +127,9 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             const client = getClient();
             const folderPath = await getFolderPath(folderId, userId);
             
+            // 等待目录确保逻辑完成
             await ensureDirectoryExists(folderPath);
 
-            // 构造完整绝对路径
             remotePath = normalizePath(path.posix.join(folderPath, fileName));
             
             let options = { overwrite: true };
@@ -125,8 +141,36 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             }
 
             log('DEBUG', FUNC_NAME, `PUT: ${remotePath}`);
-            const result = await client.putFileContents(remotePath, fileStreamOrBuffer, options);
-            if (result === false) throw new Error('WebDAV putFileContents returned false');
+            
+            // 增加简单的重试机制，应对短暂的 403/429/Network Error
+            let retries = 1;
+            while (retries >= 0) {
+                try {
+                    const result = await client.putFileContents(remotePath, fileStreamOrBuffer, options);
+                    if (result === false) throw new Error('WebDAV putFileContents returned false');
+                    break; // 成功则跳出循环
+                } catch (err) {
+                    if (retries > 0) {
+                        log('WARN', FUNC_NAME, `上传失败，正在重试 (${retries}次剩余): ${err.message}`);
+                        await new Promise(r => setTimeout(r, 1000)); // 等待 1 秒
+                        retries--;
+                        // 如果是 Stream，可能无法重试（除非是文件流且重新创建），
+                        // 但 Busboy 传入 Buffer 模式下是 Buffer/FileStream，
+                        // 在 server.js 的 buffer 模式下是 fs.createReadStream，可以重试吗？
+                        // fs.createReadStream 一旦消耗就没了。
+                        // 所以这里如果是 Stream 且报错，重试可能会再次失败。
+                        // 但是 server.js 现在的 Buffer 模式我们传的是 fs.createReadStream(tempPath)。
+                        // 如果流被消耗了，重试需要重新创建流。
+                        
+                        // 简单修复：如果是流且已出错，直接抛出，只重试 Buffer
+                        if (typeof fileStreamOrBuffer.pipe === 'function') {
+                             throw err; 
+                        }
+                    } else {
+                        throw err;
+                    }
+                }
+            }
             
             const stats = await client.stat(remotePath);
             if (stats.size === 0 && options.contentLength > 0) {
@@ -136,7 +180,7 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             if (existingItem) {
                 await data.updateFile(existingItem.id, {
                     mimetype: mimetype,
-                    file_id: remotePath, // 存入 DB 的是绝对路径
+                    file_id: remotePath,
                     size: stats.size,
                     date: Date.now(),
                 }, userId);
@@ -148,7 +192,7 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
                     fileName,
                     mimetype,
                     size: stats.size,
-                    file_id: remotePath, // 存入 DB 的是绝对路径
+                    file_id: remotePath, 
                     date: Date.now(),
                 }, folderId, userId, 'webdav');
                 resolve({ success: true, message: '上传成功', fileId: dbResult.fileId });
@@ -156,7 +200,7 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
 
         } catch (error) {
             log('ERROR', FUNC_NAME, `失败: ${error.message}`);
-            if (remotePath) { try { await getClient().deleteFile(remotePath); } catch (e) {} }
+            // if (remotePath) { try { await getClient().deleteFile(remotePath); } catch (e) {} } // 失败通常意味着文件没上去，删除多余
             reject(error);
         }
     });
@@ -169,19 +213,16 @@ async function remove(files, folders, userId) {
     
     files.forEach(file => {
         const p = normalizePath(file.file_id);
-        if (p !== '/' && p !== '') { // 安全检查：防止删除根目录
+        if (p !== '/' && p !== '') { 
             allItemsToDelete.push({ path: p, type: 'file' });
         }
     });
     folders.forEach(folder => {
         let p = normalizePath(folder.path);
-        
-        // 安全检查：防止删除根目录
         if (p === '/' || p === '') {
             log('WARN', 'remove', '尝试删除根目录被阻止');
             return;
         }
-        
         if (!p.endsWith('/')) { p += '/'; }
         allItemsToDelete.push({ path: p, type: 'folder' });
     });
@@ -202,7 +243,6 @@ async function remove(files, folders, userId) {
 }
 
 async function stream(file_id, userId, options = {}) {
-    // 关键修正：不做任何去前缀操作，完全信任 normalizePath 产生的绝对路径
     const remotePath = normalizePath(file_id);
     log('INFO', 'stream', `请求流: ${remotePath}`);
     
