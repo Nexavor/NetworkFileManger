@@ -48,7 +48,7 @@ class ConcurrencyLimit {
 }
 
 // 限制最大并发上传数为 3 (防止触发 Telegram/WebDAV 429 错误)
-const uploadLimiter = new ConcurrencyLimit(3);
+const uploadLimiter = new ConcurrencyLimit(10);
 
 
 // 处理 JSON 中的 BigInt 序列化
@@ -1827,3 +1827,4 @@ app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) =
 app.listen(PORT, () => {
     console.log(`✅ 伺服器已在 http://localhost:${PORT} 上运行`);
 });
+
