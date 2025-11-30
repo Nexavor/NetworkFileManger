@@ -1601,6 +1601,38 @@ function deleteExpiredAuthTokens() {
     });
 }
 
+function findTrashedFileInFolder(fileName, folderId, userId) {
+    return new Promise((resolve, reject) => {
+        // is_deleted = 1 表示在回收站中
+        const sql = `SELECT ${SAFE_SELECT_MESSAGE_ID}, fileName FROM files WHERE fileName = ? AND folder_id = ? AND user_id = ? AND is_deleted = 1`;
+        db.get(sql, [fileName, folderId, userId], (err, row) => {
+            if (err) return reject(err);
+            resolve(row);
+        });
+    });
+}
+
+async function processTrashConflict(fileName, folderId, userId) {
+    try {
+        const trashedFile = await findTrashedFileInFolder(fileName, folderId, userId);
+        if (trashedFile) {
+            // 构造新名称：原文件名_deleted_时间戳.扩展名
+            const ext = path.extname(fileName);
+            const nameBody = path.basename(fileName, ext);
+            const timestamp = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14); // YYYYMMDDHHMMSS
+            const newName = `${nameBody}_deleted_${timestamp}${ext}`;
+            
+            // 使用现有的 renameFile 函数，它会同时处理数据库更新和物理文件重命名(Local/WebDAV/S3)
+            // 这确保了旧文件内容被保留（更名后），新文件可以安全使用原名上传
+            await renameFile(BigInt(trashedFile.message_id), newName, userId);
+            return true; // 表示处理了冲突
+        }
+    } catch (e) {
+        console.error("处理回收站冲突失败:", e);
+    }
+    return false;
+}
+
 
 module.exports = {
     createUser,
@@ -1667,5 +1699,6 @@ module.exports = {
     restoreItems,
     cleanupTrash,
     listAllUsersWithQuota,
-    setMaxStorageForUser
+    setMaxStorageForUser,
+    processTrashConflict
 };
