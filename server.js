@@ -1827,5 +1827,3 @@ app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) =
 app.listen(PORT, () => {
     console.log(`✅ 伺服器已在 http://localhost:${PORT} 上运行`);
 });
-
-}
