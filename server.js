@@ -21,6 +21,36 @@ const webdavStorageModule = require('./storage/webdav');
 
 const app = express();
 
+// --- 新增：并发控制器类 ---
+class ConcurrencyLimit {
+    constructor(limit) {
+        this.limit = limit;
+        this.active = 0;
+        this.queue = [];
+    }
+
+    async run(fn) {
+        if (this.active >= this.limit) {
+            // 如果达到限制，等待队列中的 Promise 解决
+            await new Promise(resolve => this.queue.push(resolve));
+        }
+        this.active++;
+        try {
+            return await fn();
+        } finally {
+            this.active--;
+            // 任务完成，释放队列中的下一个任务
+            if (this.queue.length > 0) {
+                this.queue.shift()();
+            }
+        }
+    }
+}
+
+// 限制最大并发上传数为 3 (防止触发 Telegram/WebDAV 429 错误)
+const uploadLimiter = new ConcurrencyLimit(3);
+
+
 // 处理 JSON 中的 BigInt 序列化
 const jsonReplacer = (key, value) => {
     if (typeof value === 'bigint') {
@@ -518,7 +548,12 @@ app.post('/upload', requireLogin, async (req, res) => {
                             uploadData = fs.createReadStream(tempFilePath);
                         }
 
-                        await storage.upload(uploadData, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
+                        // --- 关键修复：使用限流器进行上传 ---
+                        // 防止并发过高导致 429 或 503
+                        await uploadLimiter.run(async () => {
+                             await storage.upload(uploadData, finalFilename, mimeType, userId, targetFolderId, caption || '', existingItem);
+                        });
+                        
                         log('BUFFER_SUCCESS', `后端上传成功: ${finalFilename}`);
 
                     } finally {
@@ -527,7 +562,9 @@ app.post('/upload', requireLogin, async (req, res) => {
                         }
                     }
                 } else {
-                    // --- 流式模式 ---
+                    // --- 流式模式 (Stream) ---
+                    // Stream 模式天然受限于 HTTP Multipart 的串行特性 (Busboy 解析完一个 Part 才会触发下一个)
+                    // 因此不需要额外的并发控制
                     log('STREAM_MODE', `启用流式上传: ${finalFilename}`);
                     
                     // 流式模式配额预检 (只能基于当前已用空间，无法准确预知流大小)
@@ -1790,3 +1827,5 @@ app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) =
 app.listen(PORT, () => {
     console.log(`✅ 伺服器已在 http://localhost:${PORT} 上运行`);
 });
+
+}
