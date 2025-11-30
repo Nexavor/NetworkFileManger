@@ -1500,54 +1500,26 @@ async function resolvePathToFolderId(startFolderId, pathParts, userId) {
 
         creatingFolders.add(lockId);
         try {
-            const foundId = await new Promise((resolve, reject) => {
-                db.serialize(() => {
-                    // 查询包含已删除的记录
-                    const selectSql = `SELECT id, is_deleted FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?`;
-                    db.get(selectSql, [part, currentParentId, userId], (err, row) => {
-                        if (err) return reject(err);
-                        
-                        if (row) {
-                            if (row.is_deleted) {
-                                // 恢复
-                                db.run("UPDATE folders SET is_deleted = 0 WHERE id = ?", [row.id], (err2) => {
-                                    if(err2) return reject(err2);
-                                    resolve(row.id);
-                                });
-                            } else {
-                                resolve(row.id);
-                            }
-                            return;
-                        }
-                        
-                        const insertSql = `INSERT INTO folders (name, parent_id, user_id) VALUES (?, ?, ?)`;
-                        db.run(insertSql, [part, currentParentId, userId], function(err) {
-                            if (err) {
-                                // 处理并发下的 UNIQUE 错误
-                                if (err.message.includes('UNIQUE')) {
-                                    // 再次尝试查询 (递归一次即可)
-                                    db.get(selectSql, [part, currentParentId, userId], (retryErr, retryRow) => {
-                                        if (retryErr) return reject(retryErr);
-                                        if (retryRow) {
-                                            if (retryRow.is_deleted) {
-                                                db.run("UPDATE folders SET is_deleted = 0 WHERE id = ?", [retryRow.id], (e) => e ? reject(e) : resolve(retryRow.id));
-                                            } else {
-                                                resolve(retryRow.id);
-                                            }
-                                        } else {
-                                            reject(err);
-                                        }
-                                    });
-                                    return;
-                                }
-                                return reject(err);
-                            }
-                            resolve(this.lastID);
-                        });
-                    });
-                });
+            const row = await new Promise((resolve, reject) => {
+                db.get("SELECT id, is_deleted FROM folders WHERE name = ? AND parent_id = ? AND user_id = ?", [part, currentParentId, userId], (err, row) => err ? reject(err) : resolve(row));
             });
-            currentParentId = foundId;
+
+            if (row) {
+                if (row.is_deleted) {
+                    // Conflict with trash. Rename the old folder.
+                    const timestamp = new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14);
+                    const newName = `${part}_deleted_${timestamp}`;
+                    await renameFolder(row.id, newName, userId);
+                    // Now the name 'part' is free. Create new folder.
+                    const newFolder = await createFolder(part, currentParentId, userId);
+                    currentParentId = newFolder.id;
+                } else {
+                    currentParentId = row.id;
+                }
+            } else {
+                const newFolder = await createFolder(part, currentParentId, userId);
+                currentParentId = newFolder.id;
+            }
         } finally {
             creatingFolders.delete(lockId);
         }
