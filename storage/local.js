@@ -126,6 +126,12 @@ async function remove(files, folders, userId) {
     for (const file of files) {
         try {
             const filePath = path.join(userDir, file.file_id);
+            // 简单的安全检查：确保路径在 userDir 内
+            if (!filePath.startsWith(userDir)) {
+                log('WARN', 'remove', `尝试删除越权文件: ${filePath}`);
+                continue;
+            }
+            
             if (fs.existsSync(filePath)) {
                 parentDirs.add(path.dirname(filePath));
                 await fsp.unlink(filePath);
@@ -138,7 +144,20 @@ async function remove(files, folders, userId) {
 
     for (const folder of folders) {
         try {
+            // 安全检查：防止删除根目录或空路径
+            if (!folder.path || folder.path === '/' || folder.path === '\\' || folder.path === '.') {
+                log('WARN', 'remove', '阻止删除用户根目录');
+                continue;
+            }
+
             const folderPath = path.join(userDir, folder.path);
+            
+            // 再次检查：确保路径在 userDir 内且不是 userDir 本身
+            if (!folderPath.startsWith(userDir) || folderPath === userDir) {
+                log('WARN', 'remove', `尝试删除非法目录: ${folderPath}`);
+                continue;
+            }
+
             if (fs.existsSync(folderPath)) {
                 parentDirs.add(path.dirname(folderPath));
                  await fsp.rm(folderPath, { recursive: true, force: true });
