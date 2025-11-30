@@ -168,10 +168,20 @@ async function remove(files, folders, userId) {
     const allItemsToDelete = [];
     
     files.forEach(file => {
-        allItemsToDelete.push({ path: normalizePath(file.file_id), type: 'file' });
+        const p = normalizePath(file.file_id);
+        if (p !== '/' && p !== '') { // 安全检查：防止删除根目录
+            allItemsToDelete.push({ path: p, type: 'file' });
+        }
     });
     folders.forEach(folder => {
         let p = normalizePath(folder.path);
+        
+        // 安全检查：防止删除根目录
+        if (p === '/' || p === '') {
+            log('WARN', 'remove', '尝试删除根目录被阻止');
+            return;
+        }
+        
         if (!p.endsWith('/')) { p += '/'; }
         allItemsToDelete.push({ path: p, type: 'folder' });
     });
@@ -179,6 +189,7 @@ async function remove(files, folders, userId) {
     allItemsToDelete.sort((a, b) => b.path.length - a.path.length);
     for (const item of allItemsToDelete) {
         try {
+            log('INFO', 'remove', `删除: ${item.path}`);
             await client.deleteFile(item.path);
         } catch (error) {
             if (!(error.response && error.response.status === 404)) {
