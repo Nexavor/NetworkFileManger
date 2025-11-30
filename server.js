@@ -16,6 +16,8 @@ const db = require('./database.js');
 const data = require('./data.js');
 const storageManager = require('./storage');
 const { encrypt, decrypt } = require('./crypto.js');
+// --- 新增：引入 WebDAV 模块以便直接调用 ---
+const webdavStorageModule = require('./storage/webdav');
 
 const app = express();
 
@@ -111,13 +113,6 @@ async function checkRememberMeCookie(req, res, next) {
                 const newRememberToken = crypto.randomBytes(64).toString('hex');
                 const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
                 
-                // 呼叫原子操作 rollAuthToken
-                // 此函数会在单个数据库事务中尝试删除旧令牌并创建新令牌。
-                // 注意：data.js 中需要实现 rollAuthToken，或者这里依然使用旧逻辑但接受风险
-                // 假设 data.js 未更新 rollAuthToken，这里保留原逻辑的改进版
-                // 如果 data.js 没有 rollAuthToken，这里的代码会报错。
-                // 为保证代码运行，这里使用标准的分步逻辑，若 data.js 更新了再替换
-                
                 // 旧逻辑的回退（如果 data.js 没有 rollAuthToken）：
                 await data.deleteAuthToken(rememberToken);
                 await data.createAuthToken(user.id, newRememberToken, expiresAt);
@@ -174,10 +169,153 @@ function requireAdmin(req, res, next) {
     }
 }
 
+// --- 新增：扫描功能辅助函数 ---
+
+function getMimeType(filename) {
+    const ext = path.extname(filename).toLowerCase();
+    const types = {
+        '.txt': 'text/plain', '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript',
+        '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif', '.mp4': 'video/mp4', '.mp3': 'audio/mpeg', '.pdf': 'application/pdf',
+        '.zip': 'application/zip', '.rar': 'application/x-rar-compressed', '.7z': 'application/x-7z-compressed'
+    };
+    return types[ext] || 'application/octet-stream';
+}
+
+async function syncLocalFolder(absPath, dbFolderId, userId, relativePath, logFunc) {
+    const items = await fsp.readdir(absPath, { withFileTypes: true });
+    for (const item of items) {
+        if (item.name.startsWith('.')) continue; // 跳过隐藏文件
+
+        const itemAbsPath = path.join(absPath, item.name);
+        const itemRelativePath = path.join(relativePath, item.name).replace(/\\/g, '/'); // 统一路径分隔符
+
+        if (item.isDirectory()) {
+            let folder = await data.findFolderByName(item.name, dbFolderId, userId);
+            let folderId;
+            if (!folder) {
+                logFunc('info', `[Local] 建立资料夾: ${itemRelativePath}`);
+                const result = await data.createFolder(item.name, dbFolderId, userId);
+                folderId = result.id;
+            } else {
+                folderId = folder.id;
+            }
+            await syncLocalFolder(itemAbsPath, folderId, userId, itemRelativePath, logFunc);
+        } else if (item.isFile()) {
+            const exists = await data.checkFullConflict(item.name, dbFolderId, userId);
+            if (!exists) {
+                const stats = await fsp.stat(itemAbsPath);
+                logFunc('success', `[Local] 汇入文件: ${itemRelativePath} (${stats.size} bytes)`);
+                
+                const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
+                await data.addFile({
+                    message_id: messageId,
+                    fileName: item.name,
+                    mimetype: getMimeType(item.name),
+                    size: stats.size,
+                    file_id: itemRelativePath, // Local 使用相对路径
+                    thumb_file_id: null,
+                    date: Math.floor(stats.mtimeMs)
+                }, dbFolderId, userId, 'local');
+            }
+        }
+    }
+}
+
+async function syncWebDavFolder(client, remotePath, dbFolderId, userId, logFunc) {
+    let items;
+    try {
+        items = await client.getDirectoryContents(remotePath);
+    } catch (e) {
+        logFunc('error', `[WebDAV] 读取目录失败 ${remotePath}: ${e.message}`);
+        return;
+    }
+
+    for (const item of items) {
+        if (item.filename === remotePath) continue; 
+
+        const itemName = path.basename(item.filename);
+        if (itemName.startsWith('.')) continue;
+
+        if (item.type === 'directory') {
+            let folder = await data.findFolderByName(itemName, dbFolderId, userId);
+            let folderId;
+            if (!folder) {
+                logFunc('info', `[WebDAV] 建立资料夾: ${item.filename}`);
+                const result = await data.createFolder(itemName, dbFolderId, userId);
+                folderId = result.id;
+            } else {
+                folderId = folder.id;
+            }
+            await syncWebDavFolder(client, item.filename, folderId, userId, logFunc);
+        } else if (item.type === 'file') {
+            const exists = await data.checkFullConflict(itemName, dbFolderId, userId);
+            if (!exists) {
+                logFunc('success', `[WebDAV] 汇入文件: ${item.filename} (${item.size} bytes)`);
+                
+                const messageId = BigInt(Date.now()) * 1000000n + BigInt(crypto.randomInt(1000000));
+                await data.addFile({
+                    message_id: messageId,
+                    fileName: itemName,
+                    mimetype: item.mime || getMimeType(itemName),
+                    size: item.size,
+                    file_id: item.filename, // WebDAV 使用绝对路径
+                    thumb_file_id: null,
+                    date: new Date(item.lastmod).getTime() || Date.now()
+                }, dbFolderId, userId, 'webdav');
+            }
+        }
+    }
+}
+// --- 扫描功能结束 ---
+
 // --- 页面路由 ---
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views/login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views/register.html')));
 app.get('/editor', requireLogin, (req, res) => res.sendFile(path.join(__dirname, 'views/editor.html')));
+
+// --- 新增：扫描 API 路由 ---
+app.post('/api/scan/:storageType', requireAdmin, async (req, res) => {
+    const { storageType } = req.params;
+    const { userId } = req.body;
+    const logs = [];
+    const logFunc = (type, message) => {
+        console.log(`[SCAN:${type}] ${message}`);
+        logs.push({ type, message });
+    };
+
+    if (!userId) return res.status(400).json({ success: false, message: '缺少 User ID' });
+
+    // 增加超时设置
+    req.setTimeout(600000); // 10分钟
+
+    try {
+        logFunc('info', `开始扫描 ${storageType} ...`);
+        
+        const rootFolder = await data.getRootFolder(userId);
+        if (!rootFolder) throw new Error("找不到使用者的根目录");
+
+        if (storageType === 'local') {
+            const userBaseDir = path.join(__dirname, 'data', 'uploads', String(userId));
+            if (!fs.existsSync(userBaseDir)) {
+                await fsp.mkdir(userBaseDir, { recursive: true });
+            }
+            await syncLocalFolder(userBaseDir, rootFolder.id, userId, '', logFunc);
+        } else if (storageType === 'webdav') {
+            // 确保 WebDAV 客户端使用最新配置
+            webdavStorageModule.resetClient();
+            const client = webdavStorageModule.getClient();
+            await syncWebDavFolder(client, '/', rootFolder.id, userId, logFunc);
+        } else {
+             throw new Error("不支持的存储类型");
+        }
+
+        res.json({ success: true, log: logs });
+    } catch (error) {
+        logFunc('error', `扫描中止: ${error.message}`);
+        res.json({ success: false, log: logs });
+    }
+});
 
 app.post('/login', async (req, res) => {
     try {
