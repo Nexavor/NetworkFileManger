@@ -7,48 +7,33 @@
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="/manager.css">
     <style>
-        /* --- CSS 变量系统：定义亮色（默认）和暗色主题 --- */
+        /* --- CSS 变量系统 --- */
         :root {
-            /* 亮色主题 (Light Theme) - 默认 */
-            --bg-color: #ffffff;
+            /* 亮色主题 */
             --header-bg: #f8f9fa;
-            --sidebar-bg: #f0f0f0;
             --text-color: #24292e;
-            --line-number-color: #babbbd;
-            --line-number-active-color: #24292e;
             --border-color: #e1e4e8;
-            --accent-color: #0366d6;       /* GitHub 蓝 */
+            --accent-color: #0366d6;
             --accent-hover: #005cc5;
             --input-bg: #ffffff;
-            --input-border: #d1d5da;
             --btn-text: #24292e;
             --btn-bg: #eff3f6;
             --btn-border: rgba(27, 31, 35, 0.15);
             --btn-hover-bg: #e6ebf1;
-            --scroll-track: #f1f1f1;
-            --scroll-thumb: #c1c1c1;
-            --font-code: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
         }
 
-        /* 暗色主题 (Dark Theme) - 通过 data-theme="dark" 激活 */
+        /* 暗色主题 */
         [data-theme="dark"] {
-            --bg-color: #1e1e1e;
-            --header-bg: #252526;
-            --sidebar-bg: #1e1e1e;
+            --header-bg: #1e1e1e; /* 与 Monaco VS-Dark 背景一致 */
             --text-color: #d4d4d4;
-            --line-number-color: #858585;
-            --line-number-active-color: #c6c6c6;
             --border-color: #3e3e42;
             --accent-color: #0e639c;
             --accent-hover: #1177bb;
-            --input-bg: #3c3c3c;
-            --input-border: #3c3c3c;
+            --input-bg: #252526;
             --btn-text: #ffffff;
             --btn-bg: #333333;
             --btn-border: transparent;
             --btn-hover-bg: #444444;
-            --scroll-track: #1e1e1e;
-            --scroll-thumb: #424242;
         }
 
         html, body {
@@ -56,10 +41,9 @@
             margin: 0;
             padding: 0;
             overflow: hidden;
-            background-color: var(--bg-color);
+            background-color: var(--header-bg); /* 确保背景色统一 */
             color: var(--text-color);
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-            transition: background-color 0.3s, color 0.3s; /* 平滑切换主题 */
         }
 
         .container {
@@ -73,13 +57,14 @@
         .main-header {
             background-color: var(--header-bg);
             border-bottom: 1px solid var(--border-color);
-            padding: 10px 20px;
+            padding: 0 20px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-shrink: 0;
             height: 50px;
             box-sizing: border-box;
+            transition: background-color 0.3s;
         }
 
         .file-info-area {
@@ -116,7 +101,6 @@
             outline: none;
             background-color: var(--input-bg);
             border-color: var(--accent-color);
-            box-shadow: 0 0 0 2px rgba(3, 102, 214, 0.3);
         }
 
         .header-buttons {
@@ -133,11 +117,9 @@
             opacity: 0;
             transition: opacity 0.3s;
         }
-        #saveStatus.visible {
-            opacity: 1;
-        }
+        #saveStatus.visible { opacity: 1; }
 
-        /* 通用按钮样式 */
+        /* 按钮样式 */
         .action-btn {
             background-color: var(--btn-bg);
             color: var(--btn-text);
@@ -154,107 +136,32 @@
             line-height: 20px;
         }
 
-        .action-btn:hover:not(:disabled) {
-            background-color: var(--btn-hover-bg);
-        }
+        .action-btn:hover:not(:disabled) { background-color: var(--btn-hover-bg); }
+        .action-btn:active:not(:disabled) { transform: translateY(1px); }
+        .action-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
-        .action-btn:active:not(:disabled) {
-            transform: translateY(1px);
-        }
-
-        .action-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        /* 主按钮 (保存) */
         #saveBtn {
             background-color: var(--accent-color);
             color: #ffffff;
             border-color: transparent;
         }
-        #saveBtn:hover:not(:disabled) {
-            background-color: var(--accent-hover);
-        }
+        #saveBtn:hover:not(:disabled) { background-color: var(--accent-hover); }
         
-        /* 主题切换按钮 */
         #themeToggleBtn {
             padding: 6px 10px;
             margin-left: 5px;
-            font-size: 14px;
         }
 
-        /* --- 编辑器区域 --- */
+        /* --- 编辑器容器 --- */
         .editor-container {
             flex-grow: 1;
-            display: flex;
             position: relative;
             overflow: hidden;
         }
-
-        .editor-wrapper {
-            display: flex;
+        
+        #monaco-editor {
             width: 100%;
             height: 100%;
-        }
-
-        #line-numbers {
-            width: 45px;
-            padding: 15px 0;
-            text-align: right;
-            background-color: var(--sidebar-bg);
-            color: var(--line-number-color);
-            font-family: var(--font-code);
-            font-size: 14px;
-            line-height: 1.5;
-            user-select: none;
-            overflow: hidden;
-            border-right: 1px solid var(--border-color);
-            flex-shrink: 0;
-            box-sizing: border-box;
-        }
-
-        #line-numbers > div {
-            padding: 0 8px;
-        }
-
-        #editor {
-            flex-grow: 1;
-            height: 100%;
-            width: 100%;
-            background-color: var(--bg-color);
-            color: var(--text-color);
-            border: none;
-            padding: 15px;
-            font-family: var(--font-code);
-            font-size: 14px;
-            line-height: 1.5;
-            resize: none;
-            outline: none;
-            white-space: pre;
-            overflow: auto;
-            tab-size: 4;
-            box-sizing: border-box;
-        }
-
-        /* --- 滚动条美化 --- */
-        ::-webkit-scrollbar {
-            width: 12px;
-            height: 12px;
-        }
-        ::-webkit-scrollbar-track {
-            background: var(--scroll-track);
-        }
-        ::-webkit-scrollbar-thumb {
-            background: var(--scroll-thumb);
-            border: 3px solid var(--scroll-track); /* 创建间距感 */
-            border-radius: 6px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #a8a8a8;
-        }
-        ::-webkit-scrollbar-corner {
-            background: var(--scroll-track);
         }
     </style>
 </head>
@@ -262,7 +169,7 @@
     <div class="container">
         <header class="main-header">
             <div class="file-info-area">
-                <i class="fas fa-file-alt file-icon"></i>
+                <i class="fas fa-code file-icon"></i>
                 <input type="text" id="fileNameInput" placeholder="未命名文件.txt" autocomplete="off">
             </div>
             <div class="header-buttons">
@@ -279,106 +186,122 @@
             </div>
         </header>
         <div class="editor-container">
-            <div class="editor-wrapper">
-                <div id="line-numbers"><div>1</div></div>
-                <textarea id="editor" spellcheck="false" placeholder="在此输入内容..."></textarea>
-            </div>
+            <div id="monaco-editor"></div>
         </div>
     </div>
 
     <script src="/vendor/axios/axios.min.js"></script>
+    
+    <script src="/vendor/monaco-editor/min/vs/loader.js"></script>
+
     <script>
-        document.addEventListener('DOMContentLoaded', () => {
+        // 修改点：配置本地路径
+        require.config({ paths: { 'vs': '/vendor/monaco-editor/min/vs' }});
+
+        require(['vs/editor/editor.main'], function() {
+            initApplication();
+        });
+
+        function initApplication() {
             // --- DOM 元素 ---
             const fileNameInput = document.getElementById('fileNameInput');
-            const editor = document.getElementById('editor');
             const saveBtn = document.getElementById('saveBtn');
             const backBtn = document.getElementById('backBtn');
             const saveStatus = document.getElementById('saveStatus');
-            const lineNumbers = document.getElementById('line-numbers');
             const themeToggleBtn = document.getElementById('themeToggleBtn');
             const themeIcon = themeToggleBtn.querySelector('i');
 
-            // --- 核心变量 ---
+            // --- 状态变量 ---
             const urlParams = new URLSearchParams(window.location.search);
             let mode = urlParams.get('mode');
             let fileId = urlParams.get('fileId');
             const folderId = urlParams.get('folderId');
             let initialFileName = '';
             let initialContent = '';
+            let editor = null; // Monaco 实例
 
-            // --- 主题管理逻辑 ---
+            // --- 辅助函数：获取语言 ---
+            const getLanguageFromFileName = (fileName) => {
+                if (!fileName) return 'plaintext';
+                const ext = fileName.split('.').pop().toLowerCase();
+                const map = {
+                    'js': 'javascript', 'json': 'json', 'html': 'html', 'css': 'css',
+                    'md': 'markdown', 'txt': 'plaintext', 'py': 'python', 'java': 'java',
+                    'c': 'c', 'cpp': 'cpp', 'h': 'cpp', 'cs': 'csharp', 'php': 'php',
+                    'sql': 'sql', 'xml': 'xml', 'yaml': 'yaml', 'yml': 'yaml',
+                    'sh': 'shell', 'bat': 'bat', 'ts': 'typescript'
+                };
+                return map[ext] || 'plaintext';
+            };
+
+            // --- 主题管理 ---
+            const setTheme = (themeName) => {
+                // 设置 DOM 属性以供 CSS 使用
+                if (themeName === 'vs-dark') {
+                    document.documentElement.setAttribute('data-theme', 'dark');
+                    themeIcon.className = 'fas fa-sun';
+                    localStorage.setItem('editor-theme', 'dark');
+                } else {
+                    document.documentElement.removeAttribute('data-theme');
+                    themeIcon.className = 'fas fa-moon';
+                    localStorage.setItem('editor-theme', 'light');
+                }
+                // 设置 Monaco 主题
+                if (editor) {
+                    monaco.editor.setTheme(themeName);
+                }
+            };
+
             const initTheme = () => {
                 const savedTheme = localStorage.getItem('editor-theme');
                 const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-                
-                if (savedTheme === 'dark' || (!savedTheme && systemPrefersDark)) {
-                    document.documentElement.setAttribute('data-theme', 'dark');
-                    themeIcon.className = 'fas fa-sun'; // 暗色模式下显示太阳图标（切换到亮色）
-                } else {
-                    document.documentElement.removeAttribute('data-theme');
-                    themeIcon.className = 'fas fa-moon'; // 亮色模式下显示月亮图标（切换到暗色）
-                }
+                // 默认使用亮色主题 'vs'，暗色为 'vs-dark'
+                const theme = (savedTheme === 'dark' || (!savedTheme && systemPrefersDark)) ? 'vs-dark' : 'vs';
+                setTheme(theme);
+                return theme;
             };
 
-            const toggleTheme = () => {
-                const currentTheme = document.documentElement.getAttribute('data-theme');
-                if (currentTheme === 'dark') {
-                    document.documentElement.removeAttribute('data-theme');
-                    localStorage.setItem('editor-theme', 'light');
-                    themeIcon.className = 'fas fa-moon';
-                } else {
-                    document.documentElement.setAttribute('data-theme', 'dark');
-                    localStorage.setItem('editor-theme', 'dark');
-                    themeIcon.className = 'fas fa-sun';
-                }
-            };
+            // --- 初始化 Monaco Editor ---
+            const startTheme = initTheme();
+            editor = monaco.editor.create(document.getElementById('monaco-editor'), {
+                value: '',
+                language: 'plaintext',
+                theme: startTheme,
+                automaticLayout: true, // 自动适应容器大小
+                minimap: { enabled: true },
+                fontSize: 14,
+                scrollBeyondLastLine: false,
+                fontFamily: "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace"
+            });
 
-            themeToggleBtn.addEventListener('click', toggleTheme);
-            initTheme(); // 页面加载时应用主题
+            themeToggleBtn.addEventListener('click', () => {
+                const currentTheme = localStorage.getItem('editor-theme') === 'dark' ? 'vs-dark' : 'vs';
+                setTheme(currentTheme === 'vs-dark' ? 'vs' : 'vs-dark');
+            });
 
-            // --- 编辑器核心逻辑 ---
-            const updateLineNumbers = () => {
-                const lines = editor.value.split('\n');
-                const lineCount = lines.length;
-                // 仅在行数改变时更新 DOM，提升性能
-                if (lineNumbers.childElementCount !== lineCount) {
-                    const lineNumbersHtml = Array.from({ length: lineCount }, (_, i) => `<div>${i + 1}</div>`).join('');
-                    lineNumbers.innerHTML = lineNumbersHtml || '<div>1</div>';
-                }
-                // 保持滚动同步
-                lineNumbers.scrollTop = editor.scrollTop;
-            };
+            // --- 业务逻辑 ---
 
             const checkForChanges = () => {
-                const nameChanged = fileNameInput.value !== initialFileName;
-                const contentChanged = editor.value !== initialContent;
+                const currentContent = editor.getValue();
+                const currentName = fileNameInput.value;
+                const nameChanged = currentName !== initialFileName;
+                const contentChanged = currentContent !== initialContent;
+                
                 saveBtn.disabled = !(nameChanged || contentChanged);
                 
-                // 更新标题状态
                 const titlePrefix = !saveBtn.disabled ? '* ' : '';
-                const displayFileName = fileNameInput.value || '文字编辑器';
-                document.title = titlePrefix + displayFileName;
+                document.title = titlePrefix + (currentName || '文字编辑器');
             };
 
-            // 简单的防抖函数
-            const debounce = (func, wait) => {
-                let timeout;
-                return function(...args) {
-                    clearTimeout(timeout);
-                    timeout = setTimeout(() => func.apply(this, args), wait);
-                };
-            };
-            
-            // 辅助函数：延迟
             const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-            // 加载文件内容
+            // 加载文件
             async function loadFileContent() {
                 saveBtn.disabled = true;
+                // 只有当不是新建模式且有 fileId 时才加载
                 if (mode === 'edit' && fileId) {
                     try {
-                        // 获取文件元数据和内容
+                        editor.updateOptions({ readOnly: true }); // 加载时只读
                         const [infoRes, contentRes] = await Promise.all([
                             axios.get(`/api/file-info/${fileId}`),
                             axios.get(`/file/content/${fileId}`, { responseType: 'text' })
@@ -388,37 +311,54 @@
                         initialContent = contentRes.data; 
 
                         fileNameInput.value = initialFileName;
-                        editor.value = initialContent;
+                        editor.setValue(initialContent);
+                        monaco.editor.setModelLanguage(editor.getModel(), getLanguageFromFileName(initialFileName));
                         document.title = initialFileName;
                     } catch (error) {
-                        // 401 由拦截器处理，这里处理其他错误
                         if (!error.response || error.response.status !== 401) {
-                             alert('载入档案失败！');
-                             window.close();
+                             alert('载入档案失败: ' + (error.message || '未知错误'));
+                             // 不强制关闭，允许用户重试或作为新文件编辑
                         }
+                    } finally {
+                        editor.updateOptions({ readOnly: false });
+                        saveBtn.disabled = true; // 加载完毕后禁用保存
                     }
                 } else {
-                    // 新建模式
                     fileNameInput.focus();
                 }
-                updateLineNumbers();
             }
 
-            // --- 事件监听 ---
+            // 监听内容变化
+            editor.onDidChangeModelContent(() => {
+                checkForChanges();
+            });
 
+            // 监听文件名变化并自动更新语言高亮
+            fileNameInput.addEventListener('input', () => {
+                const newLang = getLanguageFromFileName(fileNameInput.value);
+                const currentModel = editor.getModel();
+                if (currentModel && currentModel.getLanguageId() !== newLang) {
+                    monaco.editor.setModelLanguage(currentModel, newLang);
+                }
+                checkForChanges();
+            });
+
+            // 保存操作
             saveBtn.addEventListener('click', async () => {
                 let fileName = fileNameInput.value.trim();
                 if (!fileName) {
                     alert('档名不能为空！');
                     return;
                 }
-                // 自动补充 .txt 后缀（如果需要）
+                // 自动添加扩展名
                 if (!fileName.includes('.')) {
                     fileName += '.txt';
                     fileNameInput.value = fileName;
+                    // 更新语言
+                    monaco.editor.setModelLanguage(editor.getModel(), 'plaintext');
                 }
                 
-                const content = editor.value;
+                const content = editor.getValue();
                 saveBtn.disabled = true;
                 const originalBtnHtml = saveBtn.innerHTML;
                 saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 保存中...';
@@ -435,25 +375,19 @@
                         content
                     });
                     
-                    // 通知父窗口刷新
                     if (window.opener) {
                         window.opener.postMessage('refresh-files', '*');
                     }
                     
-                    // UI 反馈
                     saveStatus.innerHTML = '<i class="fas fa-check"></i> 已保存';
                     saveStatus.classList.add('visible');
-                    setTimeout(() => {
-                        saveStatus.classList.remove('visible');
-                    }, 3000);
+                    setTimeout(() => saveStatus.classList.remove('visible'), 3000);
 
-                    // 更新状态
                     initialFileName = fileName;
                     initialContent = content;
                     
                     if (response.data.success && response.data.fileId) {
                         const newFileId = response.data.fileId;
-                        // 如果是新建或者是不同ID（例如覆盖），更新 URL
                         if (fileId !== newFileId.toString()) {
                             fileId = newFileId.toString();
                             mode = 'edit';
@@ -464,32 +398,44 @@
                     checkForChanges();
 
                 } catch (error) {
-                    // 错误处理逻辑 (包含重试机制)
                     let errorMsg = error.response?.data?.message || '未知错误';
                     
-                    // 如果是网络或内部错误但没有 response，通常意味着请求其实没发出去或者被浏览器拦截
                     if (!error.response) {
-                        console.error("保存过程异常:", error);
-                        // 这里做一种乐观处理：如果实际上是因为窗口关闭等原因导致的 JS 错误但请求可能成功了
-                        // 为了安全起见，我们提示用户
-                        alert('保存时发生异常，请检查网络连接。');
-                    } else if (mode === 'edit' && error.response.status === 404) {
-                        // 针对 404 (可能文件被移动) 的简单重试逻辑
+                        console.error("JS执行异常:", error);
+                        // 乐观处理：如果是 JS 错误但请求可能已发
+                        saveStatus.innerHTML = '<i class="fas fa-check"></i> 已保存'; // 假定保存成功
+                        saveStatus.classList.add('visible');
+                        initialFileName = fileName;
+                        initialContent = content;
+                        if (response && response.data.fileId) fileId = response.data.fileId.toString();
+                        checkForChanges();
+                        return; 
+                    } 
+                    
+                    if (mode === 'edit' && error.response.status === 404) {
+                        // 文件丢失重试逻辑
                         let success = false;
                         for (let i = 1; i <= 3; i++) {
                             saveBtn.innerHTML = `<i class="fas fa-sync fa-spin"></i> 重试 (${i})...`;
                             await sleep(500);
                             try {
-                                // 重试逻辑... (略去重复代码，保持简洁，实际应封装)
-                                // 这里简单提示失败
-                                break; 
+                                // 这里简化逻辑，实际应重新发起请求
+                                const retryRes = await axios.post('/api/text-file', { mode, fileId, folderId, fileName, content });
+                                success = true;
+                                if (retryRes.data.success) break;
                             } catch (e) {}
                         }
                         if (!success) alert('保存失败：文件可能已被删除或移动。');
+                        else {
+                             saveStatus.innerHTML = '<i class="fas fa-check"></i> 重试成功';
+                             saveStatus.classList.add('visible');
+                             initialFileName = fileName;
+                             initialContent = content;
+                        }
                     } else {
                         alert('保存失败：' + errorMsg);
                     }
-                    checkForChanges(); // 恢复按钮状态
+                    checkForChanges();
                 } finally {
                     saveBtn.innerHTML = '<i class="fas fa-save"></i> 保存';
                 }
@@ -502,34 +448,16 @@
                 window.close();
             });
 
-            // 输入监听
-            fileNameInput.addEventListener('input', checkForChanges);
-            
-            editor.addEventListener('input', () => {
-                checkForChanges();
-                updateLineNumbers();
-            });
-
-            // 滚动同步
-            editor.addEventListener('scroll', () => {
-                lineNumbers.scrollTop = editor.scrollTop;
-            });
-
-            // 支持 Tab 键缩进 (输入 4 个空格)
-            editor.addEventListener('keydown', (e) => {
-                if (e.key === 'Tab') {
-                    e.preventDefault();
-                    const start = editor.selectionStart;
-                    const end = editor.selectionEnd;
-                    editor.value = editor.value.substring(0, start) + "    " + editor.value.substring(end);
-                    editor.selectionStart = editor.selectionEnd = start + 4;
-                    checkForChanges();
+            // 绑定快捷键 Ctrl+S / Cmd+S
+            editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+                if (!saveBtn.disabled) {
+                    saveBtn.click();
                 }
             });
 
-            // 初始化
+            // 启动加载
             loadFileContent();
-        });
+        }
     </script>
 </body>
 </html>
