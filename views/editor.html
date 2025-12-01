@@ -1,3 +1,7 @@
+{
+type: uploaded file
+fileName: nexavor/networkfilemanger/NetworkFileManger-68de1a713da433aaac3ca2cc571084bb5a91a5b9/views/editor.html
+fullContent:
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
@@ -7,105 +11,236 @@
     <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="/manager.css">
     <style>
-        /* 1. 更稳健的全屏布局方案 */
-        html {
-            height: 100%;
+        :root {
+            --bg-color: #1e1e1e;          /* 编辑器背景色 (VS Code 风格) */
+            --header-bg: #252526;         /* 头部背景色 */
+            --sidebar-bg: #1e1e1e;        /* 行号背景色 */
+            --text-color: #d4d4d4;        /* 主要文字颜色 */
+            --line-number-color: #858585; /* 行号颜色 */
+            --border-color: #3e3e42;      /* 边框颜色 */
+            --accent-color: #007acc;      /* 强调色 (蓝色) */
+            --accent-hover: #0062a3;
+            --danger-color: #ce9178;      /* 危险/关闭按钮颜色 */
+            --success-color: #4ec9b0;     /* 成功状态颜色 */
+            --input-bg: #3c3c3c;          /* 输入框背景 */
+            --font-code: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace;
         }
-        
-        body {
+
+        html, body {
             height: 100%;
             margin: 0;
+            padding: 0;
             overflow: hidden;
-            /* 将页面的边距放在 body 上 */
-            padding: 10px;
-            box-sizing: border-box;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
         }
 
         .container {
-            /* 容器占满 body 的可用空间 */
-            height: 100%;
-            width: 100%;
             display: flex;
             flex-direction: column;
-            /* 使用 gap 来控制子元素间距，比 padding 更稳定 */
-            gap: 10px; 
+            height: 100%;
+            width: 100%;
         }
 
+        /* --- Header 样式 --- */
         .main-header {
+            background-color: var(--header-bg);
+            border-bottom: 1px solid var(--border-color);
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             flex-shrink: 0;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
         }
-        
+
+        .file-info-area {
+            display: flex;
+            align-items: center;
+            flex-grow: 1;
+            max-width: 60%;
+        }
+
+        .file-icon {
+            font-size: 1.2rem;
+            color: var(--accent-color);
+            margin-right: 10px;
+        }
+
+        #fileNameInput {
+            background-color: transparent;
+            color: #fff;
+            border: 1px solid transparent;
+            border-radius: 3px;
+            padding: 5px 10px;
+            font-size: 16px;
+            font-weight: 500;
+            width: 100%;
+            transition: all 0.2s;
+        }
+
+        #fileNameInput:hover {
+            border-color: var(--border-color);
+            background-color: var(--input-bg);
+        }
+
+        #fileNameInput:focus {
+            outline: none;
+            background-color: var(--input-bg);
+            border-color: var(--accent-color);
+        }
+
+        .header-buttons {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        #saveStatus {
+            color: var(--success-color);
+            font-size: 14px;
+            margin-right: 10px;
+            display: flex;
+            align-items: center;
+            min-width: 60px;
+            justify-content: flex-end;
+        }
+
+        .action-btn {
+            border: none;
+            border-radius: 4px;
+            padding: 6px 16px;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: background 0.2s, transform 0.1s;
+            color: #fff;
+        }
+
+        .action-btn:active {
+            transform: translateY(1px);
+        }
+
+        .action-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            filter: grayscale(100%);
+        }
+
+        #saveBtn {
+            background-color: var(--accent-color);
+        }
+        #saveBtn:hover:not(:disabled) {
+            background-color: var(--accent-hover);
+        }
+
+        #backBtn {
+            background-color: #444;
+        }
+        #backBtn:hover:not(:disabled) {
+            background-color: #555;
+        }
+
+        /* --- 编辑器区域样式 --- */
         .editor-container {
             flex-grow: 1;
             display: flex;
-            /* 关键：防止 flex 容器内容溢出 */
-            min-height: 0; 
+            position: relative;
+            overflow: hidden;
         }
 
-        /* 2. 编辑器和行号的样式（保持不变） */
         .editor-wrapper {
             display: flex;
             width: 100%;
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
+            height: 100%;
         }
 
         #line-numbers {
-            width: 45px;
+            width: 50px;
             padding: 15px 0;
             text-align: right;
-            color: #aaa;
-            background-color: #f7f7f7;
-            font-family: 'Courier New', Courier, monospace;
+            background-color: var(--sidebar-bg);
+            color: var(--line-number-color);
+            font-family: var(--font-code);
             font-size: 14px;
-            line-height: 1.4;
+            line-height: 1.5;
             user-select: none;
-            overflow-y: hidden;
+            overflow: hidden; /* 禁止滚动，通过 JS 同步 */
             border-right: 1px solid var(--border-color);
+            flex-shrink: 0;
         }
-        
+
         #line-numbers > div {
-            padding: 0 8px;
-            box-sizing: border-box;
+            padding: 0 10px 0 5px;
         }
 
         #editor {
-            width: 100%;
+            flex-grow: 1;
             height: 100%;
-            border: none !important;
-            border-radius: 0 4px 4px 0 !important;
-            padding: 15px !important;
+            width: 100%;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            border: none;
+            padding: 15px;
+            font-family: var(--font-code);
             font-size: 14px;
-            line-height: 1.4;
+            line-height: 1.5;
             resize: none;
             outline: none;
+            white-space: pre;
+            overflow: auto;
+            tab-size: 4;
         }
-        
-        /* 3. 保存按钮禁用样式（保持不变） */
-        #saveBtn:disabled {
-            background-color: #ccc;
-            cursor: not-allowed;
-            color: #666;
+
+        /* --- 自定义滚动条 --- */
+        ::-webkit-scrollbar {
+            width: 10px;
+            height: 10px;
         }
+        ::-webkit-scrollbar-track {
+            background: var(--bg-color);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #424242;
+            border-radius: 5px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #4f4f4f;
+        }
+        ::-webkit-scrollbar-corner {
+            background: var(--bg-color);
+        }
+
     </style>
 </head>
 <body>
     <div class="container">
         <header class="main-header">
-            <input type="text" id="fileNameInput" placeholder="请输入文件名" style="font-size: 18px; font-weight: 500; padding: 8px; border-radius: 4px; flex-grow: 1; border: 1px solid #ccc;">
+            <div class="file-info-area">
+                <i class="fas fa-file-code file-icon"></i>
+                <input type="text" id="fileNameInput" placeholder="未命名文件.txt" autocomplete="off">
+            </div>
             <div class="header-buttons">
-                <span id="saveStatus" style="color: var(--success-color); font-weight: bold; margin-right: 15px;"></span>
-                <button id="saveBtn" class="upload-link-btn">保存</button>
-                <button id="backBtn" class="upload-link-btn" style="background-color: #6c757d;">关闭</button>
+                <span id="saveStatus"></span>
+                <button id="saveBtn" class="action-btn">
+                    <i class="fas fa-save"></i> 保存
+                </button>
+                <button id="backBtn" class="action-btn">
+                    <i class="fas fa-times"></i> 关闭
+                </button>
             </div>
         </header>
         <div class="editor-container">
             <div class="editor-wrapper">
                 <div id="line-numbers"><div>1</div></div>
-                <textarea id="editor" spellcheck="false" style="font-family: 'Courier New', Courier, monospace;"></textarea>
+                <textarea id="editor" spellcheck="false" placeholder="在此输入内容..."></textarea>
             </div>
         </div>
     </div>
+
     <script src="/vendor/axios/axios.min.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
@@ -127,8 +262,13 @@
             const updateLineNumbers = () => {
                 const lines = editor.value.split('\n');
                 const lineCount = lines.length;
-                const lineNumbersHtml = Array.from({ length: lineCount }, (_, i) => `<div>${i + 1}</div>`).join('');
-                lineNumbers.innerHTML = lineNumbersHtml || '<div>1</div>';
+                // 优化：只在行数变化时才重新生成 DOM，减少重绘
+                const currentCount = lineNumbers.children.length;
+                if (currentCount !== lineCount) {
+                     const lineNumbersHtml = Array.from({ length: lineCount }, (_, i) => `<div>${i + 1}</div>`).join('');
+                     lineNumbers.innerHTML = lineNumbersHtml || '<div>1</div>';
+                }
+                // 确保滚动位置同步
                 lineNumbers.scrollTop = editor.scrollTop;
             };
 
@@ -136,6 +276,13 @@
                 const nameChanged = fileNameInput.value !== initialFileName;
                 const contentChanged = editor.value !== initialContent;
                 saveBtn.disabled = !(nameChanged || contentChanged);
+                
+                // 更新标题以显示是否有未保存更改
+                if (!saveBtn.disabled) {
+                    document.title = '* ' + (fileNameInput.value || '文字编辑器');
+                } else {
+                    document.title = fileNameInput.value || '文字编辑器';
+                }
             };
 
             async function loadFileContent() {
@@ -150,21 +297,21 @@
 
                         fileNameInput.value = initialFileName;
                         editor.value = initialContent;
+                        document.title = initialFileName;
                     } catch (error) {
-                        // 401 错误会由 axios 拦截器处理并自动跳转
                         if (error.response && error.response.status !== 401) {
                              alert('载入档案失败！');
                              window.close();
                         }
                     }
+                } else {
+                    fileNameInput.focus(); // 新建模式下聚焦文件名
                 }
                 updateLineNumbers();
             }
 
-            // V3: 增加一个 sleep 辅助函式
             const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
             
-            // --- *** 关键修复 V4：增加 debounce 辅助函式以解决崩溃问题 *** ---
             function debounce(func, wait) {
                 let timeout;
                 return function executedFunction(...args) {
@@ -177,9 +324,7 @@
                 };
             }
             
-            // V4: 建立一个 debounced 版本的行号更新函式
-            const debouncedUpdateLineNumbers = debounce(updateLineNumbers, 150); // 150ms 延迟
-            // --- *** 修复结束 *** ---
+            const debouncedUpdateLineNumbers = debounce(updateLineNumbers, 50); // 稍微加快响应速度
 
             saveBtn.addEventListener('click', async () => {
                 let fileName = fileNameInput.value.trim();
@@ -187,13 +332,18 @@
                     alert('档名不能为空！');
                     return;
                 }
+                // 如果没有扩展名，自动添加 .txt
+                if (!fileName.includes('.')) {
+                    fileName += '.txt';
+                    fileNameInput.value = fileName;
+                }
                 
                 const content = editor.value;
                 saveBtn.disabled = true;
-                saveBtn.textContent = '储存中...';
+                const originalBtnText = saveBtn.innerHTML;
+                saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 储存中...';
                 saveStatus.textContent = '';
 
-                // --- *** 关键修复：在 try 块外部声明 response *** ---
                 let response = null;
 
                 try {
@@ -209,10 +359,10 @@
                         window.opener.postMessage('refresh-files', '*');
                     }
                     
-                    saveStatus.textContent = '✓ 已储存';
+                    saveStatus.innerHTML = '<i class="fas fa-check"></i> 已储存';
                     setTimeout(() => {
                         saveStatus.textContent = '';
-                    }, 2000);
+                    }, 3000);
 
                     initialFileName = fileName;
                     initialContent = content;
@@ -220,153 +370,132 @@
                     if (response.data.success && response.data.fileId) {
                         const newFileId = response.data.fileId;
                         
-                        // 确保比较的是字串
                         if (fileId !== newFileId.toString()) {
                             fileId = newFileId.toString();
                             mode = 'edit';
                             const newUrl = `${window.location.pathname}?mode=edit&fileId=${fileId}`;
-                            
                             try {
                                 history.pushState({}, '', newUrl);
                             } catch (urlError) {
-                                console.warn('更新 URL 失败 (history.pushState)，但这不影响保存:', urlError);
+                                console.warn('更新 URL 失败', urlError);
                             }
                         }
                         fileNameInput.value = fileName;
+                        document.title = fileName;
                     }
                     checkForChanges();
 
                 } catch (error) {
-                    
-                    // --- *** 关键修复 V4：修复“无提示”问题 *** ---
                     if (!error.response) {
-                        // 这是一个内部 JS 错误 (例如 window.opener 失败)
-                        // 但 axios.post 已经成功了。
                         console.error("保存成功，但在后续操作中发生内部错误:", error);
+                        saveStatus.innerHTML = '<i class="fas fa-check"></i> 已储存';
+                        setTimeout(() => { saveStatus.textContent = ''; }, 3000);
                         
-                        // 关键：我们必须手动完成被跳过的 "success" 步骤
-                        
-                        // 1. 显示成功提示
-                        saveStatus.textContent = '✓ 已储存';
-                        setTimeout(() => {
-                            saveStatus.textContent = '';
-                        }, 2000);
-                        
-                        // 2. 更新内部状态以禁用保存按钮
                         initialFileName = fileName;
                         initialContent = content;
                         
-                        // --- *** 关键修复：在 catch 块中也更新状态 *** ---
-                        // 即使 postMessage 失败，我们仍然必须更新状态
-                        // 此时 'response' 变量是可用的
                         if (response && response.data.success && response.data.fileId) {
                             const newFileId = response.data.fileId;
-                            if (fileId !== newFileId.toString()) { // 同样使用 toString()
+                            if (fileId !== newFileId.toString()) {
                                 fileId = newFileId.toString();
                                 mode = 'edit';
-                                // 此时我们知道 history.pushState 可能会失败，所以不再尝试
-                                // 至少内部状态 (fileId, mode) 更新了
                             }
                             fileNameInput.value = fileName;
                         }
-                        // --- *** 修复结束 *** ---
-
-                        checkForChanges(); // <-- 这会使按钮正确禁用
-                        
-                        // 3. 并且不要显示错误弹窗
-                        return; // 提前退出 catch 块
+                        checkForChanges();
+                        return;
                     }
-                    // --- *** 修复结束 *** ---
 
-                    // --- 下面是处理 *真正* 伺服器错误 (error.response 存在) 的逻辑 ---
-                    
                     let errorMsg = error.response?.data?.message || '伺服器错误';
                     
                     if (mode === 'edit' && error.response.status === 404 && errorMsg.includes('找不到')) {
-                        
-                        // V3: 竞争条件重试回圈
                         let success = false;
                         const maxRetries = 3;
-                        const retryDelay = 500; // 每次延迟 500ms
+                        const retryDelay = 500;
 
                         for (let i = 1; i <= maxRetries; i++) {
-                            saveBtn.textContent = `重试中... (${i}/${maxRetries})`;
-                            await sleep(retryDelay); // 等待
+                            saveBtn.innerHTML = `<i class="fas fa-sync fa-spin"></i> 重试中... (${i}/${maxRetries})`;
+                            await sleep(retryDelay);
 
                             try {
-                                // 重试完全相同的 'edit' 请求
                                 const retryResponse = await axios.post('/api/text-file', {
-                                    mode: mode, // 'edit'
-                                    fileId: fileId, // 仍然是这个 fileId
+                                    mode: mode,
+                                    fileId: fileId,
                                     folderId: folderId,
                                     fileName,
                                     content
                                 });
 
-                                // --- 重试成功后的逻辑 (复制自 try 块) ---
                                 if (window.opener) {
                                     window.opener.postMessage('refresh-files', '*');
                                 }
-                                saveStatus.textContent = '✓ 已储存 (重试成功)';
-                                setTimeout(() => { saveStatus.textContent = ''; }, 2000);
+                                saveStatus.innerHTML = '<i class="fas fa-check"></i> 已储存';
+                                setTimeout(() => { saveStatus.textContent = ''; }, 3000);
                                 initialFileName = fileName;
                                 initialContent = content;
                                 
                                 if (retryResponse.data.success && retryResponse.data.fileId) {
                                     const newFileId = retryResponse.data.fileId;
-                                    if (fileId !== newFileId.toString()) { // 同样使用 toString()
+                                    if (fileId !== newFileId.toString()) {
                                         fileId = newFileId.toString();
                                         mode = 'edit'; 
                                         const newUrl = `${window.location.pathname}?mode=edit&fileId=${fileId}`;
-                                        try {
-                                            history.pushState({}, '', newUrl);
-                                        } catch (urlError) {
-                                            console.warn('更新 URL 失败 (history.pushState)，但这不影响保存:', urlError);
-                                        }
+                                        try { history.pushState({}, '', newUrl); } catch (e) {}
                                     }
                                     fileNameInput.value = fileName;
                                 }
                                 checkForChanges();
-                                // --- 复制结束 ---
-                                
-                                success = true; // 标记成功
-                                break; // 跳出重试回圈
+                                success = true;
+                                break;
 
                             } catch (retryError) {
-                                // 如果重试也失败了，记录下来并准备下一次循环
                                 console.warn(`重试 ${i} 失败:`, retryError.response?.data?.message || retryError.message);
                                 if (i === maxRetries) {
                                     errorMsg = `重试 ${maxRetries} 次后储存失败: ` + (retryError.response?.data?.message || retryError.message);
                                 }
                             }
                         }
-                        // --- 重试回圈结束 ---
 
                         if (!success) {
-                            alert(errorMsg); // 如果所有重试都失败了，显示最终的错误讯息
+                            alert(errorMsg);
                             checkForChanges();
                         }
-
                     } else {
-                        // 其他所有错误 (例如 409 同名冲突, 500 伺服器错误等)，正常显示
                         alert('储存失败：' + errorMsg);
                         checkForChanges();
                     }
                 } finally {
-                    saveBtn.textContent = '保存';
+                    saveBtn.innerHTML = '<i class="fas fa-save"></i> 保存';
+                    saveBtn.disabled = !((fileNameInput.value !== initialFileName) || (editor.value !== initialContent));
                 }
-                // --- *** 重构区块结束 *** ---
             });
 
             backBtn.addEventListener('click', () => {
+                if (!saveBtn.disabled) {
+                    if(!confirm('您有未保存的更改，确定要关闭吗？')) return;
+                }
                 window.close();
             });
 
             fileNameInput.addEventListener('input', checkForChanges);
             
             editor.addEventListener('input', () => {
-                checkForChanges(); // 立即检查变更
-                debouncedUpdateLineNumbers(); // V4: 使用 debounced 函式
+                checkForChanges();
+                updateLineNumbers(); // 输入时立即更新，防抖可能会导致换行时行号延迟
+            });
+            
+            // 处理 Tab 键，输入 4 个空格
+            editor.addEventListener('keydown', (e) => {
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    const start = editor.selectionStart;
+                    const end = editor.selectionEnd;
+                    // 插入 4 个空格
+                    editor.value = editor.value.substring(0, start) + "    " + editor.value.substring(end);
+                    // 移动光标
+                    editor.selectionStart = editor.selectionEnd = start + 4;
+                    checkForChanges();
+                }
             });
 
             editor.addEventListener('scroll', () => {
