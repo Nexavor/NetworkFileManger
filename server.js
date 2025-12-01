@@ -119,7 +119,7 @@ app.set('trust proxy', 1);
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50kb' }));
 app.use(express.json({ limit: '5mb' }));
 app.use(cookieParser()); 
 
@@ -1827,5 +1827,6 @@ app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) =
 app.listen(PORT, () => {
     console.log(`✅ 伺服器已在 http://localhost:${PORT} 上运行`);
 });
+
 
 
