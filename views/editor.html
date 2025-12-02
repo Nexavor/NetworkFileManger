@@ -73,26 +73,28 @@
         .main-header {
             background-color: var(--header-bg);
             border-bottom: 1px solid var(--border-color);
-            padding: 10px 20px;
+            padding: 0 20px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-shrink: 0;
             height: 50px;
             box-sizing: border-box;
+            gap: 10px; /* 增加间距 */
         }
 
         .file-info-area {
             display: flex;
             align-items: center;
             flex-grow: 1;
-            max-width: 50%;
+            min-width: 0; /* 关键：允许 flex 子项缩小，防止挤压右侧按钮 */
         }
 
         .file-icon {
             font-size: 1.2rem;
             color: var(--accent-color);
             margin-right: 12px;
+            flex-shrink: 0;
         }
 
         #fileNameInput {
@@ -123,6 +125,7 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            flex-shrink: 0; /* 关键：防止按钮组被压缩 */
         }
 
         #saveStatus {
@@ -132,6 +135,7 @@
             font-weight: 500;
             opacity: 0;
             transition: opacity 0.3s;
+            white-space: nowrap;
         }
         #saveStatus.visible {
             opacity: 1;
@@ -152,6 +156,7 @@
             gap: 6px;
             transition: all 0.2s;
             line-height: 20px;
+            white-space: nowrap;
         }
 
         .action-btn:hover:not(:disabled) {
@@ -276,7 +281,7 @@
         /* --- 移动端适配 --- */
         @media (max-width: 768px) {
             .main-header {
-                padding: 5px 10px;
+                padding: 0 10px;
             }
             .file-info-area {
                 max-width: 40%; /* 给按钮留更多空间 */
@@ -288,7 +293,7 @@
                 font-size: 14px;
             }
             .action-btn {
-                padding: 5px 8px;
+                padding: 6px 10px;
                 font-size: 12px;
             }
             .action-btn i {
@@ -300,12 +305,13 @@
             #saveStatus {
                 display: none; /* 移动端隐藏保存状态文字，节省空间 */
             }
-            /* 强制显示保存按钮的文字，因为它是最重要的 */
+            /* 强制显示保存按钮的文字 */
             #saveBtn span {
                 display: inline;
+                margin-left: 4px;
             }
             #editor {
-                font-size: 13px; /* 稍微调小字体 */
+                font-size: 13px;
             }
         }
     </style>
@@ -487,6 +493,7 @@
                     alert('档名不能为空！');
                     return;
                 }
+                // 自动补充 .txt 后缀
                 if (!fileName.includes('.')) {
                     fileName += '.txt';
                     fileNameInput.value = fileName;
