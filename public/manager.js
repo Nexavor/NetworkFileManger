@@ -248,11 +248,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 folderInput.value = '';
                 loadFolderContents(currentEncryptedFolderId);
             } else {
-                showNotification(`上传失败: ${res.data.message}`, 'error', notificationContainer);
+                // --- 修正: 移除重复前缀，直接显示后端返回的错误信息 ---
+                showNotification(res.data.message, 'error', notificationContainer);
             }
         } catch (error) {
             if (error.response) {
-                 showNotification('上传失败: ' + (error.response?.data?.message || '服务器错误'), 'error', notificationContainer);
+                 // --- 修正: 移除重复前缀，直接显示后端返回的错误信息 ---
+                 showNotification(error.response?.data?.message || '服务器错误', 'error', notificationContainer);
             }
         } finally {
             if (submitBtn) submitBtn.disabled = false;
