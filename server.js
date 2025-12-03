@@ -47,7 +47,7 @@ class ConcurrencyLimit {
     }
 }
 
-// 限制最大并发上传数为 3 (防止触发 Telegram/WebDAV 429 错误)
+// 限制最大并发上传数为 10 (防止触发 Telegram/WebDAV 429 错误)
 const uploadLimiter = new ConcurrencyLimit(10);
 
 
@@ -488,8 +488,8 @@ app.post('/upload', requireLogin, async (req, res) => {
                 const folderPathParts = pathParts;
                 const targetFolderId = await data.resolvePathToFolderId(initialFolderId, folderPathParts, userId);
                 
-                // --- 修复：处理回收站冲突 ---
-                // 如果存在同名的回收站文件，将其重命名以避免唯一性约束冲突
+                // --- 修复：处理回收站冲突 (初始检查) ---
+                // 如果上传的文件名直接与回收站冲突，先处理一次
                 await data.processTrashConflict(finalFilename, targetFolderId, userId);
                 // --- 修复结束 ---
 
@@ -498,6 +498,11 @@ app.post('/upload', requireLogin, async (req, res) => {
                     existingItem = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                 } else if (action === 'rename') {
                     finalFilename = await data.findAvailableName(finalFilename, targetFolderId, userId, false);
+                    // --- 关键修复：重命名后的二次冲突检查 ---
+                    // findAvailableName 仅检查了活跃文件，生成的 "A(1)" 可能在回收站中存在
+                    // 必须再次调用 processTrashConflict 移走回收站中的 "A(1)"
+                    await data.processTrashConflict(finalFilename, targetFolderId, userId);
+                    // --- 修复结束 ---
                 } else {
                     const conflict = await data.findItemInFolder(finalFilename, targetFolderId, userId);
                     if (conflict) {
@@ -1827,7 +1832,3 @@ app.get('/share/download/:folderToken/:fileId', shareSession, async (req, res) =
 app.listen(PORT, () => {
     console.log(`✅ 伺服器已在 http://localhost:${PORT} 上运行`);
 });
-
-
-
-
