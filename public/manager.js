@@ -12,8 +12,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 return new Promise(() => {});
             }
             if (!error.response && error.request) {
-                window.location.href = '/login';
-                return new Promise(() => {});
+                // 网络错误或请求未发出
+                // window.location.href = '/login'; // 移除此处的强制跳转，避免下载中断时误判
+                return Promise.reject(error);
             }
             return Promise.reject(error);
         }
@@ -133,7 +134,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- 状态变量 ---
     let isMultiSelectMode = false;
-    let isTrashMode = false; // 新增：回收站模式标记
+    let isTrashMode = false;
     let currentFolderId = 1;
     let currentEncryptedFolderId = null;
     let currentFolderContents = { folders: [], files: [] };
@@ -196,7 +197,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     
-    // --- 新增：更新配额显示 ---
     const updateQuota = async () => {
         try {
             const res = await axios.get('/api/user/quota');
@@ -208,9 +208,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 quotaMaxEl.textContent = formatBytes(max);
                 quotaBar.style.width = `${percent}%`;
                 
-                // 移除旧的状态类
                 quotaBar.classList.remove('warning', 'danger');
-                
                 if (percent > 90) quotaBar.classList.add('danger');
                 else if (percent > 70) quotaBar.classList.add('warning');
             }
@@ -248,12 +246,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 folderInput.value = '';
                 loadFolderContents(currentEncryptedFolderId);
             } else {
-                // --- 修正: 移除重复前缀，直接显示后端返回的错误信息 ---
                 showNotification(res.data.message, 'error', notificationContainer);
             }
         } catch (error) {
             if (error.response) {
-                 // --- 修正: 移除重复前缀，直接显示后端返回的错误信息 ---
                  showNotification(error.response?.data?.message || '服务器错误', 'error', notificationContainer);
             }
         } finally {
@@ -334,21 +330,19 @@ document.addEventListener('DOMContentLoaded', () => {
         await performUpload(uploadUrl, formData, isDrag);
     };
 
-    // --- 新增：加载回收站内容 ---
     const loadTrashContents = async () => {
         try {
             isSearchMode = false;
             const res = await axios.get('/api/trash');
             currentFolderContents = res.data;
             
-            // 伪造面包屑导航
             breadcrumb.innerHTML = '<span><i class="fas fa-trash-alt"></i> 回收站</span>';
             
             renderItems(currentFolderContents.folders, currentFolderContents.files);
             selectedItems.clear();
             
-            trashBanner.style.display = 'flex'; // 显示回收站提示
-            itemGrid.classList.add('trash-mode'); // 可选：添加样式钩子
+            trashBanner.style.display = 'flex';
+            itemGrid.classList.add('trash-mode');
             
             updateContextMenu();
             updateQuota();
@@ -357,9 +351,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // --- 修改：loadFolderContents (整合回收站模式) ---
     const loadFolderContents = async (encryptedFolderId) => {
-        // 如果处于回收站模式，则加载回收站
         if (isTrashMode) {
             loadTrashContents();
             return;
@@ -409,12 +401,11 @@ document.addEventListener('DOMContentLoaded', () => {
             renderBreadcrumb(res.data.path);
             renderItems(currentFolderContents.folders, currentFolderContents.files);
             
-            // 退出回收站模式时的 UI 重置
             trashBanner.style.display = 'none';
             itemGrid.classList.remove('trash-mode');
             
             updateContextMenu();
-            updateQuota(); // 每次加载都更新配额
+            updateQuota();
         } catch (error) {
             itemGrid.innerHTML = '<p>加载内容失败。</p>';
             itemListBody.innerHTML = '<p>加载内容失败。</p>';
@@ -424,7 +415,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const executeSearch = async (query) => {
         try {
             isSearchMode = true;
-            // 搜索暂时不支持回收站内容
             const res = await axios.get(`/api/search?q=${encodeURIComponent(query)}`);
             currentFolderContents = res.data.contents;
             selectedItems.clear();
@@ -502,7 +492,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const createItemCard = (item) => {
         const card = document.createElement('div');
         card.className = 'item-card';
-        if (isTrashMode) card.classList.add('deleted'); // 灰显样式
+        if (isTrashMode) card.classList.add('deleted');
         card.dataset.id = item.id;
         card.dataset.type = item.type;
         card.dataset.name = item.name === '/' ? '根目录' : item.name;
@@ -514,20 +504,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
         let iconHtml = '';
         if (item.type === 'file') {
-            // 注意：回收站里的文件可能无法直接预览 (后端控制)，这里仅显示图标或缩略图逻辑
             const fullFile = currentFolderContents.files.find(f => f.id === item.id) || item;
-            // 只有未删除状态才尝试显示在线缩略图 (取决于后端权限控制)
             if (!isTrashMode && fullFile.storage_type === 'telegram' && fullFile.thumb_file_id) {
                 iconHtml = `<img src="/thumbnail/${item.id}" alt="缩图" loading="lazy">`;
             } else if (!isTrashMode && fullFile.mimetype && fullFile.mimetype.startsWith('image/')) {
                  iconHtml = `<img src="/download/proxy/${item.id}" alt="图片" loading="lazy">`;
-            } 
-            // --- 修复：为视频文件增加 HTML5 预览作为缩略图 ---
-            else if (!isTrashMode && fullFile.mimetype && fullFile.mimetype.startsWith('video/')) {
+            } else if (!isTrashMode && fullFile.mimetype && fullFile.mimetype.startsWith('video/')) {
                  iconHtml = `<video src="/download/proxy/${item.id}#t=0.1" preload="metadata" muted></video>`;
-            }
-            // --- 修复结束 ---
-            else {
+            } else {
                  iconHtml = `<i class="fas ${getFileIconClass(item.mimetype, item.name)}"></i>`;
             }
         } else { 
@@ -555,8 +539,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const icon = item.type === 'folder' ? (item.is_locked ? 'fa-lock' : 'fa-folder') : getFileIconClass(item.mimetype, item.name);
         const name = item.name === '/' ? '根目录' : item.name;
         const size = item.type === 'file' && item.size ? formatBytes(item.size) : '—';
-        
-        // 如果在回收站，显示删除日期；否则显示修改日期
         const dateLabel = isTrashMode && item.deleted_at ? formatDateTime(item.deleted_at) : (item.date ? formatDateTime(item.date) : '—');
 
         itemDiv.innerHTML = `
@@ -605,24 +587,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const normalBtns = document.querySelectorAll('.normal-mode-btn');
         const trashBtns = document.querySelectorAll('.trash-mode-btn');
 
-        // --- 修改：根据模式显示不同的按钮 ---
         if (isTrashMode) {
-            // 回收站模式：隐藏常规按钮，显示回收站按钮
             normalBtns.forEach(btn => btn.style.display = 'none');
-            
             if (hasSelection) {
                 trashBtns.forEach(btn => btn.style.display = 'flex');
             } else {
                 trashBtns.forEach(btn => btn.style.display = 'none');
             }
-            // 禁用全选之外的通用功能
             multiSelectToggleBtn.style.display = 'block'; 
-            
         } else {
-            // 常规模式：显示常规按钮，隐藏回收站按钮
             trashBtns.forEach(btn => btn.style.display = 'none');
-            
-            // 常规逻辑
             const generalButtons = [createFolderBtn, textEditBtn];
             
             if (isMultiSelectMode) {
@@ -636,7 +610,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (hasSelection) {
                 generalButtons.forEach(btn => btn.style.display = 'none');
                 normalBtns.forEach(btn => {
-                    // 只显示那些是 item-specific 的常规按钮 (排除 createFolder 等)
                     if (btn.id !== 'createFolderBtn' && btn.id !== 'textEditBtn') {
                          btn.style.display = 'flex';
                     }
@@ -683,7 +656,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
             } else {
-                // 无选择时
                 generalButtons.forEach(btn => btn.style.display = 'block');
                 normalBtns.forEach(btn => {
                     if (btn.id !== 'createFolderBtn' && btn.id !== 'textEditBtn') {
@@ -699,8 +671,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // ... (updateSortIndicator, rerenderSelection, loadFoldersForSelect, switchView, handleFolderConflict, handleConflict, promptForPassword 保持不变) ...
-    
     const updateSortIndicator = () => {
         listHeader.querySelectorAll('[data-sort]').forEach(el => {
             el.classList.remove('sort-asc', 'sort-desc');
@@ -855,7 +825,6 @@ document.addEventListener('DOMContentLoaded', () => {
         passwordPromise.resolve({password: null});
     });
 
-    // --- 事件监听 ---
     const handleKeyDown = (e) => {
         const activeElement = document.activeElement;
         const isItem = activeElement && (activeElement.classList.contains('item-card') || activeElement.classList.contains('list-item'));
@@ -910,7 +879,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // ... (listHeader click, logoutBtn, changePasswordBtn, fileInput, folderInput, uploadForm listeners 保持不变) ...
     if (listHeader) {
         listHeader.addEventListener('click', (e) => {
             const target = e.target.closest('[data-sort]');
@@ -986,7 +954,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (dropZone) {
-        // ... (context menu, drag and drop listeners 保持不变) ...
         dropZone.addEventListener('contextmenu', e => {
             e.preventDefault();
             const targetItem = e.target.closest('.item-card, .list-item');
@@ -1050,7 +1017,6 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             e.stopPropagation();
             dropZone.classList.remove('dragover');
-            // 回收站模式下禁用上传
             if (isTrashMode) return;
     
             const items = e.dataTransfer.items;
@@ -1107,7 +1073,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (homeLink) {
         homeLink.addEventListener('click', (e) => {
             e.preventDefault();
-            // 退出回收站模式
             if (isTrashMode) {
                 isTrashMode = false;
                 trashBtn.classList.remove('active');
@@ -1137,7 +1102,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const handleItemDblClick = async (e) => {
         if (isMultiSelectMode) return;
-        // 回收站模式下双击不执行操作（或者可以设计为预览/还原提示）
         if (isTrashMode) return;
 
         const target = e.target.closest('.item-card, .list-item');
@@ -1199,7 +1163,6 @@ document.addEventListener('DOMContentLoaded', () => {
             e.preventDefault();
             const link = e.target.closest('a');
             if (link && link.dataset.encryptedFolderId) {
-                // 退出回收站模式
                 if (isTrashMode) {
                     isTrashMode = false;
                     trashBtn.classList.remove('active');
@@ -1223,7 +1186,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // ... (createFolderBtn, searchForm, selectAllBtn, showUploadModalBtn, closeUploadModalBtn, shareBtn logic 保持不变) ...
     if (createFolderBtn) {
         createFolderBtn.addEventListener('click', async () => {
             contextMenu.style.display = 'none';
@@ -1270,7 +1232,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (closeUploadModalBtn) closeUploadModalBtn.addEventListener('click', () => uploadModal.style.display = 'none');
     
-    // Share logic (略微省略细节，保持原有逻辑)
     if (shareBtn && shareModal) {
         const shareOptions = document.getElementById('shareOptions');
         const shareResult = document.getElementById('shareResult');
@@ -1414,7 +1375,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (messageIds.length === 0 && folderIds.length === 0) return;
 
-            // 如果只选中了一个文件，直接使用浏览器下载，不打包
             if (messageIds.length === 1 && folderIds.length === 0) {
                 window.location.href = `/download/proxy/${messageIds[0]}`;
                 return;
@@ -1423,7 +1383,6 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 showNotification('正在获取文件列表...', 'info');
 
-                // 1. 获取需要下载的所有文件清单
                 const listRes = await axios.post('/api/files-for-archive', { messageIds, folderIds });
                 if (!listRes.data.success) throw new Error(listRes.data.message);
 
@@ -1432,43 +1391,50 @@ document.addEventListener('DOMContentLoaded', () => {
                     showNotification('所选文件夹是空的。', 'warn');
                     return;
                 }
+                
+                // --- 新增：检查是否有超大文件 ---
+                const hugeFiles = files.filter(f => f.size > 500 * 1024 * 1024); // > 500MB
+                if (hugeFiles.length > 0) {
+                    if (!confirm(`注意：您正在打包下载非常大的文件（如 ${hugeFiles[0].name}），这可能会导致浏览器卡顿或内存不足。是否继续？`)) {
+                        showNotification('打包下载已取消。', 'info');
+                        return;
+                    }
+                }
 
                 showNotification(`准备下载并打包 ${files.length} 个文件...`, 'info');
 
-                // 2. 初始化 JSZip
                 const zip = new JSZip();
                 let downloadedCount = 0;
                 let failCount = 0;
 
-                // 3. 逐个下载文件并添加到 Zip
-                // 这里使用串行下载以保证进度条准确且最稳定，避免浏览器并发请求过多
                 for (const file of files) {
-                    // 更新通知
+                    const progressPercent = Math.round((downloadedCount / files.length) * 100);
                     showNotification(`正在下载 (${downloadedCount + 1}/${files.length}): ${file.name}`, 'info');
                     
                     try {
-                        // 使用 axios 获取 blob 数据
+                        // --- 修改：设置 timeout 为 0 (无限)，并捕获错误 ---
                         const fileRes = await axios.get(`/download/proxy/${file.id}`, { 
-                            responseType: 'blob' 
+                            responseType: 'blob',
+                            timeout: 0 // 防止大文件下载被中断
                         });
                         
-                        // 将文件放入 zip，使用后端返回的相对路径
                         zip.file(file.path, fileRes.data);
                         downloadedCount++;
                     } catch (err) {
                         console.error(`下载文件失败: ${file.path}`, err);
                         // 在 zip 中创建一个错误日志文件
-                        zip.file(`${file.path}.error.txt`, `下载失败: ${err.message}`);
+                        const errorMsg = err.response ? 
+                            `HTTP Error ${err.response.status}: ${err.response.statusText}` : 
+                            err.message;
+                        zip.file(`${file.path}.error.txt`, `下载失败: ${errorMsg}\n\n请检查网络连接或服务器日志。`);
                         failCount++;
                     }
                 }
 
                 showNotification('正在压缩打包，请稍候...', 'info');
 
-                // 4. 生成 Zip 文件
                 const content = await zip.generateAsync({ type: "blob" });
 
-                // 5. 触发保存
                 const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
                 const zipName = `archive-${timestamp}.zip`;
                 saveAs(content, zipName);
@@ -1497,7 +1463,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 else foldersToDelete.push(parseInt(id));
             });
             try {
-                // 默认为软删除
                 await axios.post('/delete-multiple', { messageIds: filesToDelete, folderIds: foldersToDelete });
                 loadFolderContents(currentEncryptedFolderId);
                 showNotification('项目已移至回收站。', 'success');
@@ -1690,13 +1655,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // --- 新增：回收站按钮事件 ---
     if (trashBtn) {
         trashBtn.addEventListener('click', () => {
             if (!isTrashMode) {
                 isTrashMode = true;
                 trashBtn.classList.add('active');
-                // 清除旧内容，显示加载状态
                 itemGrid.innerHTML = '<p>正在加载回收站...</p>';
                 itemListBody.innerHTML = '<p>正在加载回收站...</p>';
                 loadTrashContents();
@@ -1734,7 +1697,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 await axios.post('/api/restore', { messageIds: filesToRestore, folderIds: foldersToRestore });
                 showNotification('已还原选定项目', 'success');
-                loadTrashContents(); // 刷新回收站
+                loadTrashContents(); 
             } catch (e) {
                 showNotification('还原失败: ' + (e.response?.data?.message || e.message), 'error');
             }
@@ -1760,7 +1723,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     force: true 
                 });
                 showNotification('已永久删除', 'success');
-                loadTrashContents(); // 刷新回收站
+                loadTrashContents(); 
             } catch (e) {
                 showNotification('删除失败: ' + (e.response?.data?.message || e.message), 'error');
             }
@@ -1779,6 +1742,6 @@ document.addEventListener('DOMContentLoaded', () => {
             encryptedId = pathParts[viewIndex + 1];
         }
         if (encryptedId) loadFolderContents(encryptedId);
-        else window.location.href = '/'; // 默认跳回根目录
+        else window.location.href = '/'; 
     }
 });
