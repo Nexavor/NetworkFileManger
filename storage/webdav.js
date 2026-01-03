@@ -8,7 +8,7 @@ const path = require('path');
 
 const FILE_NAME = 'storage/webdav.js';
 let client = null;
-// 修改：使用 Map 存储正在进行的 Promise，而不是 Set
+// 使用 Map 存储正在进行的 Promise，防止并发创建目录冲突
 const creatingDirs = new Map(); 
 
 // --- 日志辅助函数 ---
@@ -56,20 +56,17 @@ function normalizePath(p) {
     return normalized;
 }
 
-// 核心修复：防止并发创建目录时的竞争条件
+// 防止并发创建目录时的竞争条件
 async function ensureDirectoryExists(fullPath) {
     const FUNC_NAME = 'ensureDirectoryExists';
     const remotePath = normalizePath(fullPath);
     
     if (remotePath === "/") return;
     
-    // 如果已经有正在进行的创建任务，则等待它完成
     if (creatingDirs.has(remotePath)) {
-        // log('DEBUG', FUNC_NAME, `等待目录创建: ${remotePath}`);
         return creatingDirs.get(remotePath);
     }
 
-    // 创建一个新的 Promise 任务
     const creationPromise = (async () => {
         try {
             const client = getClient();
@@ -78,36 +75,24 @@ async function ensureDirectoryExists(fullPath) {
 
             for (const part of parts) {
                 current += '/' + part;
-                // 再次检查 Map，防止父级目录并发冲突 (虽然 WebDAV 客户端通常能处理)
-                // 但这里我们主要依赖外部的 exists 检查
-                
-                // 优化：只有当 WebDAV 服务器返回目录不存在时才尝试创建
-                // 注意：高并发下 client.exists 也可能产生额外开销，但在本逻辑中
-                // 同一路径的并发已被 Promise 合并，所以是安全的。
                 const exists = await client.exists(current);
                 if (!exists) {
                     log('INFO', FUNC_NAME, `创建目录: "${current}"`);
                     try {
                         await client.createDirectory(current);
                     } catch (e) {
-                        // 忽略 405 (Method Not Allowed - 通常意味着已存在)
                         if (e.response && e.response.status !== 405) {
-                            // 记录警告但不抛出，尝试继续上传
                             log('WARN', FUNC_NAME, `创建目录可能有误 (可能是并发导致已存在): ${e.message}`);
                         }
                     }
                 }
             }
         } finally {
-            // 任务完成后（无论成功失败），从 Map 中移除
             creatingDirs.delete(remotePath);
         }
     })();
 
-    // 将 Promise 存入 Map
     creatingDirs.set(remotePath, creationPromise);
-    
-    // 等待执行
     return creationPromise;
 }
 
@@ -119,7 +104,6 @@ async function getFolderPath(folderId, userId) {
 
 async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, caption = '', existingItem = null) {
     const FUNC_NAME = 'upload';
-    // log('INFO', FUNC_NAME, `开始上传: "${fileName}"`);
     
     return new Promise(async (resolve, reject) => {
         let remotePath = ''; 
@@ -127,7 +111,6 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
             const client = getClient();
             const folderPath = await getFolderPath(folderId, userId);
             
-            // 等待目录确保逻辑完成
             await ensureDirectoryExists(folderPath);
 
             remotePath = normalizePath(path.posix.join(folderPath, fileName));
@@ -142,27 +125,17 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
 
             log('DEBUG', FUNC_NAME, `PUT: ${remotePath}`);
             
-            // 增加简单的重试机制，应对短暂的 403/429/Network Error
             let retries = 1;
             while (retries >= 0) {
                 try {
                     const result = await client.putFileContents(remotePath, fileStreamOrBuffer, options);
                     if (result === false) throw new Error('WebDAV putFileContents returned false');
-                    break; // 成功则跳出循环
+                    break; 
                 } catch (err) {
                     if (retries > 0) {
                         log('WARN', FUNC_NAME, `上传失败，正在重试 (${retries}次剩余): ${err.message}`);
-                        await new Promise(r => setTimeout(r, 1000)); // 等待 1 秒
+                        await new Promise(r => setTimeout(r, 1000));
                         retries--;
-                        // 如果是 Stream，可能无法重试（除非是文件流且重新创建），
-                        // 但 Busboy 传入 Buffer 模式下是 Buffer/FileStream，
-                        // 在 server.js 的 buffer 模式下是 fs.createReadStream，可以重试吗？
-                        // fs.createReadStream 一旦消耗就没了。
-                        // 所以这里如果是 Stream 且报错，重试可能会再次失败。
-                        // 但是 server.js 现在的 Buffer 模式我们传的是 fs.createReadStream(tempPath)。
-                        // 如果流被消耗了，重试需要重新创建流。
-                        
-                        // 简单修复：如果是流且已出错，直接抛出，只重试 Buffer
                         if (typeof fileStreamOrBuffer.pipe === 'function') {
                              throw err; 
                         }
@@ -200,7 +173,6 @@ async function upload(fileStreamOrBuffer, fileName, mimetype, userId, folderId, 
 
         } catch (error) {
             log('ERROR', FUNC_NAME, `失败: ${error.message}`);
-            // if (remotePath) { try { await getClient().deleteFile(remotePath); } catch (e) {} } // 失败通常意味着文件没上去，删除多余
             reject(error);
         }
     });
@@ -242,17 +214,37 @@ async function remove(files, folders, userId) {
     return results;
 }
 
+// --- 修改重点：增强流的日志监控 ---
 async function stream(file_id, userId, options = {}) {
     const remotePath = normalizePath(file_id);
-    log('INFO', 'stream', `请求流: ${remotePath}`);
+    log('INFO', 'stream', `请求流: ${remotePath} (Options: ${JSON.stringify(options)})`);
     
-    const webdavConfig = getWebdavConfig();
-    const streamClient = createClient(webdavConfig.url, {
-        username: webdavConfig.username,
-        password: webdavConfig.password
-    });
+    try {
+        const webdavConfig = getWebdavConfig();
+        // 为流式传输创建独立的客户端实例，避免复用连接可能导致的问题
+        const streamClient = createClient(webdavConfig.url, {
+            username: webdavConfig.username,
+            password: webdavConfig.password
+        });
 
-    return streamClient.createReadStream(remotePath, options);
+        const remoteStream = streamClient.createReadStream(remotePath, options);
+        
+        // 绑定事件日志，帮助排查卡顿问题
+        let hasStarted = false;
+        remoteStream.on('data', () => {
+            if (!hasStarted) {
+                log('DEBUG', 'stream', `流数据传输开始: ${remotePath}`);
+                hasStarted = true;
+            }
+        });
+        remoteStream.on('end', () => log('INFO', 'stream', `流传输结束: ${remotePath}`));
+        remoteStream.on('error', (err) => log('ERROR', 'stream', `流发生错误: ${remotePath} - ${err.message}`));
+        
+        return remoteStream;
+    } catch (error) {
+        log('ERROR', 'stream', `创建流失败: ${error.message}`);
+        throw error;
+    }
 }
 
 async function getUrl(file_id, userId) {
