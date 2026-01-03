@@ -12,8 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return new Promise(() => {});
             }
             if (!error.response && error.request) {
-                // 网络错误或请求未发出
-                // window.location.href = '/login'; // 移除此处的强制跳转，避免下载中断时误判
+                // 网络错误或请求未发出，不强制跳转，允许前端重试逻辑处理
                 return Promise.reject(error);
             }
             return Promise.reject(error);
@@ -1375,6 +1374,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (messageIds.length === 0 && folderIds.length === 0) return;
 
+            // 如果只选中了一个文件，直接使用浏览器下载，不打包
             if (messageIds.length === 1 && folderIds.length === 0) {
                 window.location.href = `/download/proxy/${messageIds[0]}`;
                 return;
@@ -1383,6 +1383,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 showNotification('正在获取文件列表...', 'info');
 
+                // 1. 获取需要下载的所有文件清单
                 const listRes = await axios.post('/api/files-for-archive', { messageIds, folderIds });
                 if (!listRes.data.success) throw new Error(listRes.data.message);
 
@@ -1392,7 +1393,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
                 
-                // --- 新增：检查是否有超大文件 ---
+                // 检查是否有超大文件
                 const hugeFiles = files.filter(f => f.size > 500 * 1024 * 1024); // > 500MB
                 if (hugeFiles.length > 0) {
                     if (!confirm(`注意：您正在打包下载非常大的文件（如 ${hugeFiles[0].name}），这可能会导致浏览器卡顿或内存不足。是否继续？`)) {
@@ -1403,38 +1404,62 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 showNotification(`准备下载并打包 ${files.length} 个文件...`, 'info');
 
+                // 2. 初始化 JSZip
                 const zip = new JSZip();
                 let downloadedCount = 0;
                 let failCount = 0;
 
+                // 辅助函数：延时
+                const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+                // 3. 逐个下载文件并添加到 Zip
                 for (const file of files) {
+                    // --- 策略 1: 每次请求前暂停 1.5 秒，避免触发服务端限流 ---
+                    await sleep(1500);
+
                     const progressPercent = Math.round((downloadedCount / files.length) * 100);
                     showNotification(`正在下载 (${downloadedCount + 1}/${files.length}): ${file.name}`, 'info');
                     
-                    try {
-                        // --- 修改：设置 timeout 为 0 (无限)，并捕获错误 ---
-                        const fileRes = await axios.get(`/download/proxy/${file.id}`, { 
-                            responseType: 'blob',
-                            timeout: 0 // 防止大文件下载被中断
-                        });
-                        
-                        zip.file(file.path, fileRes.data);
-                        downloadedCount++;
-                    } catch (err) {
-                        console.error(`下载文件失败: ${file.path}`, err);
-                        // 在 zip 中创建一个错误日志文件
-                        const errorMsg = err.response ? 
-                            `HTTP Error ${err.response.status}: ${err.response.statusText}` : 
-                            err.message;
-                        zip.file(`${file.path}.error.txt`, `下载失败: ${errorMsg}\n\n请检查网络连接或服务器日志。`);
-                        failCount++;
+                    let retries = 3; // --- 策略 2: 每个文件最多重试 3 次 ---
+                    let success = false;
+
+                    while (retries > 0 && !success) {
+                        try {
+                            // --- 策略 3: 使用 axios 获取 blob，超时设为 0 (无限) ---
+                            const fileRes = await axios.get(`/download/proxy/${file.id}`, { 
+                                responseType: 'blob',
+                                timeout: 0 
+                            });
+                            
+                            zip.file(file.path, fileRes.data);
+                            downloadedCount++;
+                            success = true;
+                        } catch (err) {
+                            console.error(`下载文件失败 (剩余重试次数: ${retries - 1}): ${file.path}`, err);
+                            retries--;
+                            
+                            if (retries > 0) {
+                                showNotification(`下载断开，正在重试 ${file.name}...`, 'warn');
+                                // 重试前等待更长时间 (3秒)
+                                await sleep(3000);
+                            } else {
+                                // 最终失败，记录错误日志到 zip
+                                const errorMsg = err.response ? 
+                                    `HTTP Error ${err.response.status}: ${err.response.statusText}` : 
+                                    err.message;
+                                zip.file(`${file.path}.error.txt`, `下载失败: ${errorMsg}\n\n请检查网络连接或服务器日志。`);
+                                failCount++;
+                            }
+                        }
                     }
                 }
 
                 showNotification('正在压缩打包，请稍候...', 'info');
 
+                // 4. 生成 Zip 文件
                 const content = await zip.generateAsync({ type: "blob" });
 
+                // 5. 触发保存
                 const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
                 const zipName = `archive-${timestamp}.zip`;
                 saveAs(content, zipName);
