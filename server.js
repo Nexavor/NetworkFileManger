@@ -1240,6 +1240,56 @@ app.get('/file/content/:message_id', requireLogin, async (req, res) => {
     }
 });
 
+// --- 新增 API：获取用于前端打包的文件列表 ---
+app.post('/api/files-for-archive', requireLogin, async (req, res) => {
+    try {
+        const { messageIds = [], folderIds = [] } = req.body;
+        const userId = req.session.userId;
+
+        if (messageIds.length === 0 && folderIds.length === 0) {
+            return res.status(400).json({ success: false, message: '未选择任何项目' });
+        }
+
+        let filesList = [];
+
+        // 1. 处理单独选择的文件
+        if (messageIds.length > 0) {
+            const fileIdBigInts = messageIds.map(id => BigInt(id));
+            const directFiles = await data.getFilesByIds(fileIdBigInts, userId);
+            filesList.push(...directFiles.map(f => ({
+                id: f.message_id,
+                name: f.fileName,
+                path: f.fileName, // 根目录文件，路径即文件名
+                size: f.size
+            })));
+        }
+
+        // 2. 处理文件夹（递归获取内容）
+        for (const folderId of folderIds) {
+            // 获取文件夹名称，作为 zip 内的根目录
+            const folderInfoArr = await data.getFolderPath(folderId, userId);
+            const folderInfo = folderInfoArr.length > 0 ? folderInfoArr[folderInfoArr.length - 1] : null;
+            const folderName = folderInfo ? folderInfo.name : 'folder';
+            
+            // 复用原有的递归查找函数
+            const nestedFiles = await data.getFilesRecursive(folderId, userId, folderName);
+            
+            filesList.push(...nestedFiles.map(f => ({
+                id: f.message_id,
+                name: f.fileName,
+                path: f.path, // getFilesRecursive 会生成类似 "folder/subfolder/file.txt" 的路径
+                size: f.size
+            })));
+        }
+
+        res.json({ success: true, files: filesList });
+
+    } catch (error) {
+        console.error('Error fetching archive list:', error);
+        res.status(500).json({ success: false, message: '获取文件列表失败: ' + error.message });
+    }
+});
+
 app.post('/api/download-archive', requireLogin, async (req, res) => {
     try {
         const { messageIds = [], folderIds = [] } = req.body;
