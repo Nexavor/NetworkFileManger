@@ -5,10 +5,12 @@ const db = require('../database.js');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+// --- 新增：引入 http/https 模块以控制连接代理 ---
+const http = require('http');
+const https = require('https');
 
 const FILE_NAME = 'storage/webdav.js';
 let client = null;
-// 使用 Map 存储正在进行的 Promise，防止并发创建目录冲突
 const creatingDirs = new Map(); 
 
 // --- 日志辅助函数 ---
@@ -56,7 +58,6 @@ function normalizePath(p) {
     return normalized;
 }
 
-// 防止并发创建目录时的竞争条件
 async function ensureDirectoryExists(fullPath) {
     const FUNC_NAME = 'ensureDirectoryExists';
     const remotePath = normalizePath(fullPath);
@@ -214,22 +215,30 @@ async function remove(files, folders, userId) {
     return results;
 }
 
-// --- 修改重点：增强流的日志监控 ---
+// --- 核心修复：流式传输逻辑 ---
 async function stream(file_id, userId, options = {}) {
     const remotePath = normalizePath(file_id);
     log('INFO', 'stream', `请求流: ${remotePath} (Options: ${JSON.stringify(options)})`);
     
     try {
         const webdavConfig = getWebdavConfig();
-        // 为流式传输创建独立的客户端实例，避免复用连接可能导致的问题
+        
+        // --- 关键修改：禁用 Keep-Alive ---
+        // 许多 WebDAV 服务端（如 Alist/Nextcloud）在处理并发或连续流请求时，
+        // 如果连接被复用往往会卡死。这里强制每个流使用独立的短连接。
+        const agentOptions = { keepAlive: false };
+        const httpAgent = new http.Agent(agentOptions);
+        const httpsAgent = new https.Agent(agentOptions);
+
         const streamClient = createClient(webdavConfig.url, {
             username: webdavConfig.username,
-            password: webdavConfig.password
+            password: webdavConfig.password,
+            httpAgent: httpAgent,
+            httpsAgent: httpsAgent
         });
 
         const remoteStream = streamClient.createReadStream(remotePath, options);
         
-        // 绑定事件日志，帮助排查卡顿问题
         let hasStarted = false;
         remoteStream.on('data', () => {
             if (!hasStarted) {
