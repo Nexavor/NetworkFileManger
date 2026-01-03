@@ -1399,35 +1399,93 @@ document.addEventListener('DOMContentLoaded', () => {
              }
         });
     }
+
     if (downloadBtn) {
         downloadBtn.addEventListener('click', async () => {
             if (downloadBtn.disabled) return;
             contextMenu.style.display = 'none';
+
             const messageIds = [];
             const folderIds = [];
             selectedItems.forEach((item, id) => {
                 if (item.type === 'file') messageIds.push(id);
                 else folderIds.push(parseInt(id));
             });
+
             if (messageIds.length === 0 && folderIds.length === 0) return;
+
+            // 如果只选中了一个文件，直接使用浏览器下载，不打包
             if (messageIds.length === 1 && folderIds.length === 0) {
                 window.location.href = `/download/proxy/${messageIds[0]}`;
                 return;
             }
+
             try {
-                const response = await axios.post('/api/download-archive', { messageIds, folderIds }, { responseType: 'blob' });
-                const url = window.URL.createObjectURL(new Blob([response.data]));
-                const link = document.createElement('a');
-                link.href = url;
+                showNotification('正在获取文件列表...', 'info');
+
+                // 1. 获取需要下载的所有文件清单
+                const listRes = await axios.post('/api/files-for-archive', { messageIds, folderIds });
+                if (!listRes.data.success) throw new Error(listRes.data.message);
+
+                const files = listRes.data.files;
+                if (files.length === 0) {
+                    showNotification('所选文件夹是空的。', 'warn');
+                    return;
+                }
+
+                showNotification(`准备下载并打包 ${files.length} 个文件...`, 'info');
+
+                // 2. 初始化 JSZip
+                const zip = new JSZip();
+                let downloadedCount = 0;
+                let failCount = 0;
+
+                // 3. 逐个下载文件并添加到 Zip
+                // 这里使用串行下载以保证进度条准确且最稳定，避免浏览器并发请求过多
+                for (const file of files) {
+                    // 更新通知
+                    showNotification(`正在下载 (${downloadedCount + 1}/${files.length}): ${file.name}`, 'info');
+                    
+                    try {
+                        // 使用 axios 获取 blob 数据
+                        const fileRes = await axios.get(`/download/proxy/${file.id}`, { 
+                            responseType: 'blob' 
+                        });
+                        
+                        // 将文件放入 zip，使用后端返回的相对路径
+                        zip.file(file.path, fileRes.data);
+                        downloadedCount++;
+                    } catch (err) {
+                        console.error(`下载文件失败: ${file.path}`, err);
+                        // 在 zip 中创建一个错误日志文件
+                        zip.file(`${file.path}.error.txt`, `下载失败: ${err.message}`);
+                        failCount++;
+                    }
+                }
+
+                showNotification('正在压缩打包，请稍候...', 'info');
+
+                // 4. 生成 Zip 文件
+                const content = await zip.generateAsync({ type: "blob" });
+
+                // 5. 触发保存
                 const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                link.setAttribute('download', `download-${timestamp}.zip`);
-                document.body.appendChild(link);
-                link.click();
-                window.URL.revokeObjectURL(url);
-                document.body.removeChild(link);
-            } catch (error) { alert('下载压缩档失败！'); }
+                const zipName = `archive-${timestamp}.zip`;
+                saveAs(content, zipName);
+
+                if (failCount > 0) {
+                    showNotification(`打包完成，但有 ${failCount} 个文件下载失败（已记录在压缩包内）。`, 'warn');
+                } else {
+                    showNotification('打包下载完成！', 'success');
+                }
+
+            } catch (error) {
+                console.error(error);
+                showNotification('打包下载失败: ' + (error.response?.data?.message || error.message), 'error');
+            }
         });
     }
+
     if (deleteBtn) {
         deleteBtn.addEventListener('click', async () => {
             if (selectedItems.size === 0) return;
@@ -1698,7 +1756,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 await axios.post('/delete-multiple', { 
                     messageIds: filesToDelete, 
-                    folderIds: foldersToDelete,
+                    folderIds: foldersToDelete, 
                     force: true 
                 });
                 showNotification('已永久删除', 'success');
